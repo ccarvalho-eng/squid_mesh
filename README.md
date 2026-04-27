@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="assets/images/squid-mesh-logo.png" alt="Squid Mesh logo" width="250" />
+  <img src="assets/images/squid-mesh-logo.png" alt="Squid Mesh logo" width="380" />
 </p>
-
-# Squid Mesh
 
 Embeddable durable workflow runtime for Elixir applications.
 
