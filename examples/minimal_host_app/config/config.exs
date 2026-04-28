@@ -11,7 +11,9 @@ config :minimal_host_app, MinimalHostApp.Repo,
 
 config :minimal_host_app, Oban,
   repo: MinimalHostApp.Repo,
-  plugins: [],
+  plugins: [
+    {SquidMesh.Plugins.Cron, workflows: [MinimalHostApp.Workflows.DailyDigest]}
+  ],
   queues: [squid_mesh: 5]
 
 config :squid_mesh,

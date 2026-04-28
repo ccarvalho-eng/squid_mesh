@@ -4,6 +4,7 @@ defmodule MinimalHostApp.Smoke do
   """
 
   alias Ecto.Adapters.Postgres
+  alias MinimalHostApp.Cron
   alias MinimalHostApp.WorkflowRuns
 
   @poll_attempts 20
@@ -37,6 +38,26 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
+  @spec run_all!() :: %{payment_recovery: SquidMesh.Run.t(), daily_digest: SquidMesh.Run.t()}
+  def run_all! do
+    payment_recovery = run!()
+
+    with :ok <- run_cron_digest(),
+         {:ok, [cron_run]} <- WorkflowRuns.list_daily_digest_runs() do
+      unless cron_run.status == :completed and cron_run.trigger == :daily_digest do
+        raise "unexpected cron smoke result"
+      end
+
+      %{
+        payment_recovery: payment_recovery,
+        daily_digest: cron_run
+      }
+    else
+      {:error, reason} ->
+        raise "cron smoke test failed: #{inspect(reason)}"
+    end
+  end
+
   @spec wait_for_execution() :: :ok
   defp wait_for_execution do
     if manual_oban_testing?() do
@@ -45,6 +66,12 @@ defmodule MinimalHostApp.Smoke do
     else
       :ok
     end
+  end
+
+  @spec run_cron_digest() :: :ok
+  defp run_cron_digest do
+    Cron.evaluate!()
+    wait_for_execution()
   end
 
   @spec await_terminal_run(Ecto.UUID.t(), non_neg_integer()) ::
