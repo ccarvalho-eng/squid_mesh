@@ -59,6 +59,18 @@ defmodule SquidMesh.Runtime.StateMachine do
   end
 
   @doc """
+  Reports whether the runtime may schedule another step while the run is in
+  the given state.
+  """
+  @spec schedule_next_step?(state()) :: boolean()
+  def schedule_next_step?(state) do
+    case state do
+      state when state in [:pending, :running, :retrying] -> true
+      _other_state -> false
+    end
+  end
+
+  @doc """
   Reports whether a transition is valid.
   """
   @spec can_transition?(state(), state()) :: boolean()

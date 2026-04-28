@@ -76,4 +76,37 @@ defmodule SquidMesh.RunStoreTest do
                RunStore.transition_run(FakeRepo, Ecto.UUID.generate(), :running)
     end
   end
+
+  describe "cancel_run/2" do
+    test "cancels pending runs immediately" do
+      assert {:ok, run} =
+               RunStore.create_run(FakeRepo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, cancelled_run} = RunStore.cancel_run(FakeRepo, run.id)
+
+      assert cancelled_run.status == :cancelled
+      assert RunStore.schedule_next_step?(cancelled_run) == false
+    end
+
+    test "marks active runs as cancelling and prevents future scheduling" do
+      assert {:ok, run} =
+               RunStore.create_run(FakeRepo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, running_run} = RunStore.transition_run(FakeRepo, run.id, :running)
+      assert {:ok, cancelling_run} = RunStore.cancel_run(FakeRepo, running_run.id)
+
+      assert cancelling_run.status == :cancelling
+      assert RunStore.schedule_next_step?(cancelling_run) == false
+    end
+
+    test "rejects cancellation for terminal runs" do
+      assert {:ok, run} =
+               RunStore.create_run(FakeRepo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, failed_run} = RunStore.transition_run(FakeRepo, run.id, :failed)
+
+      assert {:error, {:invalid_transition, :failed, :cancelling}} =
+               RunStore.cancel_run(FakeRepo, failed_run.id)
+    end
+  end
 end
