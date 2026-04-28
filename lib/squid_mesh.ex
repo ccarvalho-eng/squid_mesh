@@ -10,6 +10,7 @@ defmodule SquidMesh do
   alias SquidMesh.Config
   alias SquidMesh.Run
   alias SquidMesh.RunStore
+  alias SquidMesh.Runtime.Dispatcher
 
   @spec config(keyword()) :: {:ok, Config.t()} | {:error, {:missing_config, [atom()]}}
   defdelegate config(overrides \\ []), to: Config, as: :load
@@ -24,9 +25,27 @@ defmodule SquidMesh do
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
           | {:error, RunStore.create_error()}
+          | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, input, overrides \\ []) do
-    with {:ok, config} <- Config.load(overrides) do
-      RunStore.create_run(config.repo, workflow, input)
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, run} <- RunStore.create_run(config.repo, workflow, input),
+         {:ok, _job} <- Dispatcher.dispatch_run(config, run) do
+      {:ok, run}
+    else
+      {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
+        {:error, reason}
+
+      {:error, reason} = error when reason in [:not_found] ->
+        error
+
+      {:error, %_{} = reason} ->
+        {:error, {:dispatch_failed, reason}}
+
+      {:error, reason} when is_tuple(reason) ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, {:dispatch_failed, reason}}
     end
   end
 
@@ -70,9 +89,18 @@ defmodule SquidMesh do
   @spec replay_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()}
           | {:error, :not_found | {:missing_config, [atom()]} | RunStore.replay_error()}
+          | {:error, {:dispatch_failed, term()}}
   def replay_run(run_id, overrides \\ []) do
-    with {:ok, config} <- Config.load(overrides) do
-      RunStore.replay_run(config.repo, run_id)
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, run} <- RunStore.replay_run(config.repo, run_id),
+         {:ok, _job} <- Dispatcher.dispatch_run(config, run) do
+      {:ok, run}
+    else
+      {:error, %_{} = reason} ->
+        {:error, {:dispatch_failed, reason}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 end

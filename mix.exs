@@ -39,6 +39,8 @@ defmodule SquidMesh.MixProject do
     [
       {:ecto_sql, "~> 3.13"},
       {:jason, "~> 1.4"},
+      {:jido, "~> 2.0"},
+      {:oban, "~> 2.21"},
       {:postgrex, "~> 0.20", only: :test}
     ]
   end

@@ -26,7 +26,7 @@ defmodule MinimalHostApp.MixProject do
   defp deps do
     [
       {:ecto_sql, "~> 3.13"},
-      {:oban, "~> 2.20"},
+      {:oban, "~> 2.22"},
       {:postgrex, ">= 0.0.0"},
       {:squid_mesh, path: "../.."}
     ]

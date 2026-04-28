@@ -82,6 +82,14 @@ defmodule SquidMeshTest do
     end
 
     test "reports missing required configuration keys" do
+      original_repo = Application.get_env(:squid_mesh, :repo)
+
+      on_exit(fn ->
+        Application.put_env(:squid_mesh, :repo, original_repo)
+      end)
+
+      Application.delete_env(:squid_mesh, :repo)
+
       assert {:error, {:missing_config, [:repo]}} = SquidMesh.config()
     end
   end
@@ -309,11 +317,13 @@ defmodule SquidMeshTest do
   describe "replay_run/2" do
     test "creates a new run linked to the source run through the public API" do
       assert {:ok, source_run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
-                 repo: FakeRepo
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
                )
 
-      assert {:ok, replay_run} = SquidMesh.replay_run(source_run.id, repo: FakeRepo)
+      assert {:ok, replay_run} = SquidMesh.replay_run(source_run.id, repo: Repo)
 
       assert replay_run.id != source_run.id
       assert replay_run.workflow == InvoiceReminderWorkflow
@@ -324,7 +334,7 @@ defmodule SquidMeshTest do
     end
 
     test "returns not found when replaying a missing run" do
-      assert {:error, :not_found} = SquidMesh.replay_run(Ecto.UUID.generate(), repo: FakeRepo)
+      assert {:error, :not_found} = SquidMesh.replay_run(Ecto.UUID.generate(), repo: Repo)
     end
   end
 end

@@ -30,21 +30,25 @@ This will:
 
 ## Smoke Path
 
-Run the fast smoke path without Postgres:
+Run the test-mode smoke path:
 
 ```sh
 MIX_ENV=test mix example.smoke
 ```
 
-Run the Postgres-backed path after `mix setup`:
+This command creates the test database if needed, runs migrations, starts the
+repo and Oban, then runs the workflow to completion.
+
+Run the development-like path after `mix setup`:
 
 ```sh
 mix example.smoke
 ```
 
 The smoke task starts a payment recovery workflow through
-`MinimalHostApp.WorkflowRuns.start_payment_recovery/1`, then immediately
-inspects it through `MinimalHostApp.WorkflowRuns.inspect_payment_recovery/1`.
+`MinimalHostApp.WorkflowRuns.start_payment_recovery/1`, waits for execution,
+and inspects the completed run through
+`MinimalHostApp.WorkflowRuns.inspect_payment_recovery/1`.
 
 ## Example Boundary
 
@@ -57,3 +61,8 @@ MinimalHostApp.WorkflowRuns.start_payment_recovery(%{
   attempt_id: "attempt_789"
 })
 ```
+
+The reference workflow and step modules live in:
+
+- `lib/minimal_host_app/workflows/payment_recovery.ex`
+- `lib/minimal_host_app/steps/`
