@@ -1,5 +1,5 @@
 <div align="center">
-  <img width="340" alt="logo" src="https://github.com/user-attachments/assets/22c973ae-5d03-4aaf-99c9-75640e985f1e" />
+  <img width="245" alt="logo" src="https://github.com/user-attachments/assets/7e6a0fd3-f836-421c-bdf6-aefbb4c77111" />
 
   <p><i>Workflow automation platform for Elixir applications.</i></p>
 
