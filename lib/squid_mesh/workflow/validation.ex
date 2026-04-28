@@ -351,6 +351,7 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp valid_payload_default?(:string, {:today, :iso8601}), do: true
+  defp valid_payload_default?(:string, {:now, :iso8601}), do: true
   defp valid_payload_default?(type, default), do: input_matches_type?(default, type)
 
   defp workflow_payload_fields(%{payload: payload}) when is_list(payload), do: payload

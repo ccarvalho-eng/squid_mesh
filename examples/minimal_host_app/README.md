@@ -6,6 +6,7 @@ This example shows how an application can:
 
 - configure Squid Mesh with its own `Repo` and `Oban`
 - expose workflow operations through an application-facing module
+- activate cron workflows through the host app's Oban plugins
 - run a repeatable smoke path during development
 
 ## Setup
@@ -51,10 +52,13 @@ Run the development-like path after `mix setup`:
 mix example.smoke
 ```
 
-The smoke task starts a payment recovery workflow through
-`MinimalHostApp.WorkflowRuns.start_payment_recovery/1`, waits for execution,
-and inspects the completed run through
-`MinimalHostApp.WorkflowRuns.inspect_payment_recovery/1`.
+The smoke task:
+
+- starts a manual payment recovery workflow through
+  `MinimalHostApp.WorkflowRuns.start_payment_recovery/1`
+- waits for execution and inspects the completed payment recovery run
+- activates the example cron workflow through the host app's Oban-backed cron plugin
+- verifies the cron-triggered run completes as well
 
 ## Example Boundary
 
@@ -75,4 +79,5 @@ in the example workflow.
 The reference workflow and step modules live in:
 
 - `lib/minimal_host_app/workflows/payment_recovery.ex`
+- `lib/minimal_host_app/workflows/daily_digest.ex`
 - `lib/minimal_host_app/steps/`

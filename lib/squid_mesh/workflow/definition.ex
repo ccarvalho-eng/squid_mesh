@@ -288,5 +288,6 @@ defmodule SquidMesh.Workflow.Definition do
   end
 
   defp resolve_default!({:today, :iso8601}), do: Date.utc_today() |> Date.to_iso8601()
+  defp resolve_default!({:now, :iso8601}), do: DateTime.utc_now() |> DateTime.to_iso8601()
   defp resolve_default!(default), do: default
 end

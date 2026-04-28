@@ -74,6 +74,24 @@ Public runtime API:
 For a standalone development harness with its own `Repo` and `Oban`, use
 `examples/minimal_host_app`.
 
+To activate cron triggers in a host app, opt in through the host app's Oban
+plugins:
+
+```elixir
+config :my_app, Oban,
+  repo: MyApp.Repo,
+  plugins: [
+    {SquidMesh.Plugins.Cron,
+     workflows: [
+       MyApp.Workflows.DailyStandup
+     ]}
+  ],
+  queues: [squid_mesh: 10]
+```
+
+`SquidMesh.Plugins.Cron` uses Oban's cron scheduler underneath. Squid Mesh does
+not run a separate scheduler or manage `oban_jobs` itself.
+
 ## Runtime Overview
 
 - Squid Mesh defines workflow structure, run state, retries, replay, and inspection.
@@ -224,7 +242,8 @@ short path and uses that default trigger automatically.
 Trigger boundary today:
 
 - `manual()` triggers are runnable through the public API
-- `cron(...)` triggers are validated and stored in workflow definitions, but Squid Mesh does not activate scheduling for them yet
+- `cron(...)` triggers are activated by opting the workflow into `SquidMesh.Plugins.Cron` under the host app's Oban configuration
+- cron activation is static at boot today, matching Oban's built-in cron plugin model
 
 Workflows can mix custom step modules and built-in primitives:
 

@@ -63,8 +63,28 @@ Trigger names are business-oriented entrypoints such as `:payment_recovery` or
 Current boundary:
 
 - trigger metadata is validated and stored in the workflow definition
-- manual triggers are runnable today through the public API
-- cron triggers are declarative metadata today and are not scheduled by Squid Mesh yet
+- manual triggers are runnable through the public API
+- cron triggers are activated by opting workflows into `SquidMesh.Plugins.Cron`
+
+Host-app opt-in example:
+
+```elixir
+config :my_app, Oban,
+  repo: MyApp.Repo,
+  plugins: [
+    {SquidMesh.Plugins.Cron,
+     workflows: [
+       MyApp.Workflows.DailyStandup
+     ]}
+  ],
+  queues: [squid_mesh: 10]
+```
+
+Current cron boundary:
+
+- Squid Mesh declares cron intent in the workflow DSL
+- Oban performs the actual recurring scheduling
+- cron workflow registration is static at boot today
 
 ## Payload
 
@@ -239,5 +259,5 @@ Not implemented today:
 
 - parallel step execution
 - conditional branching beyond transition outcomes
-- automatic cron scheduling inside Squid Mesh
+- dynamic cron registration after boot
 - custom reclaim logic for interrupted in-flight step ownership

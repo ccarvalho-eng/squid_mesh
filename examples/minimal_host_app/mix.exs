@@ -38,7 +38,7 @@ defmodule MinimalHostApp.MixProject do
       setup: ["deps.get", "squid_mesh.install", "ecto.setup"],
       "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      smoke: ["run -e 'MinimalHostApp.Smoke.run!()'"]
+      smoke: ["run -e 'MinimalHostApp.Smoke.run_all!()'"]
     ]
   end
 end

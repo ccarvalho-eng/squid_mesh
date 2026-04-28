@@ -2,11 +2,13 @@ defmodule SquidMeshTest do
   use SquidMesh.DataCase
 
   alias SquidMesh.Persistence.Run, as: RunRecord
+  alias SquidMesh.Persistence.Run, as: PersistedRun
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.StepAttempt, as: PublicStepAttempt
   alias SquidMesh.StepRun, as: PublicStepRun
   alias SquidMesh.TestSupport.LazyWorkflow
+  alias SquidMesh.Workers.CronTriggerWorker
 
   defmodule InvoiceReminderWorkflow do
     use SquidMesh.Workflow
@@ -145,6 +147,24 @@ defmodule SquidMeshTest do
 
       step(:deliver_invoice, WorkflowWithPayloadDefaults.DeliverInvoice)
       transition(:deliver_invoice, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule DailyStandupWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :daily_standup do
+        cron("@reboot", timezone: "Etc/UTC")
+
+        payload do
+          field(:team_id, :string, default: "backend")
+          field(:prompt_date, :string, default: {:today, :iso8601})
+        end
+      end
+
+      step(:announce_prompt, :log, message: "posting daily standup")
+      transition(:announce_prompt, on: :ok, to: :complete)
     end
   end
 
@@ -329,6 +349,41 @@ defmodule SquidMeshTest do
                )
 
       assert Repo.aggregate(RunRecord, :count, :id) == before_count
+    end
+  end
+
+  describe "cron trigger activation" do
+    test "validates cron plugin workflows before startup" do
+      assert :ok = SquidMesh.Plugins.Cron.validate(workflows: [DailyStandupWorkflow])
+
+      assert {:error, message} =
+               SquidMesh.Plugins.Cron.validate(workflows: [InvoiceReminderWorkflow])
+
+      assert message =~ "must define a cron trigger"
+    end
+
+    test "starts a cron workflow run from an Oban cron job" do
+      job = %Oban.Job{
+        args: %{
+          "workflow" => "Elixir.SquidMeshTest.DailyStandupWorkflow",
+          "trigger" => "daily_standup"
+        }
+      }
+
+      assert :ok = CronTriggerWorker.perform(job)
+
+      assert_enqueued(
+        worker: SquidMesh.Workers.StepWorker,
+        queue: "squid_mesh",
+        args: %{"step" => "announce_prompt"}
+      )
+
+      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+
+      assert persisted_run.workflow == "Elixir.SquidMeshTest.DailyStandupWorkflow"
+      assert persisted_run.trigger == "daily_standup"
+      assert persisted_run.input["team_id"] == "backend"
+      assert is_binary(persisted_run.input["prompt_date"])
     end
   end
 

@@ -23,4 +23,9 @@ defmodule MinimalHostApp.WorkflowRuns do
   def inspect_payment_recovery(run_id) do
     SquidMesh.inspect_run(run_id)
   end
+
+  @spec list_daily_digest_runs() :: {:ok, [SquidMesh.Run.t()]} | {:error, term()}
+  def list_daily_digest_runs do
+    SquidMesh.list_runs(workflow: MinimalHostApp.Workflows.DailyDigest)
+  end
 end
