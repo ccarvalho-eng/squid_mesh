@@ -55,6 +55,22 @@ defmodule SquidMesh.Workflow.Validation do
   def workflow_payload!([trigger]), do: trigger.payload
   def workflow_payload!(_other), do: []
 
+  @spec derive_retries([map()]) :: [map()]
+  def derive_retries(steps) do
+    Enum.flat_map(steps, fn step ->
+      case Keyword.get(step.opts, :retry) do
+        nil ->
+          []
+
+        opts when is_list(opts) ->
+          [%{step: step.name, opts: opts}]
+
+        opts ->
+          [%{step: step.name, opts: opts}]
+      end
+    end)
+  end
+
   defp validation_errors(definition) do
     step_names = Enum.map(definition.steps, & &1.name)
 
@@ -180,10 +196,14 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp validate_retry_opts(errors, %{step: step, opts: opts}) do
-    max_attempts = Keyword.get(opts, :max_attempts)
+    if is_list(opts) do
+      max_attempts = Keyword.get(opts, :max_attempts)
 
-    if is_integer(max_attempts) and max_attempts > 0 do
-      errors
+      if is_integer(max_attempts) and max_attempts > 0 do
+        errors
+      else
+        ["retry for #{inspect(step)} must define a positive :max_attempts" | errors]
+      end
     else
       ["retry for #{inspect(step)} must define a positive :max_attempts" | errors]
     end

@@ -16,9 +16,8 @@ defmodule SquidMesh.RunStoreTest do
         end
       end
 
-      step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice)
+      step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice, retry: [max_attempts: 1])
       transition(:load_invoice, on: :ok, to: :complete)
-      retry(:load_invoice, max_attempts: 1)
     end
   end
 

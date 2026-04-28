@@ -16,12 +16,10 @@ defmodule SquidMesh.Runtime.RetryPolicyTest do
       end
 
       step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice)
-      step(:send_email, InvoiceReminderWorkflow.SendEmail)
+      step(:send_email, InvoiceReminderWorkflow.SendEmail, retry: [max_attempts: 3])
 
       transition(:load_invoice, on: :ok, to: :send_email)
       transition(:send_email, on: :ok, to: :complete)
-
-      retry(:send_email, max_attempts: 3)
     end
   end
 

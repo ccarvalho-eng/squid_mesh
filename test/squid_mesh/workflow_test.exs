@@ -15,14 +15,12 @@ defmodule SquidMesh.WorkflowTest do
       end
 
       step(:load_invoice, InvoiceReminder.LoadInvoice)
-      step(:send_email, InvoiceReminder.SendEmail)
+      step(:send_email, InvoiceReminder.SendEmail, retry: [max_attempts: 3])
       step(:record_delivery, InvoiceReminder.RecordDelivery)
 
       transition(:load_invoice, on: :ok, to: :send_email)
       transition(:send_email, on: :ok, to: :record_delivery)
       transition(:record_delivery, on: :ok, to: :complete)
-
-      retry(:send_email, max_attempts: 3)
     end
   end
 
@@ -48,7 +46,11 @@ defmodule SquidMesh.WorkflowTest do
 
     assert definition.steps == [
              %{name: :load_invoice, module: InvoiceReminder.LoadInvoice, opts: []},
-             %{name: :send_email, module: InvoiceReminder.SendEmail, opts: []},
+             %{
+               name: :send_email,
+               module: InvoiceReminder.SendEmail,
+               opts: [retry: [max_attempts: 3]]
+             },
              %{name: :record_delivery, module: InvoiceReminder.RecordDelivery, opts: []}
            ]
 
@@ -68,7 +70,7 @@ defmodule SquidMesh.WorkflowTest do
   test "exposes the workflow contract shape" do
     assert InvoiceReminder.__workflow__(:contract) == %{
              required: [:trigger, :step],
-             optional: [:transition, :retry]
+             optional: [:transition]
            }
   end
 
@@ -127,7 +129,7 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
-  test "fails when retry policy is malformed" do
+  test "fails when step retry policy is malformed" do
     assert_compile_error(
       """
       defmodule WorkflowWithInvalidRetry do
@@ -138,8 +140,7 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:send_email, WorkflowWithInvalidRetry.SendEmail)
-          retry(:send_email, max_attempts: 0)
+          step(:send_email, WorkflowWithInvalidRetry.SendEmail, retry: [max_attempts: 0])
         end
       end
       """,
@@ -147,10 +148,10 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
-  test "fails when retry references an unknown step" do
-    assert_compile_error(
-      """
-      defmodule WorkflowWithUnknownRetryStep do
+  test "does not expose retries when no step config defines them" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithoutRetries do
         use SquidMesh.Workflow
 
         workflow do
@@ -158,12 +159,31 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:send_email, WorkflowWithUnknownRetryStep.SendEmail)
-          retry(:record_delivery, max_attempts: 3)
+          step(:send_email, WorkflowWithoutRetries.SendEmail)
+          transition(:send_email, on: :ok, to: :complete)
+        end
+      end
+      """)
+
+    assert module.__workflow__(:retries) == []
+  end
+
+  test "fails when step retry is not a keyword list" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidRetryShape do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:send_email, WorkflowWithInvalidRetryShape.SendEmail, retry: 3)
         end
       end
       """,
-      "retry references unknown step: :record_delivery"
+      "retry for :send_email must define a positive :max_attempts"
     )
   end
 
