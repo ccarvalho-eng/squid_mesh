@@ -48,18 +48,18 @@ defmodule SquidMesh.Runtime.StepExecutor do
     :ok
   end
 
-  defp execute_run(_config, %Run{current_step: current_step}, expected_step)
-       when not is_nil(expected_step) and is_atom(expected_step) and current_step != expected_step do
-    :ok
-  end
-
   defp execute_run(config, %Run{status: :cancelling} = run, _expected_step) do
     case RunStore.transition_run(config.repo, run.id, :cancelled, %{
-           current_step: run.current_step
+           current_step: nil
          }) do
       {:ok, _cancelled_run} -> :ok
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp execute_run(_config, %Run{current_step: current_step}, expected_step)
+       when not is_nil(expected_step) and is_atom(expected_step) and current_step != expected_step do
+    :ok
   end
 
   defp execute_run(

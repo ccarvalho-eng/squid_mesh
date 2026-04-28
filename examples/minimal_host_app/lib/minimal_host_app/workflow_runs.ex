@@ -13,15 +13,35 @@ defmodule MinimalHostApp.WorkflowRuns do
           required(:gateway_url) => String.t()
         }
 
+  @type cancellable_wait_attrs :: %{
+          required(:account_id) => String.t()
+        }
+
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
     SquidMesh.start_run(MinimalHostApp.Workflows.PaymentRecovery, :payment_recovery, attrs)
   end
 
+  @spec start_cancellable_wait(cancellable_wait_attrs()) ::
+          {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def start_cancellable_wait(attrs) when is_map(attrs) do
+    SquidMesh.start_run(MinimalHostApp.Workflows.CancellableWait, attrs)
+  end
+
   @spec inspect_payment_recovery(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
   def inspect_payment_recovery(run_id) do
     SquidMesh.inspect_run(run_id)
+  end
+
+  @spec inspect_run(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def inspect_run(run_id) do
+    SquidMesh.inspect_run(run_id)
+  end
+
+  @spec cancel_run(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def cancel_run(run_id) do
+    SquidMesh.cancel_run(run_id)
   end
 
   @spec list_daily_digest_runs() :: {:ok, [SquidMesh.Run.t()]} | {:error, term()}

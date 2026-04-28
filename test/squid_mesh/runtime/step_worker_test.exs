@@ -157,6 +157,49 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     end
   end
 
+  defmodule CancellationCompletionWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_settlement, :wait, duration: 10)
+      step(:record_delivery, CancellationCompletionWorkflow.RecordDelivery)
+
+      transition(:wait_for_settlement, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule CancellationCompletionWorkflow.RecordDelivery do
+    use Jido.Action,
+      name: "record_delivery",
+      description: "Blocks until the test allows completion",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @coordination_key {__MODULE__, :test_pid}
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      test_pid = :persistent_term.get(@coordination_key)
+      send(test_pid, {:record_delivery_started, self(), account_id})
+
+      receive do
+        :continue -> {:ok, %{delivery: %{account_id: account_id, status: "recorded"}}}
+      after
+        5_000 -> {:error, %{message: "timed out waiting for test continuation"}}
+      end
+    end
+  end
+
   defmodule MissingOban do
   end
 
@@ -415,6 +458,67 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert Enum.map(step_run.attempts, fn attempt ->
                {attempt.attempt_number, attempt.status}
              end) == [{1, :failed}]
+    end
+
+    test "converges cancelling runs to cancelled even when a stale scheduled step arrives" do
+      assert {:ok, run} =
+               SquidMesh.start_run(BuiltInWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+
+      assert {:ok, cancelling_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+      assert cancelling_run.status == :cancelling
+      assert cancelling_run.current_step == nil
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "log_delivery"}
+               })
+
+      assert {:ok, cancelled_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert cancelled_run.status == :cancelled
+      assert cancelled_run.current_step == nil
+    end
+
+    test "converges to cancelled when a post-wait step finishes after cancellation is requested" do
+      :persistent_term.put({CancellationCompletionWorkflow.RecordDelivery, :test_pid}, self())
+
+      on_exit(fn ->
+        :persistent_term.erase({CancellationCompletionWorkflow.RecordDelivery, :test_pid})
+      end)
+
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 CancellationCompletionWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+
+      assert {:ok, ready_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert ready_run.status == :running
+      assert ready_run.current_step == :record_delivery
+
+      task =
+        Task.async(fn ->
+          StepWorker.perform(%Job{
+            args: %{"run_id" => run.id, "step" => "record_delivery"}
+          })
+        end)
+
+      assert_receive {:record_delivery_started, delivery_pid, "acct_123"}
+
+      assert {:ok, cancelling_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+      assert cancelling_run.status == :cancelling
+
+      send(delivery_pid, :continue)
+
+      assert :ok = Task.await(task)
+
+      assert {:ok, cancelled_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert cancelled_run.status == :cancelled
+      assert cancelled_run.current_step == nil
     end
   end
 end

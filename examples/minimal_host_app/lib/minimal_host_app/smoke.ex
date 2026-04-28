@@ -58,6 +58,19 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
+  @spec run_cancellation!() :: SquidMesh.Run.t()
+  def run_cancellation! do
+    ensure_runtime_started()
+
+    case run_cancellation_smoke() do
+      {:ok, cancelled_run} ->
+        cancelled_run
+
+      {:error, reason} ->
+        raise "cancellation smoke test failed: #{inspect(reason)}"
+    end
+  end
+
   @spec wait_for_execution() :: :ok
   defp wait_for_execution do
     if manual_oban_testing?() do
@@ -74,12 +87,34 @@ defmodule MinimalHostApp.Smoke do
     wait_for_execution()
   end
 
+  @spec run_cancellation_smoke() :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  defp run_cancellation_smoke do
+    with {:ok, run} <- WorkflowRuns.start_cancellable_wait(%{account_id: "acct_demo"}),
+         :ok <- wait_for_execution(),
+         {:ok, cancelling_run} <- WorkflowRuns.cancel_run(run.id),
+         :ok <- ensure_cancelling(cancelling_run),
+         :ok <-
+           SquidMesh.Workers.StepWorker.perform(%Oban.Job{
+             args: %{"run_id" => run.id, "step" => "record_delivery"}
+           }),
+         {:ok, cancelled_run} <- await_terminal_run(run.id, @poll_attempts) do
+      {:ok, cancelled_run}
+    else
+      {:error, _reason} = error -> error
+      other -> {:error, other}
+    end
+  end
+
+  @spec ensure_cancelling(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_cancellation_status}
+  defp ensure_cancelling(%SquidMesh.Run{status: :cancelling}), do: :ok
+  defp ensure_cancelling(%SquidMesh.Run{}), do: {:error, :unexpected_cancellation_status}
+
   @spec await_terminal_run(Ecto.UUID.t(), non_neg_integer()) ::
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   defp await_terminal_run(run_id, attempts_remaining)
 
   defp await_terminal_run(run_id, attempts_remaining) when attempts_remaining > 0 do
-    case WorkflowRuns.inspect_payment_recovery(run_id) do
+    case WorkflowRuns.inspect_run(run_id) do
       {:ok, run} when run.status in [:completed, :failed, :cancelled] ->
         {:ok, run}
 
