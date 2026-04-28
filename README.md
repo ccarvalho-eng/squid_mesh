@@ -55,12 +55,11 @@ Public runtime API:
 - `SquidMesh.replay_run/2`
 
 ## How It Fits Together
-    
+
 - Squid Mesh defines workflow structure, run state, retries, replay, and inspection.
 - Oban handles durable background execution of workflow steps.
 - Jido powers step behavior and action execution inside the runtime.
-- Postgres stores the durable source of truth for runs, steps, and attempts.  
-    
+- Postgres stores the durable source of truth for runs, steps, and attempts.
 ## Workflow Example
 
 ```elixir
@@ -85,7 +84,7 @@ defmodule Billing.Workflows.PaymentRecovery do
       level: :info
     )
     step(:check_gateway_status, Billing.Steps.CheckGatewayStatus,
-      retry: [max_attempts: 5]
+      retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
     )
     step(:notify_customer, Billing.Steps.NotifyCustomer)
 
@@ -154,6 +153,17 @@ The same workflow can mix custom step modules and built-in primitives:
 - module steps for domain behavior and external integrations
 - `:wait` for timed pauses between steps
 - `:log` for durable, declarative operational markers in the flow
+
+Retry behavior stays on the step that owns the work:
+
+```elixir
+step(:check_gateway_status, Billing.Steps.CheckGatewayStatus,
+  retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
+)
+```
+
+That keeps retries declarative while Squid Mesh and Oban handle delayed
+rescheduling underneath.
 
 Run lifecycle states currently include:
 
