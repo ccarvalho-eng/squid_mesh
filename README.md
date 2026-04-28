@@ -87,6 +87,7 @@ For a standalone development harness with its own `Repo` and `Oban`, use
 - Squid Mesh decides whether a step should run, retry, fail, complete, or no-op.
 - Oban owns job durability, scheduling, and redelivery.
 - Step retry policy is declared in the workflow and scheduled through Oban.
+- Built-in `:wait` schedules delayed continuation through Oban instead of sleeping inside a worker.
 - Step implementations should be idempotent when they perform external side effects.
 - Tool adapters report the first transport or status failure; workflow retries stay at the step layer.
 
@@ -220,10 +221,15 @@ end
 If a workflow defines a single trigger, `SquidMesh.start_run/2` remains the
 short path and uses that default trigger automatically.
 
+Trigger boundary today:
+
+- `manual()` triggers are runnable through the public API
+- `cron(...)` triggers are validated and stored in workflow definitions, but Squid Mesh does not activate scheduling for them yet
+
 Workflows can mix custom step modules and built-in primitives:
 
 - module steps for domain behavior and external integrations
-- `:wait` for timed pauses between steps
+- `:wait` for delayed continuation between steps
 - `:log` for durable, declarative operational markers in the flow
 
 Workflow steps can also call tool adapters through the shared boundary:

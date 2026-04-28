@@ -137,24 +137,27 @@ defmodule SquidMesh.Runtime.StepExecutor do
          run,
          step_run
        ) do
-    attempt_number = AttemptStore.attempt_count(config.repo, step_run.id) + 1
+    with {:ok, attempt} <- AttemptStore.begin_attempt(config.repo, step_run.id) do
+      attempt_number = attempt.attempt_number
 
-    Observability.with_step_metadata(run, current_step, attempt_number, fn ->
-      Observability.emit_step_started(run, current_step, attempt_number)
+      Observability.with_step_metadata(run, current_step, attempt_number, fn ->
+        Observability.emit_step_started(run, current_step, attempt_number)
 
-      started_at = System.monotonic_time()
+        started_at = System.monotonic_time()
 
-      current_step
-      |> execute_step(step, input, run)
-      |> persist_execution_result(
-        config,
-        definition,
-        run,
-        step_run.id,
-        attempt_number,
-        started_at
-      )
-    end)
+        current_step
+        |> execute_step(step, input, run)
+        |> persist_execution_result(
+          config,
+          definition,
+          run,
+          step_run.id,
+          attempt.id,
+          attempt_number,
+          started_at
+        )
+      end)
+    end
   end
 
   @spec build_step_input(Run.t()) :: map()
@@ -166,7 +169,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   end
 
   @spec execute_step(atom(), WorkflowDefinition.step(), map(), Run.t()) ::
-          {:ok, map()} | {:error, term()}
+          {:ok, map(), keyword()} | {:error, term()}
   defp execute_step(_step_name, %{module: built_in_kind, opts: opts}, input, run)
        when built_in_kind in [:wait, :log] do
     BuiltInStep.execute(built_in_kind, opts, input, run)
@@ -181,38 +184,40 @@ defmodule SquidMesh.Runtime.StepExecutor do
     }
 
     case Jido.Exec.run(action, input, context) do
-      {:ok, output} when is_map(output) -> {:ok, output}
-      {:ok, output, _extras} when is_map(output) -> {:ok, output}
+      {:ok, output} when is_map(output) -> {:ok, output, []}
+      {:ok, output, _extras} when is_map(output) -> {:ok, output, []}
       {:error, reason} -> {:error, reason}
     end
   end
 
   @spec persist_execution_result(
-          {:ok, map()} | {:error, term()},
+          {:ok, map(), keyword()} | {:error, term()},
           Config.t(),
           WorkflowDefinition.t(),
           Run.t(),
+          Ecto.UUID.t(),
           Ecto.UUID.t(),
           pos_integer(),
           integer()
         ) :: :ok | {:error, execution_error() | term()}
   defp persist_execution_result(
-         {:ok, output},
+         {:ok, output, execution_opts},
          config,
          definition,
          run,
          step_run_id,
+         attempt_id,
          attempt_number,
          started_at
        ) do
     duration = System.monotonic_time() - started_at
 
     with {:ok, _attempt} <-
-           AttemptStore.record_attempt(config.repo, step_run_id, attempt_number, "completed"),
+           AttemptStore.complete_attempt(config.repo, attempt_id),
          {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, output),
          {:ok, target} <- WorkflowDefinition.transition_target(definition, run.current_step, :ok) do
       Observability.emit_step_completed(run, run.current_step, attempt_number, duration)
-      advance_after_success(config, run, target, output)
+      advance_after_success(config, run, target, output, execution_opts)
     end
   end
 
@@ -222,6 +227,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
          _definition,
          run,
          step_run_id,
+         attempt_id,
          attempt_number,
          started_at
        ) do
@@ -229,9 +235,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
     duration = System.monotonic_time() - started_at
 
     with {:ok, _attempt} <-
-           AttemptStore.record_attempt(config.repo, step_run_id, attempt_number, "failed", %{
-             error: error
-           }),
+           AttemptStore.fail_attempt(config.repo, attempt_id, error),
          {:ok, _step_run} <- StepRunStore.fail_step(config.repo, step_run_id, error) do
       Observability.emit_step_failed(run, run.current_step, attempt_number, duration, error)
 
@@ -273,9 +277,9 @@ defmodule SquidMesh.Runtime.StepExecutor do
     end
   end
 
-  @spec advance_after_success(Config.t(), Run.t(), atom() | :complete, map()) ::
+  @spec advance_after_success(Config.t(), Run.t(), atom() | :complete, map(), keyword()) ::
           :ok | {:error, execution_error() | term()}
-  defp advance_after_success(config, run, :complete, output) do
+  defp advance_after_success(config, run, :complete, output, _execution_opts) do
     context = Map.merge(run.context || %{}, output)
 
     case RunStore.transition_run(config.repo, run.id, :completed, %{
@@ -288,8 +292,10 @@ defmodule SquidMesh.Runtime.StepExecutor do
     end
   end
 
-  defp advance_after_success(config, run, next_step, output) when is_atom(next_step) do
+  defp advance_after_success(config, run, next_step, output, execution_opts)
+       when is_atom(next_step) do
     context = Map.merge(run.context || %{}, output)
+    dispatch_opts = Keyword.take(execution_opts, [:schedule_in])
 
     case RunStore.update_and_dispatch_run(
            config.repo,
@@ -299,7 +305,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
              current_step: next_step,
              last_error: nil
            },
-           fn updated_run -> Dispatcher.dispatch_run(config, updated_run) end
+           fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end
          ) do
       {:ok, _updated_run} ->
         :ok

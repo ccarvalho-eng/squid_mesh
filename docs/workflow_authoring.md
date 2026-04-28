@@ -119,6 +119,7 @@ Built-in step options supported today:
 
 - `:wait` requires `duration`
 - `:log` requires `message` and accepts `level`
+- `:wait` uses Oban-delayed continuation so long waits do not block a worker slot
 
 ## Step Modules
 

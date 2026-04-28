@@ -45,5 +45,6 @@ defmodule SquidMesh.Persistence.StepRun do
     |> cast(attrs, @required_fields ++ @optional_fields)
     |> validate_required(@required_fields)
     |> foreign_key_constraint(:run_id)
+    |> unique_constraint([:run_id, :step])
   end
 end

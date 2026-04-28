@@ -234,13 +234,28 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, run} =
                SquidMesh.start_run(BuiltInWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
-      assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
 
-      assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
-      assert completed_run.status == :completed
-      assert completed_run.current_step == nil
-      assert completed_run.last_error == nil
+      assert {:ok, waiting_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert waiting_run.status == :running
+      assert waiting_run.current_step == :log_delivery
+      assert waiting_run.last_error == nil
+
+      assert %Job{} =
+               scheduled_job =
+               Repo.one!(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "scheduled" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' = 'log_delivery'", job.args),
+                   order_by: [desc: job.inserted_at],
+                   limit: 1
+                 )
+               )
+
+      assert DateTime.compare(scheduled_job.scheduled_at, scheduled_job.inserted_at) == :gt
 
       step_runs =
         Repo.all(
@@ -251,8 +266,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         )
 
       assert Enum.map(step_runs, &{&1.step, &1.status}) == [
-               {"wait_for_settlement", "completed"},
-               {"log_delivery", "completed"}
+               {"wait_for_settlement", "completed"}
              ]
     end
 

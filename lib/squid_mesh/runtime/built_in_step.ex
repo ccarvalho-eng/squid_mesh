@@ -12,16 +12,13 @@ defmodule SquidMesh.Runtime.BuiltInStep do
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type built_in_step_error :: {:unknown_built_in_step, WorkflowDefinition.built_in_step_kind()}
-  @type execution_result :: {:ok, map()} | {:error, built_in_step_error()}
+  @type execution_result :: {:ok, map(), keyword()} | {:error, built_in_step_error()}
 
   @spec execute(WorkflowDefinition.built_in_step_kind(), keyword(), map(), Run.t()) ::
           execution_result()
   def execute(:wait, opts, _input, _run) do
-    opts
-    |> Keyword.fetch!(:duration)
-    |> Process.sleep()
-
-    {:ok, %{}}
+    duration = Keyword.fetch!(opts, :duration)
+    {:ok, %{}, [schedule_in: ceil(duration / 1_000)]}
   end
 
   def execute(:log, opts, _input, _run) do
@@ -30,7 +27,7 @@ defmodule SquidMesh.Runtime.BuiltInStep do
 
     Logger.log(level, message)
 
-    {:ok, %{}}
+    {:ok, %{}, []}
   end
 
   def execute(kind, _opts, _input, _run), do: {:error, {:unknown_built_in_step, kind}}

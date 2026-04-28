@@ -6,7 +6,7 @@ defmodule SquidMesh.StepAttempt do
   applications can inspect retry history without depending on Ecto structs.
   """
 
-  @type status :: :completed | :failed
+  @type status :: :running | :completed | :failed
 
   @type t :: %__MODULE__{}
 

@@ -452,6 +452,7 @@ defmodule SquidMesh.RunStore do
   defp deserialize_step_status("failed"), do: :failed
 
   @spec deserialize_attempt_status(String.t()) :: StepAttempt.status()
+  defp deserialize_attempt_status("running"), do: :running
   defp deserialize_attempt_status("completed"), do: :completed
   defp deserialize_attempt_status("failed"), do: :failed
 

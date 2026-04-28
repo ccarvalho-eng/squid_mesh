@@ -25,20 +25,57 @@ defmodule SquidMesh.AttemptStoreTest do
       })
       |> Repo.insert()
 
+    assert {:ok, attempt_one} = AttemptStore.begin_attempt(Repo, step_run.id)
+
     assert {:ok, attempt_one} =
-             AttemptStore.record_attempt(Repo, step_run.id, 1, "failed", %{
-               error: %{message: "timeout"}
-             })
+             AttemptStore.fail_attempt(Repo, attempt_one.id, %{message: "timeout"})
+
+    assert {:ok, attempt_two} = AttemptStore.begin_attempt(Repo, step_run.id)
 
     assert {:ok, attempt_two} =
-             AttemptStore.record_attempt(Repo, step_run.id, 2, "failed", %{
-               error: %{message: "still failing"}
-             })
+             AttemptStore.fail_attempt(Repo, attempt_two.id, %{message: "still failing"})
 
     assert attempt_one.attempt_number == 1
     assert attempt_two.attempt_number == 2
     assert AttemptStore.attempt_count(Repo, step_run.id) == 2
 
     assert AttemptStore.latest_attempt(Repo, step_run.id).attempt_number == 2
+  end
+
+  test "allocates unique attempt numbers under concurrent writers" do
+    {:ok, run} =
+      %RunRecord{}
+      |> RunRecord.changeset(%{
+        workflow: "Elixir.SquidMesh.AttemptStoreTest.Workflow",
+        trigger: "manual",
+        status: "pending",
+        input: %{}
+      })
+      |> Repo.insert()
+
+    {:ok, step_run} =
+      %StepRun{}
+      |> StepRun.changeset(%{
+        run_id: run.id,
+        step: "load_invoice",
+        status: "running"
+      })
+      |> Repo.insert()
+
+    attempts =
+      1..4
+      |> Task.async_stream(
+        fn _ ->
+          {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+          attempt
+        end,
+        max_concurrency: 4,
+        ordered: false,
+        timeout: 5_000
+      )
+      |> Enum.map(fn {:ok, attempt} -> attempt end)
+
+    assert Enum.sort(Enum.map(attempts, & &1.attempt_number)) == [1, 2, 3, 4]
+    assert AttemptStore.attempt_count(Repo, step_run.id) == 4
   end
 end
