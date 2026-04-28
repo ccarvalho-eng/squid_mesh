@@ -103,6 +103,29 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
+  @spec resolve_payload(t(), map()) ::
+          {:ok, map()} | {:error, {:invalid_payload, payload_error_details()}}
+  def resolve_payload(definition, payload) when is_map(payload) do
+    resolved_payload =
+      Enum.reduce(definition.payload, payload, fn field, acc ->
+        case Map.has_key?(acc, field.name) do
+          true ->
+            acc
+
+          false ->
+            case Keyword.fetch(field.opts, :default) do
+              {:ok, default} -> Map.put(acc, field.name, resolve_default!(default))
+              :error -> acc
+            end
+        end
+      end)
+
+    case validate_payload(definition, resolved_payload) do
+      :ok -> {:ok, resolved_payload}
+      {:error, _reason} = error -> error
+    end
+  end
+
   @spec entry_step(t()) :: atom()
   def entry_step(definition), do: definition.entry_step
 
@@ -172,4 +195,7 @@ defmodule SquidMesh.Workflow.Definition do
   defp input_matches_type?(value, :list), do: is_list(value)
   defp input_matches_type?(value, :atom), do: is_atom(value)
   defp input_matches_type?(_value, _unknown_type), do: true
+
+  defp resolve_default!({:today, :iso8601}), do: Date.utc_today() |> Date.to_iso8601()
+  defp resolve_default!(default), do: default
 end

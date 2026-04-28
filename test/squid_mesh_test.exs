@@ -64,6 +64,25 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule WorkflowWithPayloadDefaults do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :invoice_delivery do
+        manual()
+
+        payload do
+          field(:team_id, :string, default: "backend")
+          field(:prompt_date, :string, default: {:today, :iso8601})
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:deliver_invoice, WorkflowWithPayloadDefaults.DeliverInvoice)
+      transition(:deliver_invoice, on: :ok, to: :complete)
+    end
+  end
+
   test "configures an application supervisor" do
     assert Application.spec(:squid_mesh, :mod) == {SquidMesh.Application, []}
   end
@@ -171,6 +190,40 @@ defmodule SquidMeshTest do
                  %{account_id: "acct_123", invoice_id: 123},
                  repo: Repo
                )
+    end
+
+    test "applies payload defaults before persistence" do
+      assert {:ok, %Run{} = run} =
+               SquidMesh.start_run(
+                 WorkflowWithPayloadDefaults,
+                 %{invoice_id: "inv_456"},
+                 repo: Repo
+               )
+
+      assert run.payload == %{
+               team_id: "backend",
+               prompt_date: Date.utc_today() |> Date.to_iso8601(),
+               invoice_id: "inv_456"
+             }
+    end
+
+    test "allows provided payload values to override defaults" do
+      assert {:ok, %Run{} = run} =
+               SquidMesh.start_run(
+                 WorkflowWithPayloadDefaults,
+                 %{
+                   invoice_id: "inv_456",
+                   team_id: "payments",
+                   prompt_date: "2026-01-15"
+                 },
+                 repo: Repo
+               )
+
+      assert run.payload == %{
+               team_id: "payments",
+               prompt_date: "2026-01-15",
+               invoice_id: "inv_456"
+             }
     end
   end
 
