@@ -81,3 +81,4 @@ end
 ## Documentation
 
 - [Host app integration](docs/host_app_integration.md)
+- [Example host app harness](examples/minimal_host_app/README.md)
