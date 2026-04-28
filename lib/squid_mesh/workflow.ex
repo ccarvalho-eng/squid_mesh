@@ -30,6 +30,8 @@ defmodule SquidMesh.Workflow do
     optional: [:input, :transition, :retry]
   }
 
+  alias SquidMesh.Workflow.Validation
+
   defmacro __using__(_opts) do
     quote do
       import SquidMesh.Workflow
@@ -102,6 +104,8 @@ defmodule SquidMesh.Workflow do
       transitions: transitions,
       retries: retries
     }
+
+    Validation.validate!(definition, env)
 
     quote do
       @doc false
