@@ -7,7 +7,7 @@ This example shows how an application can:
 - configure Squid Mesh with its own `Repo` and `Oban`
 - expose workflow operations through an application-facing module
 - activate cron workflows through the host app's Oban plugins
-- run a repeatable smoke path during development
+- run repeatable smoke, resilience, and bounded soak paths during development
 
 ## Setup
 
@@ -59,6 +59,35 @@ The smoke task:
 - waits for execution and inspects the completed payment recovery run
 - activates the example cron workflow through the host app's Oban-backed cron plugin
 - verifies the cron-triggered run completes as well
+
+## Restart Resilience
+
+Run the restart resilience verification:
+
+```sh
+MIX_ENV=test mix example.resilience
+```
+
+This path verifies:
+
+- queued work survives an Oban restart boundary
+- delayed work survives an Oban restart boundary
+- retrying work survives an Oban restart boundary
+
+## Bounded Soak And Load
+
+Run the bounded soak and load verification:
+
+```sh
+MIX_ENV=test mix example.soak
+```
+
+This path is intentionally not a benchmark. It drives a bounded mix of:
+
+- concurrent successful workflow runs
+- retried workflow runs
+- replayed workflow runs
+- cancelled workflow runs
 
 ## Example Boundary
 
