@@ -347,6 +347,74 @@ defmodule SquidMesh.WorkflowTest do
            ]
   end
 
+  test "supports declarative built-in steps" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithBuiltInSteps do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:wait_for_settlement, :wait, duration: 250)
+          step(:log_delivery, :log, message: "delivery completed", level: :info)
+
+          transition(:wait_for_settlement, on: :ok, to: :log_delivery)
+          transition(:log_delivery, on: :ok, to: :complete)
+        end
+      end
+      """)
+
+    assert module.workflow_definition().steps == [
+             %{name: :wait_for_settlement, module: :wait, opts: [duration: 250]},
+             %{
+               name: :log_delivery,
+               module: :log,
+               opts: [message: "delivery completed", level: :info]
+             }
+           ]
+  end
+
+  test "fails when a built-in wait step is missing duration" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidWaitStep do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:wait_for_settlement, :wait)
+        end
+      end
+      """,
+      "built-in step :wait_for_settlement requires a positive :duration option"
+    )
+  end
+
+  test "fails when a built-in log step is missing message" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidLogStep do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:log_delivery, :log, level: :warning)
+        end
+      end
+      """,
+      "built-in step :log_delivery requires a non-empty :message option"
+    )
+  end
+
   test "fails when a payload default does not match the declared field type" do
     assert_compile_error(
       """

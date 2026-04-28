@@ -1,6 +1,7 @@
 defmodule SquidMesh.Workflow.Definition do
   @moduledoc false
 
+  @type built_in_step_kind :: :wait | :log
   @type payload_field :: %{name: atom(), type: atom(), opts: keyword()}
   @type trigger_type :: :manual | :cron
   @type trigger :: %{
@@ -9,7 +10,7 @@ defmodule SquidMesh.Workflow.Definition do
           config: map(),
           payload: [payload_field()]
         }
-  @type step :: %{name: atom(), module: module(), opts: keyword()}
+  @type step :: %{name: atom(), module: module() | built_in_step_kind(), opts: keyword()}
   @type transition :: %{from: atom(), on: atom(), to: atom()}
   @type retry :: %{step: atom(), opts: keyword()}
 
@@ -145,10 +146,10 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
-  @spec step_module(t(), atom()) :: {:ok, module()} | {:error, {:unknown_step, atom()}}
-  def step_module(definition, step_name) when is_atom(step_name) do
+  @spec step(t(), atom()) :: {:ok, step()} | {:error, {:unknown_step, atom()}}
+  def step(definition, step_name) when is_atom(step_name) do
     case Enum.find(definition.steps, &(&1.name == step_name)) do
-      %{module: module} -> {:ok, module}
+      %{} = step -> {:ok, step}
       nil -> {:error, {:unknown_step, step_name}}
     end
   end

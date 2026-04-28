@@ -99,6 +99,26 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     end
   end
 
+  defmodule BuiltInWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_settlement, :wait, duration: 10)
+      step(:log_delivery, :log, message: "delivery completed", level: :info)
+
+      transition(:wait_for_settlement, on: :ok, to: :log_delivery)
+      transition(:log_delivery, on: :ok, to: :complete)
+    end
+  end
+
   describe "workflow execution through Oban" do
     test "enqueues and executes the declared steps through Jido-backed actions" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
@@ -167,6 +187,32 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert step_run.status == "failed"
       assert step_run.last_error == %{"message" => "gateway timeout", "code" => "gateway_timeout"}
       assert AttemptStore.attempt_count(Repo, step_run.id) == 1
+    end
+
+    test "executes built-in wait and log steps declaratively" do
+      assert {:ok, run} =
+               SquidMesh.start_run(BuiltInWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert completed_run.status == :completed
+      assert completed_run.current_step == nil
+      assert completed_run.last_error == nil
+
+      step_runs =
+        Repo.all(
+          from(step_run in StepRun,
+            where: step_run.run_id == ^run.id,
+            order_by: [asc: step_run.inserted_at]
+          )
+        )
+
+      assert Enum.map(step_runs, &{&1.step, &1.status}) == [
+               {"wait_for_settlement", "completed"},
+               {"log_delivery", "completed"}
+             ]
     end
   end
 end

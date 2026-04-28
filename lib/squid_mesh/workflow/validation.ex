@@ -3,6 +3,8 @@ defmodule SquidMesh.Workflow.Validation do
 
   @terminal_transitions [:complete]
   @allowed_trigger_types [:manual, :cron]
+  @built_in_step_kinds [:wait, :log]
+  @log_levels [:debug, :info, :warning, :error]
 
   @spec validate!(map(), Macro.Env.t()) :: :ok
   def validate!(definition, env) do
@@ -79,6 +81,7 @@ defmodule SquidMesh.Workflow.Validation do
     |> validate_triggers(definition.triggers)
     |> validate_payload_defaults(payload_fields)
     |> require_steps(step_names)
+    |> validate_built_in_steps(definition.steps)
     |> validate_unique_step_names(step_names)
     |> validate_transitions(definition.transitions, step_names)
     |> validate_retries(definition.retries, step_names)
@@ -162,6 +165,57 @@ defmodule SquidMesh.Workflow.Validation do
 
   defp require_steps(errors, []), do: ["at least one step is required" | errors]
   defp require_steps(errors, _step_names), do: errors
+
+  defp validate_built_in_steps(errors, steps) do
+    Enum.reduce(steps, errors, fn step, acc ->
+      validate_built_in_step(acc, step)
+    end)
+  end
+
+  defp validate_built_in_step(errors, %{module: kind} = step) when kind in @built_in_step_kinds do
+    case kind do
+      :wait -> validate_wait_step(errors, step)
+      :log -> validate_log_step(errors, step)
+    end
+  end
+
+  defp validate_built_in_step(errors, _step), do: errors
+
+  defp validate_wait_step(errors, %{name: name, opts: opts}) do
+    duration = Keyword.get(opts, :duration)
+
+    if is_integer(duration) and duration > 0 do
+      errors
+    else
+      ["built-in step #{inspect(name)} requires a positive :duration option" | errors]
+    end
+  end
+
+  defp validate_log_step(errors, %{name: name, opts: opts}) do
+    errors
+    |> validate_log_message(name, opts)
+    |> validate_log_level(name, opts)
+  end
+
+  defp validate_log_message(errors, name, opts) do
+    case Keyword.get(opts, :message) do
+      message when is_binary(message) and message != "" ->
+        errors
+
+      _other ->
+        ["built-in step #{inspect(name)} requires a non-empty :message option" | errors]
+    end
+  end
+
+  defp validate_log_level(errors, name, opts) do
+    case Keyword.get(opts, :level, :info) do
+      level when level in @log_levels ->
+        errors
+
+      _other ->
+        ["built-in step #{inspect(name)} defines unsupported :level" | errors]
+    end
+  end
 
   defp validate_unique_step_names(errors, step_names) do
     duplicates =

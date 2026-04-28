@@ -10,6 +10,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   alias SquidMesh.Config
   alias SquidMesh.Run
   alias SquidMesh.RunStore
+  alias SquidMesh.Runtime.BuiltInStep
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.RetryPolicy
   alias SquidMesh.StepRunStore
@@ -52,14 +53,14 @@ defmodule SquidMesh.Runtime.StepExecutor do
   defp execute_run(config, %Run{workflow: workflow, current_step: current_step} = run)
        when is_atom(workflow) and is_atom(current_step) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         {:ok, action} <- WorkflowDefinition.step_module(definition, current_step),
+         {:ok, step} <- WorkflowDefinition.step(definition, current_step),
          {:ok, running_run} <- ensure_running(config.repo, run),
          input = build_step_input(running_run),
          {:ok, step_run} <-
            StepRunStore.start_step(config.repo, running_run.id, current_step, input),
          attempt_number <- AttemptStore.attempt_count(config.repo, step_run.id) + 1 do
       current_step
-      |> execute_action(action, input, running_run)
+      |> execute_step(step, input, running_run)
       |> persist_execution_result(config, definition, running_run, step_run.id, attempt_number)
     end
   end
@@ -87,8 +88,14 @@ defmodule SquidMesh.Runtime.StepExecutor do
     |> normalize_map_keys()
   end
 
-  @spec execute_action(atom(), module(), map(), Run.t()) :: {:ok, map()} | {:error, term()}
-  defp execute_action(step_name, action, input, run) do
+  @spec execute_step(atom(), WorkflowDefinition.step(), map(), Run.t()) ::
+          {:ok, map()} | {:error, term()}
+  defp execute_step(_step_name, %{module: built_in_kind, opts: opts}, input, run)
+       when built_in_kind in [:wait, :log] do
+    BuiltInStep.execute(built_in_kind, opts, input, run)
+  end
+
+  defp execute_step(step_name, %{module: action}, input, run) do
     context = %{
       run_id: run.id,
       workflow: run.workflow,
