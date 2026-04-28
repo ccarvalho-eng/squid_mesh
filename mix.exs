@@ -36,6 +36,8 @@ defmodule SquidMesh.MixProject do
   end
 
   defp deps do
-    []
+    [
+      {:ecto_sql, "~> 3.13"}
+    ]
   end
 end
