@@ -102,4 +102,4 @@ Current non-goals:
 - [Host app integration](host_app_integration.md)
 - [Tool adapters](tool_adapters.md)
 - [Observability](observability.md)
-- [ADR index](adr/README.md)
+- [ADR index](adr/index.md)

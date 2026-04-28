@@ -3,10 +3,20 @@
 
   <p><i>Workflow automation platform for Elixir applications.</i></p>
 
-  [![CI](https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml)
-  [![Hex pm](https://img.shields.io/hexpm/v/squid_mesh.svg)](https://hex.pm/packages/squid_mesh)
-  [![Hex Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/squid_mesh/0.1.0-alpha.1)
-  [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+  <p>
+    <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
+      <img alt="CI" src="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg" />
+    </a>
+    <a href="https://hex.pm/packages/squid_mesh">
+      <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh.svg" />
+    </a>
+    <a href="https://hexdocs.pm/squid_mesh">
+      <img alt="HexDocs" src="https://img.shields.io/badge/hex-docs-blue.svg" />
+    </a>
+    <a href="https://github.com/ccarvalho-eng/squid_mesh/blob/main/LICENSE">
+      <img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" />
+    </a>
+  </p>
 </div>
 
 Squid Mesh lets Phoenix and OTP applications define, run, inspect, replay, and
@@ -399,7 +409,7 @@ Run lifecycle states currently include:
 - [Observability](docs/observability.md)
 - [Architecture](docs/architecture.md)
 - [Production readiness](docs/production_readiness.md)
-- [ADR index](docs/adr/README.md)
+- [ADR index](docs/adr/index.md)
 - [Example host app harness](examples/minimal_host_app/README.md)
 
 ## Contributing
