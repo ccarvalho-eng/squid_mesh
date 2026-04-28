@@ -13,7 +13,9 @@ recover durable workflows in code.
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for
 > evaluation, local development, and integration work, but it is not yet
-> positioned as production-ready.
+> positioned as production-ready. See
+> [Production Readiness](docs/production_readiness.md) for the current
+> checklist and remaining bar.
 
 ## Requirements
 
@@ -23,12 +25,19 @@ recover durable workflows in code.
 - an existing `Oban` setup for background execution
 - Elixir step modules that can run as Jido actions
 
-Current verified toolchain:
+## Supported Baseline
 
-- Erlang/OTP `28.4.1`
-- Elixir `1.19.5-otp-28`
-- `Oban 2.21`
-- `Jido 2.0`
+Current verified baseline:
+
+| Component | Baseline |
+| --- | --- |
+| Elixir | `1.19.5-otp-28` |
+| Erlang/OTP | `28.4.1` |
+| Postgres | `15+` |
+| Oban | `2.21` and `2.22` |
+| Jido | `2.0+` |
+
+See [Compatibility Matrix](docs/compatibility.md) for support policy details.
 
 ## Installation
 
@@ -188,6 +197,7 @@ custom workflow step -> `SquidMesh.Tools` -> adapter (for example HTTP) -> exter
 - Squid Mesh decides whether a step should run, retry, fail, complete, or no-op.
 - Oban owns job durability, scheduling, and redelivery.
 - Step retry policy is declared in the workflow and scheduled through Oban.
+- Jido action retries are disabled at the Squid Mesh boundary so workflow attempts, persisted step attempts, and backoff policy stay aligned.
 - Built-in `:wait` schedules delayed continuation through Oban instead of sleeping inside a worker.
 - Step implementations should be idempotent when they perform external side effects.
 - Tool adapters report the first transport or status failure; workflow retries stay at the step layer.
@@ -369,11 +379,14 @@ Run lifecycle states currently include:
 
 ## Documentation
 
+- [Compatibility matrix](docs/compatibility.md)
 - [Workflow authoring guide](docs/workflow_authoring.md)
 - [Host app integration](docs/host_app_integration.md)
+- [Operations guide](docs/operations.md)
 - [Tool adapters](docs/tool_adapters.md)
 - [Observability](docs/observability.md)
 - [Architecture](docs/architecture.md)
+- [Production readiness](docs/production_readiness.md)
 - [ADR index](docs/adr/README.md)
 - [Example host app harness](examples/minimal_host_app/README.md)
 

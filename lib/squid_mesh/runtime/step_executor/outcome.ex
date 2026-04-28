@@ -45,7 +45,10 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       state: run.context || %{}
     }
 
-    case Jido.Exec.run(action, input, context) do
+    # Squid Mesh owns durable workflow-step retries through persisted attempts,
+    # Oban scheduling, and the workflow DSL. Jido retries stay disabled here so
+    # one workflow attempt maps to one action execution.
+    case Jido.Exec.run(action, input, context, max_retries: 0) do
       {:ok, output} when is_map(output) -> {:ok, output, []}
       {:ok, output, _extras} when is_map(output) -> {:ok, output, []}
       {:error, reason} -> {:error, reason}
