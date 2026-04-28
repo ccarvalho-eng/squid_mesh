@@ -3,6 +3,7 @@ defmodule SquidMesh.Workflow.Validation do
 
   @terminal_transitions [:complete]
 
+  @spec validate!(map(), Macro.Env.t()) :: :ok
   def validate!(definition, env) do
     case validation_errors(definition) do
       [] ->
@@ -17,6 +18,21 @@ defmodule SquidMesh.Workflow.Validation do
           file: env.file,
           line: env.line,
           description: description
+    end
+  end
+
+  @spec entry_step!(map(), Macro.Env.t()) :: atom()
+  def entry_step!(definition, env) do
+    case entry_steps(definition) do
+      [entry_step] ->
+        entry_step
+
+      _other_steps ->
+        raise CompileError,
+          file: env.file,
+          line: env.line,
+          description:
+            "workflow validation failed:\n- workflow must define exactly one entry step"
     end
   end
 
@@ -94,5 +110,16 @@ defmodule SquidMesh.Workflow.Validation do
     else
       ["retry for #{inspect(step)} must define a positive :max_attempts" | errors]
     end
+  end
+
+  defp entry_steps(definition) do
+    transition_targets =
+      definition.transitions
+      |> Enum.map(& &1.to)
+      |> MapSet.new()
+
+    definition.steps
+    |> Enum.map(& &1.name)
+    |> Enum.reject(&MapSet.member?(transition_targets, &1))
   end
 end

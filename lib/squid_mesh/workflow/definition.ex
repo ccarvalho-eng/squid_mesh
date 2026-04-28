@@ -1,0 +1,147 @@
+defmodule SquidMesh.Workflow.Definition do
+  @moduledoc false
+
+  @type input_field :: %{name: atom(), type: atom(), opts: keyword()}
+  @type step :: %{name: atom(), module: module(), opts: keyword()}
+  @type transition :: %{from: atom(), on: atom(), to: atom()}
+  @type retry :: %{step: atom(), opts: keyword()}
+
+  @type t :: %{
+          input: [input_field()],
+          steps: [step()],
+          transitions: [transition()],
+          retries: [retry()],
+          entry_step: atom()
+        }
+
+  @type load_error :: {:invalid_workflow, module() | String.t()}
+  @type input_error_details :: %{
+          optional(:missing_fields) => [atom()],
+          optional(:unknown_fields) => [atom() | String.t()],
+          optional(:invalid_types) => %{optional(atom()) => atom()}
+        }
+
+  @spec load(module()) :: {:ok, t()} | {:error, load_error()}
+  def load(workflow) when is_atom(workflow) do
+    case Code.ensure_loaded(workflow) do
+      {:module, ^workflow} ->
+        if function_exported?(workflow, :workflow_definition, 0) do
+          {:ok, workflow.workflow_definition()}
+        else
+          {:error, {:invalid_workflow, workflow}}
+        end
+
+      {:error, _reason} ->
+        {:error, {:invalid_workflow, workflow}}
+    end
+  end
+
+  @spec load_serialized(String.t()) :: {:ok, module(), t()} | {:error, load_error()}
+  def load_serialized(workflow_name) when is_binary(workflow_name) do
+    workflow = String.to_atom(workflow_name)
+
+    case load(workflow) do
+      {:ok, definition} -> {:ok, workflow, definition}
+      {:error, _reason} -> {:error, {:invalid_workflow, workflow_name}}
+    end
+  end
+
+  @spec validate_input(t(), map()) :: :ok | {:error, {:invalid_input, input_error_details()}}
+  def validate_input(definition, input) when is_map(input) do
+    declared_fields = definition.input
+    declared_names = MapSet.new(Enum.map(declared_fields, & &1.name))
+    provided_names = MapSet.new(Map.keys(input))
+
+    missing_fields =
+      declared_fields
+      |> Enum.filter(
+        &(Keyword.get(&1.opts, :required, true) and not Map.has_key?(input, &1.name))
+      )
+      |> Enum.map(& &1.name)
+
+    unknown_fields =
+      provided_names
+      |> MapSet.to_list()
+      |> Enum.reject(&MapSet.member?(declared_names, &1))
+      |> Enum.sort_by(&to_string/1)
+
+    invalid_types =
+      declared_fields
+      |> Enum.reduce(%{}, fn field, acc ->
+        case Map.fetch(input, field.name) do
+          {:ok, value} ->
+            if input_matches_type?(value, field.type) do
+              acc
+            else
+              Map.put(acc, field.name, field.type)
+            end
+
+          :error ->
+            acc
+        end
+      end)
+
+    errors =
+      %{}
+      |> maybe_put(:missing_fields, missing_fields)
+      |> maybe_put(:unknown_fields, unknown_fields)
+      |> maybe_put(:invalid_types, invalid_types)
+
+    case errors do
+      %{} = empty when map_size(empty) == 0 -> :ok
+      details -> {:error, {:invalid_input, details}}
+    end
+  end
+
+  @spec entry_step(t()) :: atom()
+  def entry_step(definition), do: definition.entry_step
+
+  @spec deserialize_input(t() | nil, map()) :: map()
+  def deserialize_input(nil, input), do: input
+
+  def deserialize_input(definition, input) when is_map(input) do
+    known_fields =
+      definition.input
+      |> Enum.map(&{Atom.to_string(&1.name), &1.name})
+      |> Map.new()
+
+    Map.new(input, fn
+      {key, value} when is_binary(key) ->
+        {Map.get(known_fields, key, key), value}
+
+      entry ->
+        entry
+    end)
+  end
+
+  @spec serialize_workflow(module()) :: String.t()
+  def serialize_workflow(workflow) when is_atom(workflow), do: Atom.to_string(workflow)
+
+  @spec serialize_step(atom() | String.t() | nil) :: String.t() | nil
+  def serialize_step(nil), do: nil
+  def serialize_step(step) when is_atom(step), do: Atom.to_string(step)
+  def serialize_step(step) when is_binary(step), do: step
+
+  @spec deserialize_step(t(), String.t() | nil) :: atom() | String.t() | nil
+  def deserialize_step(_definition, nil), do: nil
+
+  def deserialize_step(definition, step_name) when is_binary(step_name) do
+    Enum.find_value(definition.steps, step_name, fn
+      %{name: step} ->
+        if Atom.to_string(step) == step_name, do: step, else: false
+    end)
+  end
+
+  defp maybe_put(map, _key, []), do: map
+  defp maybe_put(map, _key, %{} = value) when map_size(value) == 0, do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp input_matches_type?(value, :string), do: is_binary(value)
+  defp input_matches_type?(value, :integer), do: is_integer(value)
+  defp input_matches_type?(value, :float), do: is_float(value)
+  defp input_matches_type?(value, :boolean), do: is_boolean(value)
+  defp input_matches_type?(value, :map), do: is_map(value)
+  defp input_matches_type?(value, :list), do: is_list(value)
+  defp input_matches_type?(value, :atom), do: is_atom(value)
+  defp input_matches_type?(_value, _unknown_type), do: true
+end

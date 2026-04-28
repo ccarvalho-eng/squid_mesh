@@ -45,6 +45,8 @@ defmodule SquidMesh.WorkflowTest do
     assert definition.retries == [
              %{step: :send_email, opts: [max_attempts: 3]}
            ]
+
+    assert definition.entry_step == :load_invoice
   end
 
   test "exposes the workflow contract shape" do
@@ -62,6 +64,7 @@ defmodule SquidMesh.WorkflowTest do
              InvoiceReminder.workflow_definition().transitions
 
     assert InvoiceReminder.__workflow__(:retries) == InvoiceReminder.workflow_definition().retries
+    assert InvoiceReminder.__workflow__(:entry_step) == :load_invoice
   end
 
   test "fails when no steps are declared" do
@@ -126,6 +129,41 @@ defmodule SquidMesh.WorkflowTest do
       end
       """,
       "retry references unknown step: :record_delivery"
+    )
+  end
+
+  test "fails when a workflow defines multiple entry steps" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithMultipleEntrySteps do
+        use SquidMesh.Workflow
+
+        workflow do
+          step(:load_invoice, WorkflowWithMultipleEntrySteps.LoadInvoice)
+          step(:send_email, WorkflowWithMultipleEntrySteps.SendEmail)
+        end
+      end
+      """,
+      "workflow must define exactly one entry step"
+    )
+  end
+
+  test "fails when a workflow defines no entry step" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithoutEntryStep do
+        use SquidMesh.Workflow
+
+        workflow do
+          step(:load_invoice, WorkflowWithoutEntryStep.LoadInvoice)
+          step(:send_email, WorkflowWithoutEntryStep.SendEmail)
+
+          transition(:load_invoice, on: :ok, to: :send_email)
+          transition(:send_email, on: :ok, to: :load_invoice)
+        end
+      end
+      """,
+      "workflow must define exactly one entry step"
     )
   end
 

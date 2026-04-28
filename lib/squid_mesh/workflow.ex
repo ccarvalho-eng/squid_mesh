@@ -107,6 +107,10 @@ defmodule SquidMesh.Workflow do
 
     Validation.validate!(definition, env)
 
+    entry_step = Validation.entry_step!(definition, env)
+
+    definition = Map.put(definition, :entry_step, entry_step)
+
     quote do
       @doc false
       def workflow_definition, do: unquote(Macro.escape(definition))
@@ -128,6 +132,9 @@ defmodule SquidMesh.Workflow do
 
       @doc false
       def __workflow__(:retries), do: unquote(Macro.escape(definition.retries))
+
+      @doc false
+      def __workflow__(:entry_step), do: unquote(Macro.escape(definition.entry_step))
     end
   end
 end
