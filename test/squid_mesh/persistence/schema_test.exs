@@ -10,6 +10,7 @@ defmodule SquidMesh.Persistence.SchemaTest do
       assert Run.__schema__(:fields) == [
                :id,
                :workflow,
+               :trigger,
                :status,
                :input,
                :context,
@@ -23,7 +24,7 @@ defmodule SquidMesh.Persistence.SchemaTest do
       assert Run.__schema__(:associations) == [:replayed_from_run, :step_runs]
     end
 
-    test "requires workflow, status, and input in the changeset" do
+    test "requires workflow, trigger, status, and input in the changeset" do
       changeset = Run.changeset(%Run{}, %{})
 
       refute changeset.valid?
@@ -31,6 +32,7 @@ defmodule SquidMesh.Persistence.SchemaTest do
       assert errors_on(changeset) == %{
                input: ["can't be blank"],
                status: ["can't be blank"],
+               trigger: ["can't be blank"],
                workflow: ["can't be blank"]
              }
     end

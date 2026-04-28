@@ -1,14 +1,14 @@
 <div align="center">
   <img width="340" alt="logo" src="https://github.com/user-attachments/assets/22c973ae-5d03-4aaf-99c9-75640e985f1e" />
 
-  <p><i>Durable workflow runtime for Elixir applications.</i></p>
+  <p><i>Workflow automation platform for Elixir applications.</i></p>
 
   [![CI](https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml)
   [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 </div>
 
-Squid Mesh is a library for defining and running durable workflows inside
-Phoenix and OTP applications.
+Squid Mesh is a workflow automation platform for Phoenix and OTP
+applications.
 
 ## Requirements
 
@@ -46,7 +46,9 @@ config :squid_mesh,
 
 Public runtime API:
 
+- `SquidMesh.start_run/2`
 - `SquidMesh.start_run/3`
+- `SquidMesh.start_run/4`
 - `SquidMesh.inspect_run/2`
 - `SquidMesh.list_runs/2`
 - `SquidMesh.cancel_run/2`
@@ -59,7 +61,7 @@ defmodule Billing.Workflows.PaymentRecovery do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :manual do
+    trigger :payment_recovery do
       manual()
 
       payload do
@@ -105,7 +107,7 @@ end
 ```elixir
 defmodule Billing.WorkflowRuns do
   def start_payment_recovery(account_id, invoice_id) do
-    SquidMesh.start_run(Billing.Workflows.PaymentRecovery, %{
+    SquidMesh.start_run(Billing.Workflows.PaymentRecovery, :payment_recovery, %{
       account_id: account_id,
       invoice_id: invoice_id
     })
@@ -128,6 +130,9 @@ defmodule Billing.WorkflowRuns do
   end
 end
 ```
+
+If a workflow defines a single trigger, `SquidMesh.start_run/2` remains the
+short path and uses that default trigger automatically.
 
 Run lifecycle states currently include:
 

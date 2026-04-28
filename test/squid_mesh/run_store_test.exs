@@ -8,7 +8,7 @@ defmodule SquidMesh.RunStoreTest do
     use SquidMesh.Workflow
 
     workflow do
-      trigger :manual do
+      trigger :invoice_delivery do
         manual()
 
         payload do
@@ -30,6 +30,7 @@ defmodule SquidMesh.RunStoreTest do
                RunStore.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
 
       assert transitioned_run.id == run.id
+      assert transitioned_run.trigger == :invoice_delivery
       assert transitioned_run.status == :running
       assert transitioned_run.current_step == :load_invoice
     end
@@ -67,6 +68,18 @@ defmodule SquidMesh.RunStoreTest do
     test "returns not found when the run does not exist" do
       assert {:error, :not_found} =
                RunStore.transition_run(Repo, Ecto.UUID.generate(), :running)
+    end
+
+    test "creates a run through an explicit trigger name" do
+      assert {:ok, run} =
+               RunStore.create_run(
+                 Repo,
+                 InvoiceReminderWorkflow,
+                 :invoice_delivery,
+                 %{account_id: "acct_123"}
+               )
+
+      assert run.trigger == :invoice_delivery
     end
   end
 
@@ -116,6 +129,7 @@ defmodule SquidMesh.RunStoreTest do
       assert {:ok, loaded_run} = RunStore.get_run(Repo, run.id)
 
       assert loaded_run.workflow == InvoiceReminderWorkflow
+      assert loaded_run.trigger == :invoice_delivery
       assert loaded_run.current_step == :load_invoice
     end
   end
@@ -130,6 +144,7 @@ defmodule SquidMesh.RunStoreTest do
 
       assert replay_run.id != source_run.id
       assert replay_run.workflow == source_run.workflow
+      assert replay_run.trigger == :invoice_delivery
       assert replay_run.status == :pending
       assert replay_run.payload == payload
       assert replay_run.context == %{}

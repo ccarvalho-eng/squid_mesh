@@ -6,7 +6,7 @@ defmodule MinimalHostApp.Workflows.PaymentRecovery do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :manual do
+    trigger :payment_recovery do
       manual()
 
       payload do

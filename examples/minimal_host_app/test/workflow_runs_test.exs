@@ -20,6 +20,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     )
 
     assert run.workflow == MinimalHostApp.Workflows.PaymentRecovery
+    assert run.trigger == :payment_recovery
     assert run.status == :pending
     assert run.payload == attrs
     assert run.current_step == :load_invoice

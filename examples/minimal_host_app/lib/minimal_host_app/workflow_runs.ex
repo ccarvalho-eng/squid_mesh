@@ -15,7 +15,7 @@ defmodule MinimalHostApp.WorkflowRuns do
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
-    SquidMesh.start_run(MinimalHostApp.Workflows.PaymentRecovery, attrs)
+    SquidMesh.start_run(MinimalHostApp.Workflows.PaymentRecovery, :payment_recovery, attrs)
   end
 
   @spec inspect_payment_recovery(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}

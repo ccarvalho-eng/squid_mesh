@@ -19,16 +19,72 @@ defmodule SquidMesh do
   defdelegate config!(overrides \\ []), to: Config, as: :load!
 
   @doc """
-  Starts a new workflow run with the given payload.
+  Starts a new workflow run with the given payload through the workflow's
+  default trigger.
   """
+  @spec start_run(module(), map()) ::
+          {:ok, Run.t()}
+          | {:error, {:missing_config, [atom()]}}
+          | {:error, RunStore.create_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def start_run(workflow, payload) when is_map(payload) do
+    start_run(workflow, payload, [])
+  end
+
   @spec start_run(module(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
           | {:error, RunStore.create_error()}
           | {:error, {:dispatch_failed, term()}}
-  def start_run(workflow, payload, overrides \\ []) do
+  def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
          {:ok, run} <- RunStore.create_run(config.repo, workflow, payload),
+         {:ok, _job} <- Dispatcher.dispatch_run(config, run) do
+      {:ok, run}
+    else
+      {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
+        {:error, reason}
+
+      {:error, reason} = error when reason in [:not_found] ->
+        error
+
+      {:error, %_{} = reason} ->
+        {:error, {:dispatch_failed, reason}}
+
+      {:error, reason} when is_tuple(reason) ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, {:dispatch_failed, reason}}
+    end
+  end
+
+  def start_run(_workflow, _payload, overrides) when is_list(overrides) do
+    {:error, {:invalid_payload, :expected_map}}
+  end
+
+  @doc """
+  Starts a new workflow run through a named trigger with the given payload.
+  """
+  @spec start_run(module(), atom(), map()) ::
+          {:ok, Run.t()}
+          | {:error, {:missing_config, [atom()]}}
+          | {:error, RunStore.create_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def start_run(workflow, trigger_name, payload)
+      when is_atom(trigger_name) and is_map(payload) do
+    start_run(workflow, trigger_name, payload, [])
+  end
+
+  @spec start_run(module(), atom(), map(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error, {:missing_config, [atom()]}}
+          | {:error, RunStore.create_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def start_run(workflow, trigger_name, payload, overrides)
+      when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, run} <- RunStore.create_run(config.repo, workflow, trigger_name, payload),
          {:ok, _job} <- Dispatcher.dispatch_run(config, run) do
       {:ok, run}
     else

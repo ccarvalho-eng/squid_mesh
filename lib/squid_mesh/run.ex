@@ -14,6 +14,7 @@ defmodule SquidMesh.Run do
   defstruct [
     :id,
     :workflow,
+    :trigger,
     :status,
     :payload,
     :context,
