@@ -482,6 +482,26 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
+  test "fails when a transition declares an unsupported outcome" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithUnsupportedTransitionOutcome do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:load_invoice, WorkflowWithUnsupportedTransitionOutcome.LoadInvoice)
+          transition(:load_invoice, on: :error, to: :complete)
+        end
+      end
+      """,
+      "transition from :load_invoice defines unsupported outcome :error"
+    )
+  end
+
   defp assert_compile_error(source, message) do
     error =
       assert_raise CompileError, fn ->

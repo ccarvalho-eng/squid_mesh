@@ -26,16 +26,20 @@ defmodule SquidMesh.Runtime.Dispatcher do
       [queue: config.execution_queue]
       |> maybe_put_schedule_in(schedule_in)
 
-    %{run_id: run_id, step: current_step}
-    |> StepWorker.new(job_opts)
-    |> then(&Oban.insert(config.execution_name, &1))
-    |> case do
-      {:ok, job} = ok ->
-        Observability.emit_run_dispatched(run, job, config.execution_queue, schedule_in)
-        ok
+    try do
+      %{run_id: run_id, step: current_step}
+      |> StepWorker.new(job_opts)
+      |> then(&Oban.insert(config.execution_name, &1))
+      |> case do
+        {:ok, job} = ok ->
+          Observability.emit_run_dispatched(run, job, config.execution_queue, schedule_in)
+          ok
 
-      {:error, _reason} = error ->
-        error
+        {:error, _reason} = error ->
+          error
+      end
+    rescue
+      exception -> {:error, exception}
     end
   end
 

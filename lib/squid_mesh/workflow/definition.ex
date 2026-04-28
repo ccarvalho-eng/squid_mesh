@@ -61,10 +61,10 @@ defmodule SquidMesh.Workflow.Definition do
   """
   @spec load_serialized(String.t()) :: {:ok, module(), t()} | {:error, load_error()}
   def load_serialized(workflow_name) when is_binary(workflow_name) do
-    workflow = String.to_atom(workflow_name)
-
-    case load(workflow) do
-      {:ok, definition} -> {:ok, workflow, definition}
+    with {:ok, workflow} <- deserialize_workflow_name(workflow_name),
+         {:ok, definition} <- load(workflow) do
+      {:ok, workflow, definition}
+    else
       {:error, _reason} -> {:error, {:invalid_workflow, workflow_name}}
     end
   end
@@ -278,6 +278,14 @@ defmodule SquidMesh.Workflow.Definition do
   defp input_matches_type?(value, :list), do: is_list(value)
   defp input_matches_type?(value, :atom), do: is_atom(value)
   defp input_matches_type?(_value, _unknown_type), do: true
+
+  defp deserialize_workflow_name(workflow_name) do
+    try do
+      {:ok, String.to_existing_atom(workflow_name)}
+    rescue
+      ArgumentError -> {:error, {:invalid_workflow, workflow_name}}
+    end
+  end
 
   defp resolve_default!({:today, :iso8601}), do: Date.utc_today() |> Date.to_iso8601()
   defp resolve_default!(default), do: default

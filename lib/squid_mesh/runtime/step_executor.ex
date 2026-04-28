@@ -50,7 +50,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   end
 
   defp execute_run(_config, %Run{current_step: current_step}, expected_step)
-       when is_atom(expected_step) and current_step != expected_step do
+       when not is_nil(expected_step) and is_atom(expected_step) and current_step != expected_step do
     :ok
   end
 
@@ -240,17 +240,23 @@ defmodule SquidMesh.Runtime.StepExecutor do
           Logger.warning("workflow step failed; scheduling retry")
           Observability.emit_step_retry_scheduled(run, run.current_step, attempt_number, delay_ms)
 
-          with {:ok, retried_run} <-
-                 RunStore.transition_run(config.repo, run.id, :retrying, %{
+          dispatch_opts = retry_dispatch_opts(delay_ms)
+
+          case RunStore.transition_and_dispatch_run(
+                 config.repo,
+                 run.id,
+                 :retrying,
+                 %{
                    current_step: run.current_step,
                    last_error: error
-                 }) do
-            dispatch_opts = retry_dispatch_opts(delay_ms)
+                 },
+                 fn retried_run -> Dispatcher.dispatch_run(config, retried_run, dispatch_opts) end
+               ) do
+            {:ok, _retried_run} ->
+              :ok
 
-            case Dispatcher.dispatch_run(config, retried_run, dispatch_opts) do
-              {:ok, _job} -> :ok
-              {:error, reason} -> {:error, wrap_dispatch_error(reason)}
-            end
+            {:error, reason} ->
+              mark_failed_after_retry_dispatch_error(config.repo, run, error, reason)
           end
 
         _no_retry ->
@@ -285,16 +291,27 @@ defmodule SquidMesh.Runtime.StepExecutor do
   defp advance_after_success(config, run, next_step, output) when is_atom(next_step) do
     context = Map.merge(run.context || %{}, output)
 
-    with {:ok, updated_run} <-
-           RunStore.update_run(config.repo, run.id, %{
+    case RunStore.update_and_dispatch_run(
+           config.repo,
+           run.id,
+           %{
              context: context,
              current_step: next_step,
              last_error: nil
-           }) do
-      case Dispatcher.dispatch_run(config, updated_run) do
-        {:ok, _job} -> :ok
-        {:error, reason} -> {:error, wrap_dispatch_error(reason)}
-      end
+           },
+           fn updated_run -> Dispatcher.dispatch_run(config, updated_run) end
+         ) do
+      {:ok, _updated_run} ->
+        :ok
+
+      {:error, reason} ->
+        mark_failed_after_next_step_dispatch_error(
+          config.repo,
+          run.id,
+          next_step,
+          context,
+          reason
+        )
     end
   end
 
@@ -320,9 +337,56 @@ defmodule SquidMesh.Runtime.StepExecutor do
   defp normalize_error(%{} = error), do: error
   defp normalize_error(error), do: %{message: inspect(error)}
 
-  @spec wrap_dispatch_error(term()) :: execution_error()
-  defp wrap_dispatch_error({:dispatch_failed, _reason} = error), do: error
-  defp wrap_dispatch_error(reason), do: {:dispatch_failed, reason}
+  @spec mark_failed_after_next_step_dispatch_error(
+          module(),
+          Ecto.UUID.t(),
+          atom(),
+          map(),
+          term()
+        ) :: :ok | {:error, execution_error() | term()}
+  defp mark_failed_after_next_step_dispatch_error(repo, run_id, next_step, context, reason) do
+    dispatch_error = %{
+      message: "failed to dispatch workflow step",
+      next_step: next_step,
+      cause: normalize_dispatch_cause(reason)
+    }
+
+    case RunStore.transition_run(repo, run_id, :failed, %{
+           context: context,
+           current_step: next_step,
+           last_error: dispatch_error
+         }) do
+      {:ok, _failed_run} -> :ok
+      {:error, transition_reason} -> {:error, transition_reason}
+    end
+  end
+
+  @spec mark_failed_after_retry_dispatch_error(module(), Run.t(), map(), term()) ::
+          :ok | {:error, execution_error() | term()}
+  defp mark_failed_after_retry_dispatch_error(repo, run, step_error, reason) do
+    dispatch_error = %{
+      message: "failed to dispatch workflow step",
+      failed_step: run.current_step,
+      cause: step_error,
+      dispatch_reason: normalize_dispatch_cause(reason)
+    }
+
+    case RunStore.transition_run(repo, run.id, :failed, %{
+           current_step: run.current_step,
+           last_error: dispatch_error
+         }) do
+      {:ok, _failed_run} -> :ok
+      {:error, transition_reason} -> {:error, transition_reason}
+    end
+  end
+
+  @spec normalize_dispatch_cause(term()) :: term()
+  defp normalize_dispatch_cause({:dispatch_failed, reason}), do: normalize_dispatch_cause(reason)
+
+  defp normalize_dispatch_cause(%{__struct__: _module} = error),
+    do: %{message: Exception.message(error)}
+
+  defp normalize_dispatch_cause(reason), do: reason
 
   @spec retry_dispatch_opts(non_neg_integer()) :: keyword()
   defp retry_dispatch_opts(delay_ms) when is_integer(delay_ms) and delay_ms > 0 do

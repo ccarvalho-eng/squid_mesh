@@ -127,13 +127,22 @@ defmodule MinimalHostApp.Smoke do
 
   @spec ensure_migrated() :: :ok
   defp ensure_migrated do
-    migrations_path = Application.app_dir(:squid_mesh, "priv/repo/migrations")
-
     Ecto.Migrator.with_repo(MinimalHostApp.Repo, fn repo ->
-      Ecto.Migrator.run(repo, migrations_path, :up, all: true)
+      Ecto.Migrator.run(repo, app_migrations_path(), :up, all: true)
+      Ecto.Migrator.run(repo, library_migrations_path(), :up, all: true)
     end)
 
     :ok
+  end
+
+  @spec app_migrations_path() :: String.t()
+  defp app_migrations_path do
+    Application.app_dir(:minimal_host_app, "priv/repo/migrations")
+  end
+
+  @spec library_migrations_path() :: String.t()
+  defp library_migrations_path do
+    Application.app_dir(:squid_mesh, "priv/repo/migrations")
   end
 
   @spec ensure_oban_started() :: :ok

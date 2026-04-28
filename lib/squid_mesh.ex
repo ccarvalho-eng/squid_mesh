@@ -45,8 +45,11 @@ defmodule SquidMesh do
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.create_run(config.repo, workflow, payload),
-         {:ok, _job} <- Dispatcher.dispatch_run(config, run) do
+         {:ok, run} <-
+           RunStore.create_and_dispatch_run(config.repo, workflow, payload, fn run ->
+             Dispatcher.dispatch_run(config, run)
+           end) do
+      SquidMesh.Observability.emit_run_created(run)
       {:ok, run}
     else
       {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
@@ -91,8 +94,15 @@ defmodule SquidMesh do
   def start_run(workflow, trigger_name, payload, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.create_run(config.repo, workflow, trigger_name, payload),
-         {:ok, _job} <- Dispatcher.dispatch_run(config, run) do
+         {:ok, run} <-
+           RunStore.create_and_dispatch_run(
+             config.repo,
+             workflow,
+             trigger_name,
+             payload,
+             fn run -> Dispatcher.dispatch_run(config, run) end
+           ) do
+      SquidMesh.Observability.emit_run_created(run)
       {:ok, run}
     else
       {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
@@ -118,8 +128,10 @@ defmodule SquidMesh do
   @spec inspect_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()} | {:error, :not_found | {:missing_config, [atom()]}}
   def inspect_run(run_id, overrides \\ []) do
-    with {:ok, config} <- Config.load(overrides) do
-      RunStore.get_run(config.repo, run_id)
+    {inspect_opts, config_overrides} = Keyword.split(overrides, [:include_history])
+
+    with {:ok, config} <- Config.load(config_overrides) do
+      RunStore.get_run(config.repo, run_id, inspect_opts)
     end
   end
 
@@ -155,8 +167,11 @@ defmodule SquidMesh do
           | {:error, {:dispatch_failed, term()}}
   def replay_run(run_id, overrides \\ []) do
     with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.replay_run(config.repo, run_id),
-         {:ok, _job} <- Dispatcher.dispatch_run(config, run) do
+         {:ok, run} <-
+           RunStore.replay_and_dispatch_run(config.repo, run_id, fn run ->
+             Dispatcher.dispatch_run(config, run)
+           end) do
+      SquidMesh.Observability.emit_run_replayed(run)
       {:ok, run}
     else
       {:error, %_{} = reason} ->
