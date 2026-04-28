@@ -150,13 +150,15 @@ defmodule SquidMesh.Runtime.StepExecutor do
            }),
          {:ok, _step_run} <- StepRunStore.fail_step(config.repo, step_run_id, error) do
       case RetryPolicy.resolve(run.workflow, run.current_step, attempt_number) do
-        {:retry, _next_attempt} ->
+        {:retry, _next_attempt, delay_ms} ->
           with {:ok, retried_run} <-
                  RunStore.transition_run(config.repo, run.id, :retrying, %{
                    current_step: run.current_step,
                    last_error: error
                  }) do
-            case Dispatcher.dispatch_run(config, retried_run) do
+            dispatch_opts = retry_dispatch_opts(delay_ms)
+
+            case Dispatcher.dispatch_run(config, retried_run, dispatch_opts) do
               {:ok, _job} -> :ok
               {:error, reason} -> {:error, wrap_dispatch_error(reason)}
             end
@@ -230,6 +232,13 @@ defmodule SquidMesh.Runtime.StepExecutor do
   @spec wrap_dispatch_error(term()) :: execution_error()
   defp wrap_dispatch_error({:dispatch_failed, _reason} = error), do: error
   defp wrap_dispatch_error(reason), do: {:dispatch_failed, reason}
+
+  @spec retry_dispatch_opts(non_neg_integer()) :: keyword()
+  defp retry_dispatch_opts(delay_ms) when is_integer(delay_ms) and delay_ms > 0 do
+    [schedule_in: ceil(delay_ms / 1_000)]
+  end
+
+  defp retry_dispatch_opts(_delay_ms), do: []
 
   @spec normalize_map_keys(map()) :: map()
   defp normalize_map_keys(map) when is_map(map) do
