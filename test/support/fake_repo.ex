@@ -5,6 +5,7 @@ defmodule SquidMesh.TestSupport.FakeRepo do
 
   alias Ecto.Changeset
   alias SquidMesh.Persistence.Run, as: RunRecord
+  alias SquidMesh.Persistence.StepAttempt
 
   @rollback_tag :fake_repo_rollback
 
@@ -88,6 +89,16 @@ defmodule SquidMesh.TestSupport.FakeRepo do
       |> filter_runs(filters)
       |> Enum.sort(&run_desc?/2)
       |> limit_runs(filters)
+    end)
+  end
+
+  @spec list_step_attempts(Ecto.UUID.t()) :: [StepAttempt.t()]
+  def list_step_attempts(step_run_id) do
+    Agent.get(__MODULE__, fn state ->
+      state
+      |> Map.values()
+      |> Enum.filter(&match?(%StepAttempt{}, &1))
+      |> Enum.filter(&(&1.step_run_id == step_run_id))
     end)
   end
 
