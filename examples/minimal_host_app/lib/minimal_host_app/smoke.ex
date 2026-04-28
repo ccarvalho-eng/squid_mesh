@@ -12,11 +12,13 @@ defmodule MinimalHostApp.Smoke do
   @spec run!() :: SquidMesh.Run.t()
   def run! do
     ensure_runtime_started()
+    {_server_pid, port} = start_gateway_server()
 
     attrs = %{
       account_id: "acct_demo",
       invoice_id: "inv_demo",
-      attempt_id: "attempt_demo"
+      attempt_id: "attempt_demo",
+      gateway_url: endpoint_url(port, "/gateway")
     }
 
     with {:ok, run} <- WorkflowRuns.start_payment_recovery(attrs),
@@ -64,6 +66,31 @@ defmodule MinimalHostApp.Smoke do
   end
 
   defp await_terminal_run(_run_id, 0), do: {:error, :timeout}
+
+  @spec endpoint_url(pos_integer(), String.t()) :: String.t()
+  defp endpoint_url(port, path) do
+    "http://127.0.0.1:#{port}#{path}"
+  end
+
+  @spec start_gateway_server() :: {pid(), pos_integer()}
+  defp start_gateway_server do
+    {:ok, socket} =
+      :gen_tcp.listen(0, [:binary, active: false, packet: :raw, reuseaddr: true])
+
+    {:ok, {_address, port}} = :inet.sockname(socket)
+
+    {:ok, pid} =
+      Task.start_link(fn ->
+        {:ok, client} = :gen_tcp.accept(socket)
+        _request = :gen_tcp.recv(client, 0)
+        response = "HTTP/1.1 200 OK\r\ncontent-length: 14\r\n\r\nretry_required"
+        :ok = :gen_tcp.send(client, response)
+        :gen_tcp.close(client)
+        :gen_tcp.close(socket)
+      end)
+
+    {pid, port}
+  end
 
   @spec manual_oban_testing?() :: boolean()
   defp manual_oban_testing? do

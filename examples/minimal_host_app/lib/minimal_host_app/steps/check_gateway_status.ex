@@ -7,15 +7,26 @@ defmodule MinimalHostApp.Steps.CheckGatewayStatus do
     name: "check_gateway_status",
     description: "Checks gateway state",
     schema: [
-      invoice: [type: :map, required: true]
+      invoice: [type: :map, required: true],
+      gateway_url: [type: :string, required: true]
     ]
 
   @impl true
-  @spec run(map(), map()) :: {:ok, map()}
-  def run(%{invoice: invoice}, _context) do
-    {:ok,
-     %{
-       gateway_check: %{status: "retry_required", invoice_id: invoice.id}
-     }}
+  @spec run(map(), map()) :: {:ok, map()} | {:error, map()}
+  def run(%{invoice: invoice, gateway_url: gateway_url}, _context) do
+    case SquidMesh.Tools.invoke(SquidMesh.Tools.HTTP, %{method: :get, url: gateway_url}) do
+      {:ok, result} ->
+        {:ok,
+         %{
+           gateway_check: %{
+             status: result.payload.body,
+             invoice_id: invoice.id,
+             status_code: result.payload.status
+           }
+         }}
+
+      {:error, error} ->
+        {:error, SquidMesh.Tools.Error.to_map(error)}
+    end
   end
 end

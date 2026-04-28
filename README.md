@@ -68,6 +68,7 @@ Public runtime API:
 - Oban owns job durability, scheduling, and redelivery.
 - Step retry policy is declared in the workflow and scheduled through Oban.
 - Step implementations should be idempotent when they perform external side effects.
+- Tool adapters report the first transport or status failure; workflow retries stay at the step layer.
 
 Squid Mesh does not try to re-implement worker coordination that Oban already
 provides. The runtime stays focused on workflow semantics and durable run
@@ -105,6 +106,7 @@ defmodule Billing.Workflows.PaymentRecovery do
         field(:account_id, :string)
         field(:invoice_id, :string)
         field(:attempt_id, :string)
+        field(:gateway_url, :string)
       end
     end
 
@@ -136,12 +138,30 @@ defmodule Billing.Steps.CheckGatewayStatus do
     name: "check_gateway_status",
     description: "Checks gateway state",
     schema: [
-      invoice: [type: :map, required: true]
+      invoice: [type: :map, required: true],
+      gateway_url: [type: :string, required: true]
     ]
 
   @impl true
-  def run(%{invoice: invoice}, _context) do
-    {:ok, %{gateway_check: %{status: "retry_required", invoice_id: invoice.id}}}
+  def run(%{invoice: invoice, gateway_url: gateway_url}, _context) do
+    case SquidMesh.Tools.invoke(SquidMesh.Tools.HTTP, %{
+           method: :get,
+           url: gateway_url,
+           timeout: 1_000
+         }) do
+      {:ok, result} ->
+        {:ok,
+         %{
+           gateway_check: %{
+             status: result.payload.body,
+             invoice_id: invoice.id,
+             status_code: result.payload.status
+           }
+         }}
+
+      {:error, error} ->
+        {:error, SquidMesh.Tools.Error.to_map(error)}
+    end
   end
 end
 ```
@@ -154,7 +174,8 @@ defmodule Billing.WorkflowRuns do
     SquidMesh.start_run(Billing.Workflows.PaymentRecovery, :payment_recovery, %{
       account_id: account_id,
       invoice_id: invoice_id,
-      attempt_id: attempt_id
+      attempt_id: attempt_id,
+      gateway_url: "https://gateway.internal/checks/#{attempt_id}"
     })
   end
 
@@ -185,6 +206,12 @@ Workflows can mix custom step modules and built-in primitives:
 - `:wait` for timed pauses between steps
 - `:log` for durable, declarative operational markers in the flow
 
+Workflow steps can also call tool adapters through the shared boundary:
+
+- `SquidMesh.Tools.invoke/4` for adapter invocation
+- `SquidMesh.Tools.HTTP` for normalized HTTP calls with Req
+- `SquidMesh.Tools.Error.to_map/1` when a step wants to return adapter errors as workflow failures
+
 Retry behavior stays on the step that owns the work:
 
 ```elixir
@@ -209,6 +236,7 @@ Run lifecycle states currently include:
 ## Getting Started
 
 - [Host app integration](docs/host_app_integration.md)
+- [Tool adapters](docs/tool_adapters.md)
 - [Example host app harness](examples/minimal_host_app/README.md)
 
 Fast local smoke path:
