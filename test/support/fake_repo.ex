@@ -51,6 +51,29 @@ defmodule SquidMesh.TestSupport.FakeRepo do
     end
   end
 
+  @spec update(Changeset.t()) :: {:ok, struct()} | {:error, Changeset.t()}
+  def update(%Changeset{} = changeset) do
+    case Changeset.apply_action(changeset, :update) do
+      {:ok, struct} ->
+        key = {struct.__struct__, struct.id}
+
+        Agent.get_and_update(__MODULE__, fn state ->
+          existing = Map.fetch!(state, key)
+
+          updated_record = %{
+            struct
+            | inserted_at: existing.inserted_at,
+              updated_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+          }
+
+          {{:ok, updated_record}, Map.put(state, key, updated_record)}
+        end)
+
+      {:error, %Changeset{} = invalid_changeset} ->
+        {:error, invalid_changeset}
+    end
+  end
+
   @spec get(module(), Ecto.UUID.t()) :: struct() | nil
   def get(schema, id) do
     Agent.get(__MODULE__, &Map.get(&1, {schema, id}))

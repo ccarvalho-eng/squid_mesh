@@ -1,0 +1,79 @@
+defmodule SquidMesh.RunStoreTest do
+  use ExUnit.Case
+
+  alias SquidMesh.RunStore
+  alias SquidMesh.TestSupport.FakeRepo
+
+  defmodule InvoiceReminderWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      input do
+        field(:account_id, :string)
+      end
+
+      step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice)
+      transition(:load_invoice, on: :ok, to: :complete)
+      retry(:load_invoice, max_attempts: 1)
+    end
+  end
+
+  setup_all do
+    start_supervised!(FakeRepo)
+    :ok
+  end
+
+  setup do
+    FakeRepo.reset()
+    :ok
+  end
+
+  describe "transition_run/4" do
+    test "persists a valid transition" do
+      assert {:ok, run} =
+               RunStore.create_run(FakeRepo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, transitioned_run} =
+               RunStore.transition_run(FakeRepo, run.id, :running, %{current_step: :load_invoice})
+
+      assert transitioned_run.id == run.id
+      assert transitioned_run.status == :running
+      assert transitioned_run.current_step == :load_invoice
+    end
+
+    test "persists transition metadata alongside the status change" do
+      assert {:ok, run} =
+               RunStore.create_run(FakeRepo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      error = %{message: "gateway timeout"}
+
+      assert {:ok, transitioned_run} =
+               RunStore.transition_run(FakeRepo, run.id, :failed, %{
+                 last_error: error,
+                 context: %{attempt: 3}
+               })
+
+      assert transitioned_run.status == :failed
+      assert transitioned_run.last_error == error
+      assert transitioned_run.context == %{attempt: 3}
+    end
+
+    test "rejects invalid transitions and keeps the persisted state unchanged" do
+      assert {:ok, run} =
+               RunStore.create_run(FakeRepo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:error, {:invalid_transition, :pending, :completed}} =
+               RunStore.transition_run(FakeRepo, run.id, :completed)
+
+      assert {:ok, persisted_run} = RunStore.get_run(FakeRepo, run.id)
+
+      assert persisted_run.status == :pending
+      assert persisted_run.current_step == :load_invoice
+    end
+
+    test "returns not found when the run does not exist" do
+      assert {:error, :not_found} =
+               RunStore.transition_run(FakeRepo, Ecto.UUID.generate(), :running)
+    end
+  end
+end
