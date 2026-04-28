@@ -12,13 +12,33 @@ Current CI and onboarding smoke tests run with:
 
 - Erlang/OTP `28.4.1`
 - Elixir `1.19.5-otp-28`
-- `Oban 2.21`
-- `Jido 2.0`
+- `Oban 2.21` and `2.22`
+- `Jido 2.0+`
 
 ## Installation
 
 Add `:squid_mesh` to the host application's dependencies and fetch dependencies
 as usual with Mix.
+
+Preferred Hex dependency:
+
+```elixir
+defp deps do
+  [
+    {:squid_mesh, "~> 0.1.0-alpha.1"}
+  ]
+end
+```
+
+If you are evaluating directly from Git instead of Hex:
+
+```elixir
+defp deps do
+  [
+    {:squid_mesh, github: "ccarvalho-eng/squid_mesh", tag: "v0.1.0-alpha.1"}
+  ]
+end
+```
 
 Then install Squid Mesh's library-owned migrations into the host app:
 
@@ -123,7 +143,7 @@ defp deps do
     {:postgrex, "~> 0.20"},
     {:oban, "~> 2.21"},
     {:jido, "~> 2.0"},
-    {:squid_mesh, path: "../squid_mesh"}
+    {:squid_mesh, "~> 0.1.0-alpha.1"}
   ]
 end
 ```

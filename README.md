@@ -46,7 +46,17 @@ Add Squid Mesh to your application's dependencies:
 ```elixir
 defp deps do
   [
-    {:squid_mesh, path: "../squid_mesh"} # adjust `:path` to your local checkout when evaluating from source
+    {:squid_mesh, "~> 0.1.0-alpha.1"}
+  ]
+end
+```
+
+If you want to evaluate directly from Git instead of Hex:
+
+```elixir
+defp deps do
+  [
+    {:squid_mesh, github: "ccarvalho-eng/squid_mesh", tag: "v0.1.0-alpha.1"}
   ]
 end
 ```
