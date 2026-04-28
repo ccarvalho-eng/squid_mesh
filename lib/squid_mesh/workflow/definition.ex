@@ -1,5 +1,11 @@
 defmodule SquidMesh.Workflow.Definition do
-  @moduledoc false
+  @moduledoc """
+  Runtime-facing representation of a compiled workflow definition.
+
+  `SquidMesh.Workflow` builds the declarative DSL at compile time. This module
+  loads the compiled definition and applies the runtime operations needed for
+  run creation, payload resolution, and persistence serialization.
+  """
 
   @type built_in_step_kind :: :wait | :log
   @type payload_field :: %{name: atom(), type: atom(), opts: keyword()}
@@ -32,6 +38,9 @@ defmodule SquidMesh.Workflow.Definition do
         }
   @type transition_target :: atom() | :complete
 
+  @doc """
+  Loads a compiled workflow definition from a workflow module.
+  """
   @spec load(module()) :: {:ok, t()} | {:error, load_error()}
   def load(workflow) when is_atom(workflow) do
     case Code.ensure_loaded(workflow) do
@@ -47,6 +56,9 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
+  @doc """
+  Loads a workflow definition from its persisted module name.
+  """
   @spec load_serialized(String.t()) :: {:ok, module(), t()} | {:error, load_error()}
   def load_serialized(workflow_name) when is_binary(workflow_name) do
     workflow = String.to_atom(workflow_name)
@@ -57,6 +69,9 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
+  @doc """
+  Validates a payload map against the workflow payload contract.
+  """
   @spec validate_payload(t(), map()) ::
           :ok | {:error, {:invalid_payload, payload_error_details()}}
   def validate_payload(definition, payload) when is_map(payload) do
@@ -105,6 +120,9 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
+  @doc """
+  Resolves payload defaults and validates the final payload for a new run.
+  """
   @spec resolve_payload(t(), map()) ::
           {:ok, map()} | {:error, {:invalid_payload, payload_error_details()}}
   def resolve_payload(definition, payload) when is_map(payload) do
@@ -128,9 +146,15 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
+  @doc """
+  Returns the workflow entry step.
+  """
   @spec entry_step(t()) :: atom()
   def entry_step(definition), do: definition.entry_step
 
+  @doc """
+  Returns the default trigger for the workflow definition.
+  """
   @spec default_trigger(t()) :: atom()
   def default_trigger(definition) do
     definition.triggers
@@ -138,6 +162,9 @@ defmodule SquidMesh.Workflow.Definition do
     |> Map.fetch!(:name)
   end
 
+  @doc """
+  Resolves one named trigger from the workflow definition.
+  """
   @spec resolve_trigger(t(), atom()) :: {:ok, atom()} | {:error, trigger_error()}
   def resolve_trigger(definition, trigger_name) when is_atom(trigger_name) do
     case Enum.find(definition.triggers, &(&1.name == trigger_name)) do
@@ -146,6 +173,9 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
+  @doc """
+  Fetches one declared workflow step by name.
+  """
   @spec step(t(), atom()) :: {:ok, step()} | {:error, {:unknown_step, atom()}}
   def step(definition, step_name) when is_atom(step_name) do
     case Enum.find(definition.steps, &(&1.name == step_name)) do
@@ -154,6 +184,9 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
+  @doc """
+  Resolves the transition target for a step outcome.
+  """
   @spec transition_target(t(), atom(), atom()) ::
           {:ok, transition_target()} | {:error, {:unknown_transition, atom(), atom()}}
   def transition_target(definition, from_step, outcome)
@@ -164,6 +197,9 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
+  @doc """
+  Deserializes persisted payload keys back to declared workflow field names.
+  """
   @spec deserialize_payload(t() | nil, map()) :: map()
   def deserialize_payload(nil, payload), do: payload
 
@@ -182,19 +218,31 @@ defmodule SquidMesh.Workflow.Definition do
     end)
   end
 
+  @doc """
+  Serializes a workflow module name for persistence.
+  """
   @spec serialize_workflow(module()) :: String.t()
   def serialize_workflow(workflow) when is_atom(workflow), do: Atom.to_string(workflow)
 
+  @doc """
+  Serializes a trigger identifier for persistence.
+  """
   @spec serialize_trigger(atom() | String.t() | nil) :: String.t() | nil
   def serialize_trigger(nil), do: nil
   def serialize_trigger(trigger) when is_atom(trigger), do: Atom.to_string(trigger)
   def serialize_trigger(trigger) when is_binary(trigger), do: trigger
 
+  @doc """
+  Serializes a step identifier for persistence.
+  """
   @spec serialize_step(atom() | String.t() | nil) :: String.t() | nil
   def serialize_step(nil), do: nil
   def serialize_step(step) when is_atom(step), do: Atom.to_string(step)
   def serialize_step(step) when is_binary(step), do: step
 
+  @doc """
+  Deserializes a persisted trigger name back to the declared workflow trigger.
+  """
   @spec deserialize_trigger(t(), String.t() | nil) :: atom() | String.t() | nil
   def deserialize_trigger(_definition, nil), do: nil
 
@@ -205,6 +253,9 @@ defmodule SquidMesh.Workflow.Definition do
     end)
   end
 
+  @doc """
+  Deserializes a persisted step name back to the declared workflow step.
+  """
   @spec deserialize_step(t(), String.t() | nil) :: atom() | String.t() | nil
   def deserialize_step(_definition, nil), do: nil
 

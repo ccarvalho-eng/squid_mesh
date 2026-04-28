@@ -1,11 +1,20 @@
 defmodule SquidMesh.Workflow.Validation do
-  @moduledoc false
+  @moduledoc """
+  Compile-time validation and normalization for workflow modules.
+
+  This module keeps contract enforcement in one place so the DSL in
+  `SquidMesh.Workflow` can remain compact and declarative.
+  """
 
   @terminal_transitions [:complete]
   @allowed_trigger_types [:manual, :cron]
   @built_in_step_kinds [:wait, :log]
   @log_levels [:debug, :info, :warning, :error]
 
+  @doc """
+  Validates a compiled workflow definition and raises a compile error when the
+  declaration is invalid.
+  """
   @spec validate!(map(), Macro.Env.t()) :: :ok
   def validate!(definition, env) do
     case validation_errors(definition) do
@@ -24,6 +33,10 @@ defmodule SquidMesh.Workflow.Validation do
     end
   end
 
+  @doc """
+  Returns the single workflow entry step or raises when the workflow does not
+  define exactly one entry step.
+  """
   @spec entry_step!(map(), Macro.Env.t()) :: atom()
   def entry_step!(definition, env) do
     case entry_steps(definition) do
@@ -39,6 +52,9 @@ defmodule SquidMesh.Workflow.Validation do
     end
   end
 
+  @doc """
+  Converts trigger declarations into the normalized runtime trigger shape.
+  """
   @spec normalize_triggers!(map()) :: [map()]
   def normalize_triggers!(definition) do
     Enum.map(definition.triggers, fn trigger ->
@@ -53,10 +69,16 @@ defmodule SquidMesh.Workflow.Validation do
     end)
   end
 
+  @doc """
+  Returns the canonical workflow payload contract derived from the trigger set.
+  """
   @spec workflow_payload!([map()]) :: [map()]
   def workflow_payload!([trigger]), do: trigger.payload
   def workflow_payload!(_other), do: []
 
+  @doc """
+  Derives workflow retry declarations from per-step retry configuration.
+  """
   @spec derive_retries([map()]) :: [map()]
   def derive_retries(steps) do
     Enum.flat_map(steps, fn step ->
