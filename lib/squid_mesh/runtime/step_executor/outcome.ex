@@ -139,45 +139,78 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   defp advance_after_success(config, run, :complete, output, _execution_opts) do
     context = Map.merge(run.context || %{}, output)
-
-    case RunStore.transition_run(config.repo, run.id, :completed, %{
-           context: context,
-           current_step: nil,
-           last_error: nil
-         }) do
-      {:ok, _completed_run} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    finalize_success(config, run.id, context, :complete)
   end
 
   defp advance_after_success(config, run, next_step, output, execution_opts)
        when is_atom(next_step) do
     context = Map.merge(run.context || %{}, output)
     dispatch_opts = Keyword.take(execution_opts, [:schedule_in])
+    finalize_success(config, run.id, context, {:next_step, next_step, dispatch_opts})
+  end
 
-    case RunStore.update_and_dispatch_run(
-           config.repo,
-           run.id,
-           %{
-             context: context,
-             current_step: next_step,
-             last_error: nil
-           },
-           fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end
-         ) do
-      {:ok, _updated_run} ->
-        :ok
+  defp finalize_success(config, run_id, context, :complete) do
+    with {:ok, latest_run} <- RunStore.get_run(config.repo, run_id) do
+      case latest_run.status do
+        :cancelling ->
+          RunStore.transition_run(config.repo, run_id, :cancelled, %{
+            context: context,
+            current_step: nil,
+            last_error: nil
+          })
+          |> normalize_run_transition_result()
 
-      {:error, reason} ->
-        mark_failed_after_next_step_dispatch_error(
-          config.repo,
-          run.id,
-          next_step,
-          context,
-          reason
-        )
+        _other_status ->
+          RunStore.transition_run(config.repo, run_id, :completed, %{
+            context: context,
+            current_step: nil,
+            last_error: nil
+          })
+          |> normalize_run_transition_result()
+      end
     end
   end
+
+  defp finalize_success(config, run_id, context, {:next_step, next_step, dispatch_opts}) do
+    with {:ok, latest_run} <- RunStore.get_run(config.repo, run_id) do
+      case latest_run.status do
+        :cancelling ->
+          RunStore.transition_run(config.repo, run_id, :cancelled, %{
+            context: context,
+            current_step: nil,
+            last_error: nil
+          })
+          |> normalize_run_transition_result()
+
+        _other_status ->
+          case RunStore.update_and_dispatch_run(
+                 config.repo,
+                 run_id,
+                 %{
+                   context: context,
+                   current_step: next_step,
+                   last_error: nil
+                 },
+                 fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end
+               ) do
+            {:ok, _updated_run} ->
+              :ok
+
+            {:error, reason} ->
+              mark_failed_after_next_step_dispatch_error(
+                config.repo,
+                run_id,
+                next_step,
+                context,
+                reason
+              )
+          end
+      end
+    end
+  end
+
+  defp normalize_run_transition_result({:ok, _run}), do: :ok
+  defp normalize_run_transition_result({:error, reason}), do: {:error, reason}
 
   defp normalize_error(%{__struct__: module} = error) do
     details =

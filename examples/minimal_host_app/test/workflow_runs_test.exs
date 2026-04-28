@@ -49,6 +49,11 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.context.gateway_check.status == "retry_required"
   end
 
+  test "runs the cancellation smoke path" do
+    assert %SquidMesh.Run{} = run = Smoke.run_cancellation!()
+    assert run.status == :cancelled
+  end
+
   defp endpoint_url(port, path) do
     "http://127.0.0.1:#{port}#{path}"
   end
