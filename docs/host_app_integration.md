@@ -1,30 +1,17 @@
 # Host App Integration
 
-Squid Mesh is configured once by the host application and then consumed through
-application code and application-facing APIs.
-
 This document defines the initial integration contract for:
 
 - Phoenix applications
 - OTP applications with an existing `Repo`
 - existing installations that already run background jobs
 
-## Author Experience
+## Installation
 
-Workflow authors and application developers should work with:
+Add `:squid_mesh` to the host application's dependencies and fetch dependencies
+as usual with Mix.
 
-- declarative workflow modules
-- Squid Mesh public API calls
-- product-level concepts such as runs, steps, retries, cancellations, and replay
-
-They should not need to understand:
-
-- persistence internals
-- supervision structure
-- execution recovery mechanics
-- job scheduling details
-
-## Required Host App Configuration
+## Configuration
 
 The host application configures Squid Mesh under the `:squid_mesh` application:
 
@@ -47,23 +34,25 @@ Optional keys:
 - `:execution[:name]` - the background job system name to target
 - `:execution[:queue]` - queue used for Squid Mesh jobs, defaults to `:squid_mesh`
 
-## Existing Application Path
+## Existing Application Setup
 
 For an existing Phoenix or OTP application:
 
 1. Add the `:squid_mesh` dependency.
 2. Configure `:repo` to point at the app's existing repo.
 3. Configure `:execution` to point at the app's existing background job setup.
-4. Expose Squid Mesh capabilities through the host application's own contexts,
-   services, controllers, or internal APIs.
+4. Call `SquidMesh.config!/0` during boot or integration setup to verify the
+   required contract is present.
+5. Integrate Squid Mesh from the host application's contexts, services,
+   controllers, or internal APIs.
 
-The host application remains responsible for:
+The host application is responsible for:
 
 - database setup and migrations
 - background job infrastructure lifecycle
 - any HTTP or internal API endpoints exposed to end users
 
-## Standalone Development Path
+## Development Setup
 
 For local development and examples, a minimal host app can provide:
 
@@ -71,10 +60,9 @@ For local development and examples, a minimal host app can provide:
 - a local background job setup
 - direct application code calls into Squid Mesh
 
-This path exists to make development and examples easy. It does not change the
-integration contract used by existing applications.
+This uses the same configuration contract as an existing application setup.
 
-## Validation API
+## Validation
 
 Host applications can validate the contract directly:
 
@@ -88,5 +76,7 @@ Or raise on missing required keys:
 config = SquidMesh.config!()
 ```
 
-This keeps installer-facing concerns concentrated in one place while the rest
-of the library can build on a stable runtime boundary.
+## Example Development Harness
+
+The example host app smoke-test harness builds on this same contract and is the
+reference setup for end-to-end development and verification.
