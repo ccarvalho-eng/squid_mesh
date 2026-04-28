@@ -7,8 +7,8 @@
   [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 </div>
 
-Squid Mesh is a workflow automation platform for Phoenix and OTP
-applications.
+Squid Mesh lets Phoenix and OTP applications define, run, inspect, and replay
+durable workflows in code.
 
 ## Requirements
 
@@ -65,19 +65,26 @@ defmodule Billing.Workflows.PaymentRecovery do
       manual()
 
       payload do
-        field(:account_id, :string, default: "acct_default")
+        field(:account_id, :string)
         field(:invoice_id, :string)
-        field(:prompt_date, :string, default: {:today, :iso8601})
+        field(:attempt_id, :string)
       end
     end
 
     step(:load_invoice, Billing.Steps.LoadInvoice)
+    step(:wait_for_settlement, :wait, duration: 5_000)
+    step(:log_recovery_attempt, :log,
+      message: "Invoice loaded, checking gateway status",
+      level: :info
+    )
     step(:check_gateway_status, Billing.Steps.CheckGatewayStatus,
       retry: [max_attempts: 5]
     )
     step(:notify_customer, Billing.Steps.NotifyCustomer)
 
-    transition(:load_invoice, on: :ok, to: :check_gateway_status)
+    transition(:load_invoice, on: :ok, to: :wait_for_settlement)
+    transition(:wait_for_settlement, on: :ok, to: :log_recovery_attempt)
+    transition(:log_recovery_attempt, on: :ok, to: :check_gateway_status)
     transition(:check_gateway_status, on: :ok, to: :notify_customer)
     transition(:notify_customer, on: :ok, to: :complete)
   end
@@ -106,10 +113,11 @@ end
 
 ```elixir
 defmodule Billing.WorkflowRuns do
-  def start_payment_recovery(account_id, invoice_id) do
+  def start_payment_recovery(account_id, invoice_id, attempt_id) do
     SquidMesh.start_run(Billing.Workflows.PaymentRecovery, :payment_recovery, %{
       account_id: account_id,
-      invoice_id: invoice_id
+      invoice_id: invoice_id,
+      attempt_id: attempt_id
     })
   end
 
@@ -133,6 +141,12 @@ end
 
 If a workflow defines a single trigger, `SquidMesh.start_run/2` remains the
 short path and uses that default trigger automatically.
+
+The same workflow can mix custom step modules and built-in primitives:
+
+- module steps for domain behavior and external integrations
+- `:wait` for timed pauses between steps
+- `:log` for durable, declarative operational markers in the flow
 
 Run lifecycle states currently include:
 
