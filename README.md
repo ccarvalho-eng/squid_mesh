@@ -1,5 +1,5 @@
 <div align="center">
-  <img width="350" alt="logo" src="https://github.com/user-attachments/assets/22c973ae-5d03-4aaf-99c9-75640e985f1e" />
+  <img width="340" alt="logo" src="https://github.com/user-attachments/assets/22c973ae-5d03-4aaf-99c9-75640e985f1e" />
 
   <p><i>Durable workflow runtime for Elixir applications.</i></p>
 
