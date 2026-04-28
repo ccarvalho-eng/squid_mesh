@@ -112,7 +112,7 @@ not run a separate scheduler or manage `oban_jobs` itself.
                                               |
                                               v
 +--------------------------------------------------------------------------------+
-| Container: Squid Mesh library                                                   |
+| Container: Squid Mesh library                                                  |
 |                                                                                |
 | Responsibilities                                                               |
 | - public runtime API (`SquidMesh`)                                             |
