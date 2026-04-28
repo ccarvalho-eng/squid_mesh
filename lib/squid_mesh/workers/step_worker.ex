@@ -14,9 +14,10 @@ defmodule SquidMesh.Workers.StepWorker do
 
   @impl Oban.Worker
   @spec perform(Oban.Job.t()) :: Oban.Worker.result()
-  def perform(%Oban.Job{args: %{"run_id" => run_id}}) when is_binary(run_id) do
+  def perform(%Oban.Job{args: %{"run_id" => run_id, "step" => step}})
+      when is_binary(run_id) and is_binary(step) do
     try do
-      case StepExecutor.execute(run_id) do
+      case StepExecutor.execute(run_id, step) do
         :ok ->
           :ok
 

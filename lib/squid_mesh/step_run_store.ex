@@ -9,10 +9,14 @@ defmodule SquidMesh.StepRunStore do
   @type step_input :: map()
   @type step_output :: map()
   @type step_error :: map()
+  @type begin_result :: {:ok, StepRun.t(), :execute | :skip} | {:error, Ecto.Changeset.t()}
 
-  @spec start_step(module(), Ecto.UUID.t(), step_identifier(), step_input()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t()}
-  def start_step(repo, run_id, step, input) when is_map(input) do
+  @doc """
+  Marks a step as ready for execution if it has not already completed or been
+  claimed by another delivery of the same workflow step.
+  """
+  @spec begin_step(module(), Ecto.UUID.t(), step_identifier(), step_input()) :: begin_result()
+  def begin_step(repo, run_id, step, input) when is_map(input) do
     attrs = %{
       run_id: run_id,
       step: serialize_step(step),
@@ -23,15 +27,24 @@ defmodule SquidMesh.StepRunStore do
     }
 
     case get_step_run(repo, run_id, step) do
+      %StepRun{status: status} = step_run when status in ["running", "completed"] ->
+        {:ok, step_run, :skip}
+
       %StepRun{} = step_run ->
-        step_run
-        |> StepRun.changeset(attrs)
-        |> repo.update()
+        case step_run
+             |> StepRun.changeset(attrs)
+             |> repo.update() do
+          {:ok, updated_step_run} -> {:ok, updated_step_run, :execute}
+          {:error, changeset} -> {:error, changeset}
+        end
 
       nil ->
-        %StepRun{}
-        |> StepRun.changeset(attrs)
-        |> repo.insert()
+        case %StepRun{}
+             |> StepRun.changeset(attrs)
+             |> repo.insert() do
+          {:ok, step_run} -> {:ok, step_run, :execute}
+          {:error, changeset} -> {:error, changeset}
+        end
     end
   end
 

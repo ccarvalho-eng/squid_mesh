@@ -7,8 +7,8 @@
   [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 </div>
 
-Squid Mesh lets Phoenix and OTP applications define, run, inspect, and replay
-durable workflows in code.
+Squid Mesh lets Phoenix and OTP applications define, run, inspect, replay, and
+recover durable workflows in code.
 
 ## Requirements
 
@@ -20,8 +20,8 @@ durable workflows in code.
 
 ## Installation
 
-For local development against a checkout, add Squid Mesh to your host
-application's dependencies:
+For local development against a checkout, add Squid Mesh to your application's
+dependencies:
 
 ```elixir
 defp deps do
@@ -54,12 +54,43 @@ Public runtime API:
 - `SquidMesh.cancel_run/2`
 - `SquidMesh.replay_run/2`
 
-## How It Fits Together
+## Runtime Overview
 
 - Squid Mesh defines workflow structure, run state, retries, replay, and inspection.
-- Oban handles durable background execution of workflow steps.
+- Oban handles durable execution, scheduling, and redelivery of workflow step jobs.
 - Jido powers step behavior and action execution inside the runtime.
 - Postgres stores the durable source of truth for runs, steps, and attempts.
+
+## Execution Model
+
+- One workflow step execution maps to one Oban job.
+- Squid Mesh decides whether a step should run, retry, fail, complete, or no-op.
+- Oban owns job durability, scheduling, and redelivery.
+- Step retry policy is declared in the workflow and scheduled through Oban.
+- Step implementations should be idempotent when they perform external side effects.
+
+Squid Mesh does not try to re-implement worker coordination that Oban already
+provides. The runtime stays focused on workflow semantics and durable run
+state, while Oban remains the execution engine underneath.
+
+## Recovery Boundaries
+
+V1 guarantees:
+
+- Runs, steps, and attempts are persisted in Postgres.
+- Queued and scheduled step work survives deploys and restarts through Oban.
+- Retry, replay, inspection, and cancellation operate on durable run state.
+- Stale or duplicate step deliveries are treated as workflow-level no-ops when possible.
+
+V1 does not claim:
+
+- Custom heartbeats or worker leases beyond Oban's own job lifecycle.
+- Automatic reclamation of an interrupted in-flight step that died mid-side-effect.
+- Exactly-once delivery for external effects without idempotent step implementations.
+
+If a workflow step talks to an external system, the step should own its own
+idempotency key or duplicate-protection strategy at that boundary.
+
 ## Workflow Example
 
 ```elixir
@@ -148,7 +179,7 @@ end
 If a workflow defines a single trigger, `SquidMesh.start_run/2` remains the
 short path and uses that default trigger automatically.
 
-The same workflow can mix custom step modules and built-in primitives:
+Workflows can mix custom step modules and built-in primitives:
 
 - module steps for domain behavior and external integrations
 - `:wait` for timed pauses between steps
@@ -162,8 +193,8 @@ step(:check_gateway_status, Billing.Steps.CheckGatewayStatus,
 )
 ```
 
-That keeps retries declarative while Squid Mesh and Oban handle delayed
-rescheduling underneath.
+That keeps retry policy on the step that owns the work while Squid Mesh and
+Oban handle delayed rescheduling underneath.
 
 Run lifecycle states currently include:
 

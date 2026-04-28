@@ -5,6 +5,8 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Persistence.StepRun
+  alias SquidMesh.StepRunStore
+  alias SquidMesh.Workers.StepWorker
   alias Oban.Job
 
   defmodule SuccessfulWorkflow do
@@ -163,7 +165,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert_enqueued(
         worker: SquidMesh.Workers.StepWorker,
         queue: "squid_mesh",
-        args: %{"run_id" => run.id}
+        args: %{"run_id" => run.id, "step" => "load_invoice"}
       )
 
       assert %{success: 2, failure: 0} =
@@ -285,6 +287,69 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert DateTime.compare(scheduled_job.scheduled_at, scheduled_job.inserted_at) == :gt
+    end
+
+    test "ignores stale step jobs after the run advances to the next step" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(SuccessfulWorkflow, input, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_invoice"}
+               })
+
+      assert {:ok, running_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert running_run.status == :running
+      assert running_run.current_step == :send_email
+
+      load_invoice_step_run =
+        Repo.one!(
+          from(step_run in StepRun,
+            where: step_run.run_id == ^run.id and step_run.step == "load_invoice"
+          )
+        )
+
+      assert AttemptStore.attempt_count(Repo, load_invoice_step_run.id) == 1
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_invoice"}
+               })
+
+      assert AttemptStore.attempt_count(Repo, load_invoice_step_run.id) == 1
+
+      assert 1 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' = 'send_email'", job.args)
+                 ),
+                 :count
+               )
+    end
+
+    test "does not re-execute a step that is already marked running" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(SuccessfulWorkflow, input, repo: Repo)
+      assert {:ok, running_run} = SquidMesh.RunStore.transition_run(Repo, run.id, :running)
+
+      assert {:ok, step_run, :execute} =
+               StepRunStore.begin_step(Repo, running_run.id, :load_invoice, input)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_invoice"}
+               })
+
+      assert AttemptStore.attempt_count(Repo, step_run.id) == 0
+
+      assert %StepRun{status: "running"} =
+               Repo.get!(StepRun, step_run.id)
     end
   end
 end
