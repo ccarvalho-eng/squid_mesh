@@ -50,56 +50,153 @@ Current runtime API:
 - `SquidMesh.list_runs/2`
 - `SquidMesh.cancel_run/2`
 
-## Define A Workflow
+## Current Example
 
 ```elixir
-defmodule Billing.Workflows.PaymentRecovery do
+defmodule Content.Workflows.PostDailyDigest do
   use SquidMesh.Workflow
 
   workflow do
     input do
-      field(:account_id, :string)
-      field(:invoice_id, :string)
-      field(:attempt_id, :string)
+      field(:feed_url, :string)
+      field(:discord_webhook_url, :string)
+      field(:posted_on, :string)
     end
 
-    step(:load_invoice, Billing.Steps.LoadInvoice)
-    step(:check_gateway, Billing.Steps.CheckGatewayStatus)
-    step(:notify_customer, Billing.Steps.NotifyCustomer)
-    step(:open_follow_up, Billing.Steps.OpenFollowUpTask)
+    step(:fetch_feed, Content.Steps.FetchRssFeed)
+    step(:build_digest, Content.Steps.BuildDiscordDigest)
+    step(:post_to_discord, Content.Steps.PostDiscordMessage)
 
-    transition(:load_invoice, on: :ok, to: :check_gateway)
-    transition(:check_gateway, on: :retry_required, to: :notify_customer)
-    transition(:notify_customer, on: :ok, to: :open_follow_up)
-    transition(:open_follow_up, on: :ok, to: :complete)
+    transition(:fetch_feed, on: :ok, to: :build_digest)
+    transition(:build_digest, on: :ok, to: :post_to_discord)
+    transition(:post_to_discord, on: :ok, to: :complete)
 
-    retry(:check_gateway, max_attempts: 5)
+    retry(:fetch_feed, max_attempts: 3)
+    retry(:post_to_discord, max_attempts: 5)
   end
 end
 ```
 
-## Call It From Your App
+## Call It From Your App Today
 
 ```elixir
-defmodule Billing do
-  def recover_failed_payment(account_id, invoice_id, attempt_id) do
-    SquidMesh.start_run(Billing.Workflows.PaymentRecovery, %{
-      account_id: account_id,
-      invoice_id: invoice_id,
-      attempt_id: attempt_id
+defmodule Content.DailyDigestJob do
+  def run do
+    SquidMesh.start_run(Content.Workflows.PostDailyDigest, %{
+      feed_url: "https://example.com/feed.xml",
+      discord_webhook_url: System.fetch_env!("DISCORD_WEBHOOK_URL"),
+      posted_on: Date.utc_today() |> Date.to_iso8601()
     })
   end
 
-  def inspect_payment_recovery(run_id) do
+  def inspect_digest_run(run_id) do
     SquidMesh.inspect_run(run_id)
   end
 
-  def list_active_recoveries do
+  def list_active_digests do
     SquidMesh.list_runs(status: :running)
   end
 
-  def cancel_payment_recovery(run_id) do
+  def cancel_digest_run(run_id) do
     SquidMesh.cancel_run(run_id)
+  end
+end
+```
+
+That workflow would typically be triggered by your application's own daily cron
+job or scheduler.
+
+## Illustrative End-State Example
+
+The snippet below shows the intended runtime shape once replay and execution
+issues are complete.
+
+```elixir
+config :squid_mesh,
+  repo: MyApp.Repo,
+  execution: [
+    name: MyApp.Oban,
+    queue: :daily_digests
+  ]
+
+defmodule Content.Workflows.PostDailyDigest do
+  use SquidMesh.Workflow
+
+  workflow do
+    input do
+      field(:feed_url, :string)
+      field(:discord_webhook_url, :string)
+      field(:posted_on, :string)
+    end
+
+    step(:fetch_feed, Content.Steps.FetchRssFeed)
+    step(:filter_entries, Content.Steps.FilterEntriesForToday)
+    step(:build_digest, Content.Steps.BuildDiscordDigest)
+    step(:post_to_discord, Content.Steps.PostDiscordMessage)
+    step(:record_delivery, Content.Steps.RecordDigestDelivery)
+
+    transition(:fetch_feed, on: :ok, to: :filter_entries)
+    transition(:filter_entries, on: :ok, to: :build_digest)
+    transition(:build_digest, on: :ok, to: :post_to_discord)
+    transition(:post_to_discord, on: :ok, to: :record_delivery)
+    transition(:record_delivery, on: :ok, to: :complete)
+
+    retry(:fetch_feed, max_attempts: 3)
+    retry(:post_to_discord, max_attempts: 5)
+  end
+end
+
+defmodule Content.Steps.FetchRssFeed do
+  def run(input, context) do
+    Content.Agents.FetchRssFeed.run(input, context)
+  end
+end
+
+defmodule Content.Agents.FetchRssFeed do
+  # Jido-backed agent or action module
+  def run(%{feed_url: feed_url} = input, _context) do
+    with {:ok, response} <- Req.get(feed_url),
+         {:ok, entries} <- Content.Rss.parse_entries(response.body) do
+      {:ok, Map.put(input, :entries, entries)}
+    else
+      {:error, reason} ->
+        {:error, %{message: "failed to fetch RSS feed", reason: reason}}
+    end
+  end
+end
+
+defmodule Content.DigestRuns do
+  def start_daily_digest(feed_url, webhook_url) do
+    SquidMesh.start_run(Content.Workflows.PostDailyDigest, %{
+      feed_url: feed_url,
+      discord_webhook_url: webhook_url,
+      posted_on: Date.utc_today() |> Date.to_iso8601()
+    })
+  end
+
+  def inspect_run(run_id) do
+    SquidMesh.inspect_run(run_id)
+  end
+
+  def list_recent_runs do
+    SquidMesh.list_runs(workflow: Content.Workflows.PostDailyDigest, limit: 20)
+  end
+
+  def cancel_run(run_id) do
+    SquidMesh.cancel_run(run_id)
+  end
+
+  def replay_run(run_id) do
+    SquidMesh.replay_run(run_id)
+  end
+end
+
+defmodule Content.DailyDigestJob do
+  def run do
+    Content.DigestRuns.start_daily_digest(
+      "https://example.com/feed.xml",
+      System.fetch_env!("DISCORD_WEBHOOK_URL")
+    )
   end
 end
 ```
