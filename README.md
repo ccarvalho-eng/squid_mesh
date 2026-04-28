@@ -54,6 +54,13 @@ Public runtime API:
 - `SquidMesh.cancel_run/2`
 - `SquidMesh.replay_run/2`
 
+## How It Fits Together
+    
+- Squid Mesh defines workflow structure, run state, retries, replay, and inspection.
+- Oban handles durable background execution of workflow steps.
+- Jido powers step behavior and action execution inside the runtime.
+- Postgres stores the durable source of truth for runs, steps, and attempts.  
+    
 ## Workflow Example
 
 ```elixir
