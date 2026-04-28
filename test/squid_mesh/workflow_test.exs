@@ -347,6 +347,52 @@ defmodule SquidMesh.WorkflowTest do
            ]
   end
 
+  test "fails when a payload default does not match the declared field type" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidPayloadDefault do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+
+            payload do
+              field(:max_attempts, :integer, default: "five")
+            end
+          end
+
+          step(:load_invoice, WorkflowWithInvalidPayloadDefault.LoadInvoice)
+        end
+      end
+      """,
+      "payload field :max_attempts defines an invalid default for type :integer"
+    )
+  end
+
+  test "fails when a dynamic payload default does not match the declared field type" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidDynamicPayloadDefault do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+
+            payload do
+              field(:prompt_date, :integer, default: {:today, :iso8601})
+            end
+          end
+
+          step(:load_invoice, WorkflowWithInvalidDynamicPayloadDefault.LoadInvoice)
+        end
+      end
+      """,
+      "payload field :prompt_date defines an invalid default for type :integer"
+    )
+  end
+
   defp assert_compile_error(source, message) do
     error =
       assert_raise CompileError, fn ->

@@ -63,9 +63,9 @@ defmodule Billing.Workflows.PaymentRecovery do
       manual()
 
       payload do
-        field(:account_id, :string)
+        field(:account_id, :string, default: "acct_default")
         field(:invoice_id, :string)
-        field(:attempt_id, :string)
+        field(:prompt_date, :string, default: {:today, :iso8601})
       end
     end
 
@@ -104,11 +104,10 @@ end
 
 ```elixir
 defmodule Billing.WorkflowRuns do
-  def start_payment_recovery(account_id, invoice_id, attempt_id) do
+  def start_payment_recovery(account_id, invoice_id) do
     SquidMesh.start_run(Billing.Workflows.PaymentRecovery, %{
       account_id: account_id,
-      invoice_id: invoice_id,
-      attempt_id: attempt_id
+      invoice_id: invoice_id
     })
   end
 

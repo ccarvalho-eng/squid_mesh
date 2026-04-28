@@ -73,9 +73,11 @@ defmodule SquidMesh.Workflow.Validation do
 
   defp validation_errors(definition) do
     step_names = Enum.map(definition.steps, & &1.name)
+    payload_fields = workflow_payload_fields(definition)
 
     []
     |> validate_triggers(definition.triggers)
+    |> validate_payload_defaults(payload_fields)
     |> require_steps(step_names)
     |> validate_unique_step_names(step_names)
     |> validate_transitions(definition.transitions, step_names)
@@ -138,6 +140,25 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp validate_trigger_config(errors, _trigger), do: errors
+
+  defp validate_payload_defaults(errors, payload_fields) do
+    Enum.reduce(payload_fields, errors, fn field, acc ->
+      case Keyword.fetch(field.opts, :default) do
+        {:ok, default} ->
+          if valid_payload_default?(field.type, default) do
+            acc
+          else
+            [
+              "payload field #{inspect(field.name)} defines an invalid default for type #{inspect(field.type)}"
+              | acc
+            ]
+          end
+
+        :error ->
+          acc
+      end
+    end)
+  end
 
   defp require_steps(errors, []), do: ["at least one step is required" | errors]
   defp require_steps(errors, _step_names), do: errors
@@ -209,6 +230,17 @@ defmodule SquidMesh.Workflow.Validation do
     end
   end
 
+  defp valid_payload_default?(:string, {:today, :iso8601}), do: true
+  defp valid_payload_default?(type, default), do: input_matches_type?(default, type)
+
+  defp workflow_payload_fields(%{payload: payload}) when is_list(payload), do: payload
+
+  defp workflow_payload_fields(%{triggers: [trigger]}) when is_map(trigger) do
+    Map.get(trigger, :payload, [])
+  end
+
+  defp workflow_payload_fields(_definition), do: []
+
   defp entry_steps(definition) do
     transition_targets =
       definition.transitions
@@ -219,4 +251,13 @@ defmodule SquidMesh.Workflow.Validation do
     |> Enum.map(& &1.name)
     |> Enum.reject(&MapSet.member?(transition_targets, &1))
   end
+
+  defp input_matches_type?(value, :string), do: is_binary(value)
+  defp input_matches_type?(value, :integer), do: is_integer(value)
+  defp input_matches_type?(value, :float), do: is_float(value)
+  defp input_matches_type?(value, :boolean), do: is_boolean(value)
+  defp input_matches_type?(value, :map), do: is_map(value)
+  defp input_matches_type?(value, :list), do: is_list(value)
+  defp input_matches_type?(value, :atom), do: is_atom(value)
+  defp input_matches_type?(_value, _unknown_type), do: true
 end

@@ -31,11 +31,11 @@ defmodule SquidMesh.RunStore do
   @spec create_run(module(), module(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, payload) when is_map(payload) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         :ok <- WorkflowDefinition.validate_payload(definition, payload) do
+         {:ok, resolved_payload} <- WorkflowDefinition.resolve_payload(definition, payload) do
       attrs = %{
         workflow: WorkflowDefinition.serialize_workflow(workflow),
         status: "pending",
-        input: payload,
+        input: resolved_payload,
         context: %{},
         current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition))
       }
