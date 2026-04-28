@@ -1,0 +1,47 @@
+defmodule MinimalHostApp.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :minimal_host_app,
+      version: "0.1.0",
+      elixir: "~> 1.17",
+      elixirc_paths: elixirc_paths(Mix.env()),
+      start_permanent: Mix.env() == :prod,
+      aliases: aliases(),
+      deps: deps()
+    ]
+  end
+
+  def application do
+    [
+      extra_applications: [:logger],
+      mod: {MinimalHostApp.Application, []}
+    ]
+  end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
+  defp deps do
+    [
+      {:ecto_sql, "~> 3.13"},
+      {:oban, "~> 2.20"},
+      {:postgrex, ">= 0.0.0"},
+      {:squid_mesh, path: "../.."}
+    ]
+  end
+
+  defp aliases do
+    [
+      setup: ["deps.get", "ecto.setup"],
+      "ecto.setup": [
+        "ecto.create",
+        "ecto.migrate",
+        "ecto.migrate --migrations-path ../../priv/repo/migrations"
+      ],
+      "ecto.reset": ["ecto.drop", "ecto.setup"],
+      smoke: ["run -e 'MinimalHostApp.Smoke.run!()'"]
+    ]
+  end
+end

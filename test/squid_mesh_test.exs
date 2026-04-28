@@ -3,6 +3,7 @@ defmodule SquidMeshTest do
 
   alias SquidMesh.Run
   alias SquidMesh.TestSupport.FakeRepo
+  alias SquidMesh.TestSupport.LazyWorkflow
 
   defmodule InvoiceReminderWorkflow do
     use SquidMesh.Workflow
@@ -90,6 +91,18 @@ defmodule SquidMeshTest do
     test "rejects modules that do not define the workflow contract" do
       assert {:error, {:invalid_workflow, String}} =
                SquidMesh.start_run(String, %{}, repo: FakeRepo)
+    end
+
+    test "loads workflow modules on demand before validating the contract" do
+      :code.purge(LazyWorkflow)
+      :code.delete(LazyWorkflow)
+
+      refute :code.is_loaded(LazyWorkflow)
+
+      assert {:ok, %Run{} = run} =
+               SquidMesh.start_run(LazyWorkflow, %{account_id: "acct_123"}, repo: FakeRepo)
+
+      assert run.workflow == LazyWorkflow
     end
 
     test "rejects non-map input payloads" do

@@ -50,10 +50,16 @@ defmodule SquidMesh.RunStore do
 
   @spec workflow_definition(module()) :: {:ok, map()} | {:error, {:invalid_workflow, module()}}
   defp workflow_definition(workflow) do
-    if function_exported?(workflow, :workflow_definition, 0) do
-      {:ok, workflow.workflow_definition()}
-    else
-      {:error, {:invalid_workflow, workflow}}
+    case Code.ensure_loaded(workflow) do
+      {:module, ^workflow} ->
+        if function_exported?(workflow, :workflow_definition, 0) do
+          {:ok, workflow.workflow_definition()}
+        else
+          {:error, {:invalid_workflow, workflow}}
+        end
+
+      {:error, _reason} ->
+        {:error, {:invalid_workflow, workflow}}
     end
   end
 

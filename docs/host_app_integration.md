@@ -80,3 +80,23 @@ config = SquidMesh.config!()
 
 The example host app smoke-test harness builds on this same contract and is the
 reference setup for end-to-end development and verification.
+
+Path:
+
+- `examples/minimal_host_app`
+
+Suggested workflow:
+
+1. Start Postgres for the example app.
+2. Run `mix setup` inside `examples/minimal_host_app`.
+3. Run `mix example.smoke` to exercise the host app boundary.
+
+Fast verification path:
+
+- run `MIX_ENV=test mix example.smoke` inside `examples/minimal_host_app`
+
+The example app wires:
+
+- its own `MinimalHostApp.Repo`
+- its own `Oban` instance
+- Squid Mesh through `MinimalHostApp.WorkflowRuns`
