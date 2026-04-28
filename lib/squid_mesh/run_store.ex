@@ -97,6 +97,24 @@ defmodule SquidMesh.RunStore do
     end)
   end
 
+  @spec cancel_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, transition_error()}
+  def cancel_run(repo, run_id) do
+    with {:ok, run} <- get_run(repo, run_id) do
+      with {:ok, target_status} <- cancellation_target_status(run.status) do
+        transition_run(repo, run_id, target_status)
+      end
+    else
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @spec schedule_next_step?(Run.t() | Run.status()) :: boolean()
+  def schedule_next_step?(%Run{status: status}), do: StateMachine.schedule_next_step?(status)
+
+  def schedule_next_step?(status) when is_atom(status),
+    do: StateMachine.schedule_next_step?(status)
+
   @spec workflow_definition(module()) :: {:ok, map()} | {:error, {:invalid_workflow, module()}}
   defp workflow_definition(workflow) do
     case Code.ensure_loaded(workflow) do
@@ -217,6 +235,13 @@ defmodule SquidMesh.RunStore do
 
   @spec serialize_status(Run.status()) :: String.t()
   defp serialize_status(status) when is_atom(status), do: Atom.to_string(status)
+
+  @spec cancellation_target_status(Run.status()) ::
+          {:ok, Run.status()} | {:error, {:invalid_transition, Run.status(), Run.status()}}
+  defp cancellation_target_status(:pending), do: {:ok, :cancelled}
+  defp cancellation_target_status(:running), do: {:ok, :cancelling}
+  defp cancellation_target_status(:retrying), do: {:ok, :cancelling}
+  defp cancellation_target_status(state), do: {:error, {:invalid_transition, state, :cancelling}}
 
   @spec transition_changeset_attrs(Run.status(), transition_attrs()) :: map()
   defp transition_changeset_attrs(to_status, attrs) do

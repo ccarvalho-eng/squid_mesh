@@ -2,6 +2,7 @@ defmodule SquidMeshTest do
   use ExUnit.Case
 
   alias SquidMesh.Run
+  alias SquidMesh.RunStore
   alias SquidMesh.TestSupport.FakeRepo
   alias SquidMesh.TestSupport.LazyWorkflow
 
@@ -210,6 +211,36 @@ defmodule SquidMeshTest do
       assert {:ok, runs} = SquidMesh.list_runs([limit: 1], repo: FakeRepo)
 
       assert Enum.map(runs, & &1.id) == [second_run.id]
+    end
+  end
+
+  describe "cancel_run/2" do
+    test "cancels pending runs through the public API" do
+      assert {:ok, run} =
+               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
+                 repo: FakeRepo
+               )
+
+      assert {:ok, cancelled_run} = SquidMesh.cancel_run(run.id, repo: FakeRepo)
+
+      assert cancelled_run.id == run.id
+      assert cancelled_run.status == :cancelled
+    end
+
+    test "marks active runs as cancelling through the public API" do
+      assert {:ok, run} =
+               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
+                 repo: FakeRepo
+               )
+
+      assert {:ok, running_run} = RunStore.transition_run(FakeRepo, run.id, :running)
+      assert {:ok, cancelling_run} = SquidMesh.cancel_run(running_run.id, repo: FakeRepo)
+
+      assert cancelling_run.status == :cancelling
+    end
+
+    test "returns not found for missing runs" do
+      assert {:error, :not_found} = SquidMesh.cancel_run(Ecto.UUID.generate(), repo: FakeRepo)
     end
   end
 end

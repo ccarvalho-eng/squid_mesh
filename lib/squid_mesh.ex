@@ -51,4 +51,16 @@ defmodule SquidMesh do
       RunStore.list_runs(config.repo, filters)
     end
   end
+
+  @doc """
+  Requests cancellation for an eligible workflow run.
+  """
+  @spec cancel_run(Ecto.UUID.t(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error, :not_found | {:missing_config, [atom()]} | RunStore.transition_error()}
+  def cancel_run(run_id, overrides \\ []) do
+    with {:ok, config} <- Config.load(overrides) do
+      RunStore.cancel_run(config.repo, run_id)
+    end
+  end
 end

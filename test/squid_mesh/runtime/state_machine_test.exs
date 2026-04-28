@@ -81,4 +81,17 @@ defmodule SquidMesh.Runtime.StateMachineTest do
       refute StateMachine.can_transition?(:paused, :running)
     end
   end
+
+  describe "schedule_next_step?/1" do
+    test "allows scheduling only for active execution states" do
+      assert StateMachine.schedule_next_step?(:pending)
+      assert StateMachine.schedule_next_step?(:running)
+      assert StateMachine.schedule_next_step?(:retrying)
+
+      refute StateMachine.schedule_next_step?(:cancelling)
+      refute StateMachine.schedule_next_step?(:cancelled)
+      refute StateMachine.schedule_next_step?(:failed)
+      refute StateMachine.schedule_next_step?(:completed)
+    end
+  end
 end
