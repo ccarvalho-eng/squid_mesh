@@ -35,3 +35,7 @@ Squid Mesh lets application teams define workflows declaratively in Elixir and e
 - API-first runtime for Elixir applications
 - Declarative developer experience that hides execution internals
 - Built for operational visibility from day one
+
+## Documentation
+
+- [Host app integration](docs/host_app_integration.md)
