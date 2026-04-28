@@ -63,4 +63,78 @@ defmodule SquidMesh.WorkflowTest do
 
     assert InvoiceReminder.__workflow__(:retries) == InvoiceReminder.workflow_definition().retries
   end
+
+  test "fails when no steps are declared" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithoutSteps do
+        use SquidMesh.Workflow
+
+        workflow do
+          input do
+            field(:account_id, :string)
+          end
+        end
+      end
+      """,
+      "at least one step is required"
+    )
+  end
+
+  test "fails when step names are duplicated" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithDuplicateSteps do
+        use SquidMesh.Workflow
+
+        workflow do
+          step(:send_email, WorkflowWithDuplicateSteps.SendEmail)
+          step(:send_email, WorkflowWithDuplicateSteps.RecordDelivery)
+        end
+      end
+      """,
+      "duplicate step names: :send_email"
+    )
+  end
+
+  test "fails when retry policy is malformed" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidRetry do
+        use SquidMesh.Workflow
+
+        workflow do
+          step(:send_email, WorkflowWithInvalidRetry.SendEmail)
+          retry(:send_email, max_attempts: 0)
+        end
+      end
+      """,
+      "retry for :send_email must define a positive :max_attempts"
+    )
+  end
+
+  test "fails when retry references an unknown step" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithUnknownRetryStep do
+        use SquidMesh.Workflow
+
+        workflow do
+          step(:send_email, WorkflowWithUnknownRetryStep.SendEmail)
+          retry(:record_delivery, max_attempts: 3)
+        end
+      end
+      """,
+      "retry references unknown step: :record_delivery"
+    )
+  end
+
+  defp assert_compile_error(source, message) do
+    error =
+      assert_raise CompileError, fn ->
+        Code.compile_string(source, "test/support/invalid_workflow.exs")
+      end
+
+    assert Exception.message(error) |> String.contains?(message)
+  end
 end
