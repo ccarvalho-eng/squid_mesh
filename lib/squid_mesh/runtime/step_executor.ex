@@ -6,8 +6,11 @@ defmodule SquidMesh.Runtime.StepExecutor do
   turned into durable step execution and persisted run progress.
   """
 
+  require Logger
+
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
+  alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.BuiltInStep
@@ -80,7 +83,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
         config,
         definition,
         running_run,
-        step_run.id
+        step_run
       )
     end
   end
@@ -108,19 +111,21 @@ defmodule SquidMesh.Runtime.StepExecutor do
           Config.t(),
           WorkflowDefinition.t(),
           Run.t(),
-          Ecto.UUID.t()
+          SquidMesh.Persistence.StepRun.t()
         ) :: :ok | {:error, execution_error() | term()}
   defp maybe_execute_step(
          :skip,
-         _current_step,
+         current_step,
          _step,
          _input,
          _config,
          _definition,
-         _run,
-         _step_run_id
-       ),
-       do: :ok
+         run,
+         step_run
+       ) do
+    Observability.emit_step_skipped(run, current_step, "already_#{step_run.status}")
+    :ok
+  end
 
   defp maybe_execute_step(
          :execute,
@@ -130,13 +135,26 @@ defmodule SquidMesh.Runtime.StepExecutor do
          config,
          definition,
          run,
-         step_run_id
+         step_run
        ) do
-    attempt_number = AttemptStore.attempt_count(config.repo, step_run_id) + 1
+    attempt_number = AttemptStore.attempt_count(config.repo, step_run.id) + 1
 
-    current_step
-    |> execute_step(step, input, run)
-    |> persist_execution_result(config, definition, run, step_run_id, attempt_number)
+    Observability.with_step_metadata(run, current_step, attempt_number, fn ->
+      Observability.emit_step_started(run, current_step, attempt_number)
+
+      started_at = System.monotonic_time()
+
+      current_step
+      |> execute_step(step, input, run)
+      |> persist_execution_result(
+        config,
+        definition,
+        run,
+        step_run.id,
+        attempt_number,
+        started_at
+      )
+    end)
   end
 
   @spec build_step_input(Run.t()) :: map()
@@ -175,7 +193,8 @@ defmodule SquidMesh.Runtime.StepExecutor do
           WorkflowDefinition.t(),
           Run.t(),
           Ecto.UUID.t(),
-          pos_integer()
+          pos_integer(),
+          integer()
         ) :: :ok | {:error, execution_error() | term()}
   defp persist_execution_result(
          {:ok, output},
@@ -183,12 +202,16 @@ defmodule SquidMesh.Runtime.StepExecutor do
          definition,
          run,
          step_run_id,
-         attempt_number
+         attempt_number,
+         started_at
        ) do
+    duration = System.monotonic_time() - started_at
+
     with {:ok, _attempt} <-
            AttemptStore.record_attempt(config.repo, step_run_id, attempt_number, "completed"),
          {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, output),
          {:ok, target} <- WorkflowDefinition.transition_target(definition, run.current_step, :ok) do
+      Observability.emit_step_completed(run, run.current_step, attempt_number, duration)
       advance_after_success(config, run, target, output)
     end
   end
@@ -199,17 +222,24 @@ defmodule SquidMesh.Runtime.StepExecutor do
          _definition,
          run,
          step_run_id,
-         attempt_number
+         attempt_number,
+         started_at
        ) do
     error = normalize_error(reason)
+    duration = System.monotonic_time() - started_at
 
     with {:ok, _attempt} <-
            AttemptStore.record_attempt(config.repo, step_run_id, attempt_number, "failed", %{
              error: error
            }),
          {:ok, _step_run} <- StepRunStore.fail_step(config.repo, step_run_id, error) do
+      Observability.emit_step_failed(run, run.current_step, attempt_number, duration, error)
+
       case RetryPolicy.resolve(run.workflow, run.current_step, attempt_number) do
         {:retry, _next_attempt, delay_ms} ->
+          Logger.warning("workflow step failed; scheduling retry")
+          Observability.emit_step_retry_scheduled(run, run.current_step, attempt_number, delay_ms)
+
           with {:ok, retried_run} <-
                  RunStore.transition_run(config.repo, run.id, :retrying, %{
                    current_step: run.current_step,
@@ -224,6 +254,8 @@ defmodule SquidMesh.Runtime.StepExecutor do
           end
 
         _no_retry ->
+          Logger.error("workflow step failed")
+
           case RunStore.transition_run(config.repo, run.id, :failed, %{
                  current_step: run.current_step,
                  last_error: error

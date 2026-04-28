@@ -236,6 +236,7 @@ Run lifecycle states currently include:
 ## Getting Started
 
 - [Host app integration](docs/host_app_integration.md)
+- [Observability](docs/observability.md)
 - [Tool adapters](docs/tool_adapters.md)
 - [Example host app harness](examples/minimal_host_app/README.md)
 

@@ -7,6 +7,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
   """
 
   alias SquidMesh.Config
+  alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.Workers.StepWorker
 
@@ -17,7 +18,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
           {:ok, Oban.Job.t()} | {:error, dispatch_error()}
   def dispatch_run(config, run, opts \\ [])
 
-  def dispatch_run(%Config{} = config, %Run{id: run_id, current_step: current_step}, opts)
+  def dispatch_run(%Config{} = config, %Run{id: run_id, current_step: current_step} = run, opts)
       when is_binary(run_id) and is_atom(current_step) do
     schedule_in = Keyword.get(opts, :schedule_in)
 
@@ -28,6 +29,14 @@ defmodule SquidMesh.Runtime.Dispatcher do
     %{run_id: run_id, step: current_step}
     |> StepWorker.new(job_opts)
     |> then(&Oban.insert(config.execution_name, &1))
+    |> case do
+      {:ok, job} = ok ->
+        Observability.emit_run_dispatched(run, job, config.execution_queue, schedule_in)
+        ok
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   def dispatch_run(%Config{}, %Run{current_step: current_step}, _opts) do
