@@ -4,6 +4,7 @@ defmodule SquidMesh.RunStore do
   import Ecto.Query
 
   alias SquidMesh.Persistence.Run, as: RunRecord
+  alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.Runtime.StateMachine
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
@@ -77,15 +78,22 @@ defmodule SquidMesh.RunStore do
             replayed_from_run_id: source_run.id
           }
 
-          repo.transaction(fn ->
-            %RunRecord{}
-            |> RunRecord.changeset(attrs)
-            |> repo.insert()
-            |> case do
-              {:ok, replay_run} -> to_public_run(replay_run)
-              {:error, changeset} -> repo.rollback({:invalid_run, changeset})
-            end
-          end)
+          case repo.transaction(fn ->
+                 %RunRecord{}
+                 |> RunRecord.changeset(attrs)
+                 |> repo.insert()
+                 |> case do
+                   {:ok, replay_run} -> to_public_run(replay_run)
+                   {:error, changeset} -> repo.rollback({:invalid_run, changeset})
+                 end
+               end) do
+            {:ok, replay_run} ->
+              Observability.emit_run_replayed(replay_run)
+              {:ok, replay_run}
+
+            {:error, _reason} = error ->
+              error
+          end
         end
 
       nil ->
@@ -127,8 +135,13 @@ defmodule SquidMesh.RunStore do
             |> RunRecord.changeset(transition_changeset_attrs(to_status, attrs))
             |> repo.update()
             |> case do
-              {:ok, updated_run} -> to_public_run(updated_run)
-              {:error, changeset} -> repo.rollback({:invalid_run, changeset})
+              {:ok, updated_run} ->
+                public_run = to_public_run(updated_run)
+                Observability.emit_run_transition(public_run, from_status, to_status)
+                public_run
+
+              {:error, changeset} ->
+                repo.rollback({:invalid_run, changeset})
             end
           else
             {:error, reason} -> repo.rollback(reason)
@@ -273,15 +286,22 @@ defmodule SquidMesh.RunStore do
       current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition))
     }
 
-    repo.transaction(fn ->
-      %RunRecord{}
-      |> RunRecord.changeset(attrs)
-      |> repo.insert()
-      |> case do
-        {:ok, run} -> to_public_run(run)
-        {:error, changeset} -> repo.rollback({:invalid_run, changeset})
-      end
-    end)
+    case repo.transaction(fn ->
+           %RunRecord{}
+           |> RunRecord.changeset(attrs)
+           |> repo.insert()
+           |> case do
+             {:ok, run} -> to_public_run(run)
+             {:error, changeset} -> repo.rollback({:invalid_run, changeset})
+           end
+         end) do
+      {:ok, run} ->
+        Observability.emit_run_created(run)
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   @spec deserialize_step(WorkflowDefinition.t() | nil, String.t() | nil) ::

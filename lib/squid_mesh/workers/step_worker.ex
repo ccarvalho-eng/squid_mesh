@@ -10,29 +10,35 @@ defmodule SquidMesh.Workers.StepWorker do
 
   require Logger
 
+  alias SquidMesh.Observability
   alias SquidMesh.Runtime.StepExecutor
 
   @impl Oban.Worker
   @spec perform(Oban.Job.t()) :: Oban.Worker.result()
   def perform(%Oban.Job{args: %{"run_id" => run_id, "step" => step}})
       when is_binary(run_id) and is_binary(step) do
-    try do
-      case StepExecutor.execute(run_id, step) do
-        :ok ->
-          :ok
+    Observability.with_run_metadata(
+      %SquidMesh.Run{id: run_id, workflow: nil, trigger: nil, status: nil, current_step: step},
+      fn ->
+        try do
+          case StepExecutor.execute(run_id, step) do
+            :ok ->
+              :ok
 
-        {:error, reason} = error ->
-          Logger.error("step execution failed for run #{run_id}: #{inspect(reason)}")
-          error
+            {:error, reason} = error ->
+              Logger.error("step execution failed: #{inspect(reason)}")
+              error
+          end
+        rescue
+          exception ->
+            Logger.error("""
+            unexpected step execution exception: #{Exception.format(:error, exception, __STACKTRACE__)}
+            """)
+
+            {:error, {:exception, Exception.message(exception)}}
+        end
       end
-    rescue
-      exception ->
-        Logger.error("""
-        unexpected step execution exception for run #{run_id}: #{Exception.format(:error, exception, __STACKTRACE__)}
-        """)
-
-        {:error, {:exception, Exception.message(exception)}}
-    end
+    )
   end
 
   def perform(%Oban.Job{} = job) do
