@@ -6,10 +6,14 @@ defmodule MinimalHostApp.Workflows.PaymentRecovery do
   use SquidMesh.Workflow
 
   workflow do
-    input do
-      field(:account_id, :string)
-      field(:invoice_id, :string)
-      field(:attempt_id, :string)
+    trigger :manual do
+      manual()
+
+      payload do
+        field(:account_id, :string)
+        field(:invoice_id, :string)
+        field(:attempt_id, :string)
+      end
     end
 
     step(:load_invoice, MinimalHostApp.Steps.LoadInvoice)

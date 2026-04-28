@@ -59,10 +59,14 @@ defmodule Billing.Workflows.PaymentRecovery do
   use SquidMesh.Workflow
 
   workflow do
-    input do
-      field(:account_id, :string)
-      field(:invoice_id, :string)
-      field(:attempt_id, :string)
+    trigger :manual do
+      manual()
+
+      payload do
+        field(:account_id, :string)
+        field(:invoice_id, :string)
+        field(:attempt_id, :string)
+      end
     end
 
     step(:load_invoice, Billing.Steps.LoadInvoice)
@@ -119,7 +123,7 @@ defmodule Billing.WorkflowRuns do
   def cancel_payment_recovery(run_id) do
     SquidMesh.cancel_run(run_id)
   end
- 
+
   def replay_payment_recovery(run_id) do
     SquidMesh.replay_run(run_id)
   end

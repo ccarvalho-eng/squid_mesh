@@ -3,8 +3,8 @@ defmodule SquidMesh.Persistence.Run do
   Persisted workflow run state.
 
   A run is the top-level durable record for one workflow execution. It stores
-  the workflow identity, the input payload, the current step pointer, and any
-  replay lineage needed for later inspection or recovery.
+  the workflow identity, the initial workflow payload, the current step
+  pointer, and any replay lineage needed for later inspection or recovery.
   """
 
   use Ecto.Schema

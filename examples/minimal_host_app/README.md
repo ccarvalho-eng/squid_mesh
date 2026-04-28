@@ -62,6 +62,9 @@ MinimalHostApp.WorkflowRuns.start_payment_recovery(%{
 })
 ```
 
+That map is the workflow payload for the manual trigger declared in the
+example workflow.
+
 The reference workflow and step modules live in:
 
 - `lib/minimal_host_app/workflows/payment_recovery.ex`

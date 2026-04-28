@@ -10,9 +10,13 @@ defmodule SquidMeshTest do
     use SquidMesh.Workflow
 
     workflow do
-      input do
-        field(:account_id, :string)
-        field(:invoice_id, :string)
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
       end
 
       step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice)
@@ -29,8 +33,12 @@ defmodule SquidMeshTest do
     use SquidMesh.Workflow
 
     workflow do
-      input do
-        field(:account_id, :string)
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
       end
 
       step(:check_gateway, PaymentRecoveryWorkflow.CheckGateway)
@@ -43,8 +51,12 @@ defmodule SquidMeshTest do
     use SquidMesh.Workflow
 
     workflow do
-      input do
-        field(:account_id, :string)
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
       end
 
       step(:send_email, ReorderedWorkflow.SendEmail)
@@ -96,14 +108,14 @@ defmodule SquidMeshTest do
 
   describe "start_run/3" do
     test "persists a new run and returns the public run shape" do
-      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+      payload = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, %Run{} = run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, input, repo: Repo)
+               SquidMesh.start_run(InvoiceReminderWorkflow, payload, repo: Repo)
 
       assert run.workflow == InvoiceReminderWorkflow
       assert run.status == :pending
-      assert run.input == input
+      assert run.payload == payload
       assert run.context == %{}
       assert run.current_step == :load_invoice
       assert run.last_error == nil
@@ -129,8 +141,8 @@ defmodule SquidMeshTest do
       assert run.workflow == LazyWorkflow
     end
 
-    test "rejects non-map input payloads" do
-      assert {:error, {:invalid_input, :expected_map}} =
+    test "rejects non-map payloads" do
+      assert {:error, {:invalid_payload, :expected_map}} =
                SquidMesh.start_run(InvoiceReminderWorkflow, [:not_a_map], repo: Repo)
     end
 
@@ -141,13 +153,13 @@ defmodule SquidMeshTest do
       assert run.current_step == :load_invoice
     end
 
-    test "rejects missing required input fields" do
-      assert {:error, {:invalid_input, %{missing_fields: [:invoice_id]}}} =
+    test "rejects payloads with missing required fields" do
+      assert {:error, {:invalid_payload, %{missing_fields: [:invoice_id]}}} =
                SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"}, repo: Repo)
     end
 
-    test "rejects undeclared input fields" do
-      assert {:error, {:invalid_input, %{unknown_fields: [:unexpected]}}} =
+    test "rejects payloads with undeclared fields" do
+      assert {:error, {:invalid_payload, %{unknown_fields: [:unexpected]}}} =
                SquidMesh.start_run(
                  InvoiceReminderWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456", unexpected: true},
@@ -155,8 +167,8 @@ defmodule SquidMeshTest do
                )
     end
 
-    test "rejects input fields with invalid types" do
-      assert {:error, {:invalid_input, %{invalid_types: %{invoice_id: :string}}}} =
+    test "rejects payload fields with invalid types" do
+      assert {:error, {:invalid_payload, %{invalid_types: %{invoice_id: :string}}}} =
                SquidMesh.start_run(
                  InvoiceReminderWorkflow,
                  %{account_id: "acct_123", invoice_id: 123},
@@ -328,7 +340,7 @@ defmodule SquidMeshTest do
       assert replay_run.id != source_run.id
       assert replay_run.workflow == InvoiceReminderWorkflow
       assert replay_run.status == :pending
-      assert replay_run.input == source_run.input
+      assert replay_run.payload == source_run.payload
       assert replay_run.current_step == :load_invoice
       assert replay_run.replayed_from_run_id == source_run.id
     end

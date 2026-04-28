@@ -8,8 +8,12 @@ defmodule SquidMesh.RunStoreTest do
     use SquidMesh.Workflow
 
     workflow do
-      input do
-        field(:account_id, :string)
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
       end
 
       step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice)
@@ -119,16 +123,16 @@ defmodule SquidMesh.RunStoreTest do
 
   describe "replay_run/2" do
     test "creates a distinct pending run linked to the source run" do
-      input = %{account_id: "acct_123"}
+      payload = %{account_id: "acct_123"}
 
-      assert {:ok, source_run} = RunStore.create_run(Repo, InvoiceReminderWorkflow, input)
+      assert {:ok, source_run} = RunStore.create_run(Repo, InvoiceReminderWorkflow, payload)
 
       assert {:ok, replay_run} = RunStore.replay_run(Repo, source_run.id)
 
       assert replay_run.id != source_run.id
       assert replay_run.workflow == source_run.workflow
       assert replay_run.status == :pending
-      assert replay_run.input == input
+      assert replay_run.payload == payload
       assert replay_run.context == %{}
       assert replay_run.current_step == :load_invoice
       assert replay_run.last_error == nil

@@ -19,16 +19,16 @@ defmodule SquidMesh do
   defdelegate config!(overrides \\ []), to: Config, as: :load!
 
   @doc """
-  Starts a new workflow run with the given input payload.
+  Starts a new workflow run with the given payload.
   """
   @spec start_run(module(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
           | {:error, RunStore.create_error()}
           | {:error, {:dispatch_failed, term()}}
-  def start_run(workflow, input, overrides \\ []) do
+  def start_run(workflow, payload, overrides \\ []) do
     with {:ok, config} <- Config.load(overrides),
-         {:ok, run} <- RunStore.create_run(config.repo, workflow, input),
+         {:ok, run} <- RunStore.create_run(config.repo, workflow, payload),
          {:ok, _job} <- Dispatcher.dispatch_run(config, run) do
       {:ok, run}
     else

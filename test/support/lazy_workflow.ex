@@ -4,8 +4,12 @@ defmodule SquidMesh.TestSupport.LazyWorkflow do
   use SquidMesh.Workflow
 
   workflow do
-    input do
-      field(:account_id, :string)
+    trigger :manual do
+      manual()
+
+      payload do
+        field(:account_id, :string)
+      end
     end
 
     step(:load_invoice, SquidMesh.TestSupport.LazyWorkflow.LoadInvoice)

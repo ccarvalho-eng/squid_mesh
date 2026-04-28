@@ -15,7 +15,7 @@ defmodule SquidMesh.Run do
     :id,
     :workflow,
     :status,
-    :input,
+    :payload,
     :context,
     :current_step,
     :last_error,

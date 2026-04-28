@@ -7,6 +7,14 @@ defmodule SquidMesh.Runtime.RetryPolicyTest do
     use SquidMesh.Workflow
 
     workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:invoice_id, :string)
+        end
+      end
+
       step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice)
       step(:send_email, InvoiceReminderWorkflow.SendEmail)
 
@@ -21,6 +29,14 @@ defmodule SquidMesh.Runtime.RetryPolicyTest do
     use SquidMesh.Workflow
 
     workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:notification_id, :string)
+        end
+      end
+
       step(:notify_customer, NoRetryWorkflow.NotifyCustomer)
       transition(:notify_customer, on: :ok, to: :complete)
     end
