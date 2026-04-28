@@ -187,6 +187,27 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
+  test "fails when retry backoff configuration is invalid" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidRetryBackoff do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:send_email, WorkflowWithInvalidRetryBackoff.SendEmail,
+            retry: [max_attempts: 3, backoff: [type: :exponential, min: 0, max: 1_000]]
+          )
+        end
+      end
+      """,
+      "retry for :send_email defines an invalid :backoff option"
+    )
+  end
+
   test "fails when a workflow defines multiple entry steps" do
     assert_compile_error(
       """

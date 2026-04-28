@@ -5,6 +5,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Persistence.StepRun
+  alias Oban.Job
 
   defmodule SuccessfulWorkflow do
     use SquidMesh.Workflow
@@ -89,6 +90,40 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     use Jido.Action,
       name: "check_gateway",
       description: "Checks gateway availability",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(_params, _context) do
+      {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+    end
+  end
+
+  defmodule BackoffWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:check_gateway, BackoffWorkflow.CheckGateway,
+        retry: [max_attempts: 3, backoff: [type: :exponential, min: 1_000, max: 5_000]]
+      )
+
+      transition(:check_gateway, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule BackoffWorkflow.CheckGateway do
+    use Jido.Action,
+      name: "check_gateway",
+      description: "Checks gateway availability with retry backoff",
       schema: [
         account_id: [type: :string, required: true]
       ]
@@ -213,6 +248,43 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                {"wait_for_settlement", "completed"},
                {"log_delivery", "completed"}
              ]
+    end
+
+    test "schedules the next retry attempt through Oban when backoff is configured" do
+      assert {:ok, run} =
+               SquidMesh.start_run(BackoffWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+
+      assert {:ok, retried_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert retried_run.status == :retrying
+      assert retried_run.current_step == :check_gateway
+      assert retried_run.last_error == %{message: "gateway timeout", code: "gateway_timeout"}
+
+      assert %StepRun{} =
+               step_run =
+               Repo.one!(
+                 from(step_run in StepRun,
+                   where: step_run.run_id == ^run.id and step_run.step == "check_gateway"
+                 )
+               )
+
+      assert AttemptStore.attempt_count(Repo, step_run.id) == 1
+
+      assert %Job{} =
+               scheduled_job =
+               Repo.one!(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "scheduled" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id),
+                   order_by: [desc: job.inserted_at],
+                   limit: 1
+                 )
+               )
+
+      assert DateTime.compare(scheduled_job.scheduled_at, scheduled_job.inserted_at) == :gt
     end
   end
 end

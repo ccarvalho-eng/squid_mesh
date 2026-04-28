@@ -275,12 +275,43 @@ defmodule SquidMesh.Workflow.Validation do
       max_attempts = Keyword.get(opts, :max_attempts)
 
       if is_integer(max_attempts) and max_attempts > 0 do
-        errors
+        validate_retry_backoff(errors, step, opts)
       else
         ["retry for #{inspect(step)} must define a positive :max_attempts" | errors]
       end
     else
       ["retry for #{inspect(step)} must define a positive :max_attempts" | errors]
+    end
+  end
+
+  defp validate_retry_backoff(errors, step, opts) do
+    case Keyword.get(opts, :backoff) do
+      nil ->
+        errors
+
+      backoff when is_list(backoff) ->
+        if valid_retry_backoff?(backoff) do
+          errors
+        else
+          ["retry for #{inspect(step)} defines an invalid :backoff option" | errors]
+        end
+
+      _other ->
+        ["retry for #{inspect(step)} defines an invalid :backoff option" | errors]
+    end
+  end
+
+  defp valid_retry_backoff?(backoff) do
+    case Keyword.get(backoff, :type) do
+      :exponential ->
+        min_delay = Keyword.get(backoff, :min)
+        max_delay = Keyword.get(backoff, :max)
+
+        is_integer(min_delay) and min_delay > 0 and
+          is_integer(max_delay) and max_delay >= min_delay
+
+      _other ->
+        false
     end
   end
 
