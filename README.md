@@ -7,26 +7,50 @@
   [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 </div>
 
+Squid Mesh is a library for defining and running durable workflows inside
+Phoenix and OTP applications.
 
+## Requirements
 
-Squid Mesh lets application teams define workflows declaratively in Elixir and execute them through a stable application-facing API. It is designed to plug into existing Phoenix and OTP applications so engineers can expose workflow capabilities through their own endpoints, services, and domain boundaries.
+- an existing Elixir application
+- an existing Ecto `Repo`
+- Postgres for persisted runtime state
+- an existing `Oban` setup for background execution
 
-## What It Provides
+## Installation
 
-- Declarative workflow definitions in Elixir modules
-- Durable workflow runs and step state
-- Retry, resume, cancel, and replay semantics
-- Public API for starting, inspecting, listing, cancelling, and replaying runs
-- Integration with an existing `Repo` and background job setup
+For local development against a checkout, add Squid Mesh to your host
+application's dependencies:
 
-## Product Shape
+```elixir
+defp deps do
+  [
+    {:squid_mesh, path: "../squid_mesh"}
+  ]
+end
+```
 
-- Runs inside Elixir applications, not as a hosted product
-- API-first runtime for Elixir applications
-- Declarative developer experience that hides execution internals
-- Built for operational visibility from day one
+## Configuration
 
-## Example Workflow
+Configure Squid Mesh under the `:squid_mesh` application:
+
+```elixir
+config :squid_mesh,
+  repo: MyApp.Repo,
+  execution: [
+    name: Oban,
+    queue: :squid_mesh
+  ]
+```
+
+Current runtime API:
+
+- `SquidMesh.start_run/3`
+- `SquidMesh.inspect_run/2`
+- `SquidMesh.list_runs/2`
+- `SquidMesh.cancel_run/2`
+
+## Define A Workflow
 
 ```elixir
 defmodule Billing.Workflows.PaymentRecovery do
@@ -54,7 +78,7 @@ defmodule Billing.Workflows.PaymentRecovery do
 end
 ```
 
-## Example Host App Call
+## Call It From Your App
 
 ```elixir
 defmodule Billing do
@@ -65,10 +89,39 @@ defmodule Billing do
       attempt_id: attempt_id
     })
   end
+
+  def inspect_payment_recovery(run_id) do
+    SquidMesh.inspect_run(run_id)
+  end
+
+  def list_active_recoveries do
+    SquidMesh.list_runs(status: :running)
+  end
+
+  def cancel_payment_recovery(run_id) do
+    SquidMesh.cancel_run(run_id)
+  end
 end
 ```
 
-## Documentation
+Run lifecycle states currently include:
+
+- `pending`
+- `running`
+- `retrying`
+- `failed`
+- `completed`
+- `cancelling`
+- `cancelled`
+
+## Getting Started
 
 - [Host app integration](docs/host_app_integration.md)
 - [Example host app harness](examples/minimal_host_app/README.md)
+
+Fast local smoke path:
+
+```sh
+cd examples/minimal_host_app
+MIX_ENV=test mix example.smoke
+```
