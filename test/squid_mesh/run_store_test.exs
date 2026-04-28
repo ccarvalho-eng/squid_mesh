@@ -109,4 +109,45 @@ defmodule SquidMesh.RunStoreTest do
                RunStore.cancel_run(FakeRepo, failed_run.id)
     end
   end
+
+  describe "replay_run/2" do
+    test "creates a distinct pending run linked to the source run" do
+      input = %{account_id: "acct_123"}
+
+      assert {:ok, source_run} = RunStore.create_run(FakeRepo, InvoiceReminderWorkflow, input)
+
+      assert {:ok, replay_run} = RunStore.replay_run(FakeRepo, source_run.id)
+
+      assert replay_run.id != source_run.id
+      assert replay_run.workflow == source_run.workflow
+      assert replay_run.status == :pending
+      assert replay_run.input == input
+      assert replay_run.context == %{}
+      assert replay_run.current_step == :load_invoice
+      assert replay_run.last_error == nil
+      assert replay_run.replayed_from_run_id == source_run.id
+    end
+
+    test "leaves the source run unchanged" do
+      assert {:ok, source_run} =
+               RunStore.create_run(FakeRepo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, failed_run} =
+               RunStore.transition_run(FakeRepo, source_run.id, :failed, %{
+                 current_step: :load_invoice,
+                 context: %{attempt: 1},
+                 last_error: %{message: "timeout"}
+               })
+
+      assert {:ok, replay_run} = RunStore.replay_run(FakeRepo, failed_run.id)
+      assert {:ok, persisted_source_run} = RunStore.get_run(FakeRepo, failed_run.id)
+
+      assert replay_run.replayed_from_run_id == failed_run.id
+      assert persisted_source_run == failed_run
+    end
+
+    test "returns not found when the source run does not exist" do
+      assert {:error, :not_found} = RunStore.replay_run(FakeRepo, Ecto.UUID.generate())
+    end
+  end
 end

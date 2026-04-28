@@ -63,4 +63,16 @@ defmodule SquidMesh do
       RunStore.cancel_run(config.repo, run_id)
     end
   end
+
+  @doc """
+  Creates a new run from a prior run and links it to the original run.
+  """
+  @spec replay_run(Ecto.UUID.t(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error, :not_found | {:missing_config, [atom()]} | RunStore.replay_error()}
+  def replay_run(run_id, overrides \\ []) do
+    with {:ok, config} <- Config.load(overrides) do
+      RunStore.replay_run(config.repo, run_id)
+    end
+  end
 end
