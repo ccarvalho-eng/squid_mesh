@@ -19,16 +19,7 @@ defmodule SquidMesh.Persistence.StepAttempt do
 
   @type status :: String.t()
 
-  @type t :: %__MODULE__{
-          id: Ecto.UUID.t() | nil,
-          step_run_id: Ecto.UUID.t() | nil,
-          step_run: StepRun.t() | Ecto.Association.NotLoaded.t() | nil,
-          attempt_number: non_neg_integer() | nil,
-          status: status() | nil,
-          error: map() | nil,
-          inserted_at: DateTime.t() | nil,
-          updated_at: DateTime.t() | nil
-        }
+  @type t :: %__MODULE__{}
 
   @required_fields ~w(step_run_id attempt_number status)a
   @optional_fields ~w(error)a

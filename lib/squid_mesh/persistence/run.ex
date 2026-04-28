@@ -19,20 +19,7 @@ defmodule SquidMesh.Persistence.Run do
 
   @type status :: String.t()
 
-  @type t :: %__MODULE__{
-          id: Ecto.UUID.t() | nil,
-          workflow: String.t() | nil,
-          status: status() | nil,
-          input: map() | nil,
-          context: map() | nil,
-          current_step: String.t() | nil,
-          last_error: map() | nil,
-          replayed_from_run_id: Ecto.UUID.t() | nil,
-          replayed_from_run: __MODULE__.t() | Ecto.Association.NotLoaded.t() | nil,
-          step_runs: [StepRun.t()] | Ecto.Association.NotLoaded.t(),
-          inserted_at: DateTime.t() | nil,
-          updated_at: DateTime.t() | nil
-        }
+  @type t :: %__MODULE__{}
 
   @required_fields ~w(workflow status input)a
   @optional_fields ~w(context current_step last_error replayed_from_run_id)a
