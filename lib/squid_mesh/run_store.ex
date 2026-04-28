@@ -26,6 +26,7 @@ defmodule SquidMesh.RunStore do
   @type transition_error ::
           get_error() | StateMachine.transition_error() | {:invalid_run, Ecto.Changeset.t()}
   @type replay_error :: get_error() | create_error()
+  @type update_error :: get_error() | {:invalid_run, Ecto.Changeset.t()}
 
   @spec create_run(module(), module(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, input) when is_map(input) do
@@ -60,15 +61,15 @@ defmodule SquidMesh.RunStore do
   def replay_run(repo, run_id) do
     case repo.get(RunRecord, run_id) do
       %RunRecord{} = source_run ->
-        with {:ok, workflow} <- workflow_module(source_run.workflow),
-             {:ok, definition} <- workflow_definition(workflow),
-             {:ok, first_step} <- first_step(workflow, definition) do
+        with {:ok, _workflow, definition} <-
+               WorkflowDefinition.load_serialized(source_run.workflow) do
           attrs = %{
             workflow: source_run.workflow,
             status: "pending",
             input: source_run.input || %{},
             context: %{},
-            current_step: Atom.to_string(first_step),
+            current_step:
+              WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition)),
             replayed_from_run_id: source_run.id
           }
 
@@ -147,6 +148,28 @@ defmodule SquidMesh.RunStore do
     end
   end
 
+  @spec update_run(module(), Ecto.UUID.t(), transition_attrs()) ::
+          {:ok, Run.t()} | {:error, update_error()}
+  def update_run(repo, run_id, attrs) when is_map(attrs) do
+    repo.transaction(fn ->
+      case repo.get(RunRecord, run_id) do
+        %RunRecord{} = run ->
+          run
+          |> RunRecord.changeset(
+            serialize_transition_attrs(Map.take(attrs, [:context, :current_step, :last_error]))
+          )
+          |> repo.update()
+          |> case do
+            {:ok, updated_run} -> to_public_run(updated_run)
+            {:error, changeset} -> repo.rollback({:invalid_run, changeset})
+          end
+
+        nil ->
+          repo.rollback(:not_found)
+      end
+    end)
+  end
+
   @spec schedule_next_step?(Run.t() | Run.status()) :: boolean()
   def schedule_next_step?(%Run{status: status}), do: StateMachine.schedule_next_step?(status)
 
@@ -209,9 +232,9 @@ defmodule SquidMesh.RunStore do
       workflow: workflow,
       status: deserialize_status(run.status),
       input: WorkflowDefinition.deserialize_input(definition, run.input || %{}),
-      context: run.context || %{},
+      context: deserialize_map(run.context || %{}),
       current_step: deserialize_step(definition, run.current_step),
-      last_error: run.last_error,
+      last_error: deserialize_map(run.last_error),
       replayed_from_run_id: run.replayed_from_run_id,
       inserted_at: run.inserted_at,
       updated_at: run.updated_at
@@ -256,6 +279,33 @@ defmodule SquidMesh.RunStore do
   @spec serialize_status(Run.status()) :: String.t()
   defp serialize_status(status) when is_atom(status), do: Atom.to_string(status)
 
+  @spec deserialize_map(map() | nil) :: map() | nil
+  defp deserialize_map(nil), do: nil
+
+  defp deserialize_map(map) when is_map(map) do
+    Map.new(map, fn
+      {key, value} when is_binary(key) ->
+        {deserialize_key(key), deserialize_value(value)}
+
+      {key, value} ->
+        {key, deserialize_value(value)}
+    end)
+  end
+
+  @spec deserialize_value(term()) :: term()
+  defp deserialize_value(value) when is_map(value), do: deserialize_map(value)
+  defp deserialize_value(value) when is_list(value), do: Enum.map(value, &deserialize_value/1)
+  defp deserialize_value(value), do: value
+
+  @spec deserialize_key(String.t()) :: atom() | String.t()
+  defp deserialize_key(key) do
+    try do
+      String.to_existing_atom(key)
+    rescue
+      ArgumentError -> key
+    end
+  end
+
   @spec cancellation_target_status(Run.status()) ::
           {:ok, Run.status()} | {:error, {:invalid_transition, Run.status(), Run.status()}}
   defp cancellation_target_status(:pending), do: {:ok, :cancelled}
@@ -273,6 +323,7 @@ defmodule SquidMesh.RunStore do
 
   defp serialize_transition_attrs(attrs) do
     Map.update(attrs, :current_step, nil, fn
+      nil -> nil
       current_step when is_atom(current_step) -> Atom.to_string(current_step)
       current_step -> current_step
     end)

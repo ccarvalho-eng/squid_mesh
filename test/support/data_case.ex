@@ -2,6 +2,7 @@ defmodule SquidMesh.DataCase do
   @moduledoc false
 
   use ExUnit.CaseTemplate
+  use Oban.Testing, repo: SquidMesh.Test.Repo
 
   alias Ecto.Adapters.SQL.Sandbox
 

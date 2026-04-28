@@ -20,6 +20,7 @@ defmodule SquidMesh.Workflow.Definition do
           optional(:unknown_fields) => [atom() | String.t()],
           optional(:invalid_types) => %{optional(atom()) => atom()}
         }
+  @type transition_target :: atom() | :complete
 
   @spec load(module()) :: {:ok, t()} | {:error, load_error()}
   def load(workflow) when is_atom(workflow) do
@@ -95,6 +96,24 @@ defmodule SquidMesh.Workflow.Definition do
 
   @spec entry_step(t()) :: atom()
   def entry_step(definition), do: definition.entry_step
+
+  @spec step_module(t(), atom()) :: {:ok, module()} | {:error, {:unknown_step, atom()}}
+  def step_module(definition, step_name) when is_atom(step_name) do
+    case Enum.find(definition.steps, &(&1.name == step_name)) do
+      %{module: module} -> {:ok, module}
+      nil -> {:error, {:unknown_step, step_name}}
+    end
+  end
+
+  @spec transition_target(t(), atom(), atom()) ::
+          {:ok, transition_target()} | {:error, {:unknown_transition, atom(), atom()}}
+  def transition_target(definition, from_step, outcome)
+      when is_atom(from_step) and is_atom(outcome) do
+    case Enum.find(definition.transitions, &(&1.from == from_step and &1.on == outcome)) do
+      %{to: to_step} -> {:ok, to_step}
+      nil -> {:error, {:unknown_transition, from_step, outcome}}
+    end
+  end
 
   @spec deserialize_input(t() | nil, map()) :: map()
   def deserialize_input(nil, input), do: input

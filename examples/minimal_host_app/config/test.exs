@@ -3,9 +3,26 @@ import Config
 config :minimal_host_app,
   runtime_children: []
 
+config :minimal_host_app, MinimalHostApp.Repo,
+  pool: Ecto.Adapters.SQL.Sandbox,
+  show_sensitive_data_on_connection_error: true,
+  stacktrace: true,
+  url:
+    System.get_env("DATABASE_URL") ||
+      "postgres://postgres:postgres@localhost:5432/minimal_host_app_test"
+
+config :minimal_host_app, Oban,
+  name: Oban,
+  repo: MinimalHostApp.Repo,
+  testing: :manual,
+  plugins: [],
+  queues: [squid_mesh: 5]
+
 config :squid_mesh,
-  repo: MinimalHostApp.TestSupport.FakeRepo,
+  repo: MinimalHostApp.Repo,
   execution: [
     name: Oban,
     queue: :squid_mesh
   ]
+
+config :logger, level: :warning

@@ -3,8 +3,21 @@ defmodule MinimalHostApp.Steps.LoadInvoice do
   Example step that loads invoice context for a recovery run.
   """
 
+  use Jido.Action,
+    name: "load_invoice",
+    description: "Loads invoice context",
+    schema: [
+      account_id: [type: :string, required: true],
+      invoice_id: [type: :string, required: true],
+      attempt_id: [type: :string, required: true]
+    ]
+
+  @impl true
   @spec run(map(), map()) :: {:ok, map()}
-  def run(input, _context) do
-    {:ok, %{invoice: input}}
+  def run(%{account_id: account_id, invoice_id: invoice_id, attempt_id: attempt_id}, _context) do
+    {:ok,
+     %{
+       invoice: %{id: invoice_id, account_id: account_id, attempt_id: attempt_id}
+     }}
   end
 end

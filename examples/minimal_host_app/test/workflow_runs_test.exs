@@ -1,19 +1,8 @@
 defmodule MinimalHostApp.WorkflowRunsTest do
-  use ExUnit.Case
+  use MinimalHostApp.DataCase
 
   alias MinimalHostApp.Smoke
-  alias MinimalHostApp.TestSupport.FakeRepo
   alias MinimalHostApp.WorkflowRuns
-
-  setup_all do
-    start_supervised!(FakeRepo)
-    :ok
-  end
-
-  setup do
-    FakeRepo.reset()
-    :ok
-  end
 
   test "starts the example payment recovery workflow through the host boundary" do
     attrs = %{
@@ -23,6 +12,12 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     }
 
     assert {:ok, run} = WorkflowRuns.start_payment_recovery(attrs)
+
+    assert_enqueued(
+      worker: SquidMesh.Workers.StepWorker,
+      queue: "squid_mesh",
+      args: %{"run_id" => run.id}
+    )
 
     assert run.workflow == MinimalHostApp.Workflows.PaymentRecovery
     assert run.status == :pending
@@ -43,6 +38,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   end
 
   test "runs the documented smoke path" do
-    assert %SquidMesh.Run{} = Smoke.run!()
+    assert %SquidMesh.Run{} = run = Smoke.run!()
+    assert run.status == :completed
+    assert run.context.notification.channel == "email"
   end
 end
