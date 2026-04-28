@@ -2,6 +2,7 @@ defmodule SquidMesh.Workflow.Validation do
   @moduledoc false
 
   @terminal_transitions [:complete]
+  @allowed_trigger_types [:manual, :cron]
 
   @spec validate!(map(), Macro.Env.t()) :: :ok
   def validate!(definition, env) do
@@ -36,15 +37,91 @@ defmodule SquidMesh.Workflow.Validation do
     end
   end
 
+  @spec normalize_triggers!(map()) :: [map()]
+  def normalize_triggers!(definition) do
+    Enum.map(definition.triggers, fn trigger ->
+      definition_entry = List.first(trigger.definitions)
+
+      %{
+        name: trigger.name,
+        type: definition_entry.type,
+        config: definition_entry.config,
+        payload: trigger.payload
+      }
+    end)
+  end
+
+  @spec workflow_payload!([map()]) :: [map()]
+  def workflow_payload!([trigger]), do: trigger.payload
+  def workflow_payload!(_other), do: []
+
   defp validation_errors(definition) do
     step_names = Enum.map(definition.steps, & &1.name)
 
     []
+    |> validate_triggers(definition.triggers)
     |> require_steps(step_names)
     |> validate_unique_step_names(step_names)
     |> validate_transitions(definition.transitions, step_names)
     |> validate_retries(definition.retries, step_names)
   end
+
+  defp validate_triggers(errors, triggers) do
+    errors
+    |> validate_trigger_count(triggers)
+    |> validate_trigger_definitions(triggers)
+  end
+
+  defp validate_trigger_count(errors, [_trigger]), do: errors
+  defp validate_trigger_count(errors, _other), do: ["exactly one trigger is required" | errors]
+
+  defp validate_trigger_definitions(errors, triggers) do
+    Enum.reduce(triggers, errors, fn trigger, acc ->
+      acc
+      |> validate_trigger_type_count(trigger)
+      |> validate_trigger_type_allowed(trigger)
+      |> validate_trigger_config(trigger)
+    end)
+  end
+
+  defp validate_trigger_type_count(errors, %{definitions: [_single_definition]}) do
+    errors
+  end
+
+  defp validate_trigger_type_count(errors, %{name: name}) do
+    ["trigger #{inspect(name)} must define exactly one type" | errors]
+  end
+
+  defp validate_trigger_type_allowed(errors, %{definitions: [%{type: type}]})
+       when type in @allowed_trigger_types do
+    errors
+  end
+
+  defp validate_trigger_type_allowed(errors, %{name: name, definitions: [%{type: type}]}) do
+    ["trigger #{inspect(name)} defines unsupported type #{inspect(type)}" | errors]
+  end
+
+  defp validate_trigger_type_allowed(errors, _trigger), do: errors
+
+  defp validate_trigger_config(errors, %{definitions: [%{type: :manual}]}) do
+    errors
+  end
+
+  defp validate_trigger_config(errors, %{
+         name: name,
+         definitions: [%{type: :cron, config: config}]
+       }) do
+    expression = Map.get(config, :expression)
+    timezone = Map.get(config, :timezone)
+
+    if is_binary(expression) and expression != "" and is_binary(timezone) and timezone != "" do
+      errors
+    else
+      ["trigger #{inspect(name)} must define a cron expression and timezone" | errors]
+    end
+  end
+
+  defp validate_trigger_config(errors, _trigger), do: errors
 
   defp require_steps(errors, []), do: ["at least one step is required" | errors]
   defp require_steps(errors, _step_names), do: errors

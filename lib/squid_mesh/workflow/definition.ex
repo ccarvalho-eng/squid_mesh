@@ -1,13 +1,21 @@
 defmodule SquidMesh.Workflow.Definition do
   @moduledoc false
 
-  @type input_field :: %{name: atom(), type: atom(), opts: keyword()}
+  @type payload_field :: %{name: atom(), type: atom(), opts: keyword()}
+  @type trigger_type :: :manual | :cron
+  @type trigger :: %{
+          name: atom(),
+          type: trigger_type(),
+          config: map(),
+          payload: [payload_field()]
+        }
   @type step :: %{name: atom(), module: module(), opts: keyword()}
   @type transition :: %{from: atom(), on: atom(), to: atom()}
   @type retry :: %{step: atom(), opts: keyword()}
 
   @type t :: %{
-          input: [input_field()],
+          triggers: [trigger()],
+          payload: [payload_field()],
           steps: [step()],
           transitions: [transition()],
           retries: [retry()],
@@ -15,7 +23,7 @@ defmodule SquidMesh.Workflow.Definition do
         }
 
   @type load_error :: {:invalid_workflow, module() | String.t()}
-  @type input_error_details :: %{
+  @type payload_error_details :: %{
           optional(:missing_fields) => [atom()],
           optional(:unknown_fields) => [atom() | String.t()],
           optional(:invalid_types) => %{optional(atom()) => atom()}
@@ -47,16 +55,17 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
-  @spec validate_input(t(), map()) :: :ok | {:error, {:invalid_input, input_error_details()}}
-  def validate_input(definition, input) when is_map(input) do
-    declared_fields = definition.input
+  @spec validate_payload(t(), map()) ::
+          :ok | {:error, {:invalid_payload, payload_error_details()}}
+  def validate_payload(definition, payload) when is_map(payload) do
+    declared_fields = definition.payload
     declared_names = MapSet.new(Enum.map(declared_fields, & &1.name))
-    provided_names = MapSet.new(Map.keys(input))
+    provided_names = MapSet.new(Map.keys(payload))
 
     missing_fields =
       declared_fields
       |> Enum.filter(
-        &(Keyword.get(&1.opts, :required, true) and not Map.has_key?(input, &1.name))
+        &(Keyword.get(&1.opts, :required, true) and not Map.has_key?(payload, &1.name))
       )
       |> Enum.map(& &1.name)
 
@@ -69,7 +78,7 @@ defmodule SquidMesh.Workflow.Definition do
     invalid_types =
       declared_fields
       |> Enum.reduce(%{}, fn field, acc ->
-        case Map.fetch(input, field.name) do
+        case Map.fetch(payload, field.name) do
           {:ok, value} ->
             if input_matches_type?(value, field.type) do
               acc
@@ -90,7 +99,7 @@ defmodule SquidMesh.Workflow.Definition do
 
     case errors do
       %{} = empty when map_size(empty) == 0 -> :ok
-      details -> {:error, {:invalid_input, details}}
+      details -> {:error, {:invalid_payload, details}}
     end
   end
 
@@ -115,16 +124,16 @@ defmodule SquidMesh.Workflow.Definition do
     end
   end
 
-  @spec deserialize_input(t() | nil, map()) :: map()
-  def deserialize_input(nil, input), do: input
+  @spec deserialize_payload(t() | nil, map()) :: map()
+  def deserialize_payload(nil, payload), do: payload
 
-  def deserialize_input(definition, input) when is_map(input) do
+  def deserialize_payload(definition, payload) when is_map(payload) do
     known_fields =
-      definition.input
+      definition.payload
       |> Enum.map(&{Atom.to_string(&1.name), &1.name})
       |> Map.new()
 
-    Map.new(input, fn
+    Map.new(payload, fn
       {key, value} when is_binary(key) ->
         {Map.get(known_fields, key, key), value}
 

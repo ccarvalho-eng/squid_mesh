@@ -5,9 +5,13 @@ defmodule SquidMesh.WorkflowTest do
     use SquidMesh.Workflow
 
     workflow do
-      input do
-        field(:account_id, :string)
-        field(:invoice_id, :string)
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
       end
 
       step(:load_invoice, InvoiceReminder.LoadInvoice)
@@ -25,7 +29,19 @@ defmodule SquidMesh.WorkflowTest do
   test "exposes a declarative workflow definition" do
     definition = InvoiceReminder.workflow_definition()
 
-    assert definition.input == [
+    assert definition.triggers == [
+             %{
+               name: :manual,
+               type: :manual,
+               config: %{},
+               payload: [
+                 %{name: :account_id, type: :string, opts: []},
+                 %{name: :invoice_id, type: :string, opts: []}
+               ]
+             }
+           ]
+
+    assert definition.payload == [
              %{name: :account_id, type: :string, opts: []},
              %{name: :invoice_id, type: :string, opts: []}
            ]
@@ -51,14 +67,17 @@ defmodule SquidMesh.WorkflowTest do
 
   test "exposes the workflow contract shape" do
     assert InvoiceReminder.__workflow__(:contract) == %{
-             required: [:step],
-             optional: [:input, :transition, :retry]
+             required: [:trigger, :step],
+             optional: [:transition, :retry]
            }
   end
 
   test "supports introspection of definition segments" do
     assert InvoiceReminder.__workflow__(:steps) == InvoiceReminder.workflow_definition().steps
-    assert InvoiceReminder.__workflow__(:input) == InvoiceReminder.workflow_definition().input
+    assert InvoiceReminder.__workflow__(:payload) == InvoiceReminder.workflow_definition().payload
+
+    assert InvoiceReminder.__workflow__(:triggers) ==
+             InvoiceReminder.workflow_definition().triggers
 
     assert InvoiceReminder.__workflow__(:transitions) ==
              InvoiceReminder.workflow_definition().transitions
@@ -74,8 +93,12 @@ defmodule SquidMesh.WorkflowTest do
         use SquidMesh.Workflow
 
         workflow do
-          input do
-            field(:account_id, :string)
+          trigger :manual do
+            manual()
+
+            payload do
+              field(:account_id, :string)
+            end
           end
         end
       end
@@ -91,6 +114,10 @@ defmodule SquidMesh.WorkflowTest do
         use SquidMesh.Workflow
 
         workflow do
+          trigger :manual do
+            manual()
+          end
+
           step(:send_email, WorkflowWithDuplicateSteps.SendEmail)
           step(:send_email, WorkflowWithDuplicateSteps.RecordDelivery)
         end
@@ -107,6 +134,10 @@ defmodule SquidMesh.WorkflowTest do
         use SquidMesh.Workflow
 
         workflow do
+          trigger :manual do
+            manual()
+          end
+
           step(:send_email, WorkflowWithInvalidRetry.SendEmail)
           retry(:send_email, max_attempts: 0)
         end
@@ -123,6 +154,10 @@ defmodule SquidMesh.WorkflowTest do
         use SquidMesh.Workflow
 
         workflow do
+          trigger :manual do
+            manual()
+          end
+
           step(:send_email, WorkflowWithUnknownRetryStep.SendEmail)
           retry(:record_delivery, max_attempts: 3)
         end
@@ -139,6 +174,10 @@ defmodule SquidMesh.WorkflowTest do
         use SquidMesh.Workflow
 
         workflow do
+          trigger :manual do
+            manual()
+          end
+
           step(:load_invoice, WorkflowWithMultipleEntrySteps.LoadInvoice)
           step(:send_email, WorkflowWithMultipleEntrySteps.SendEmail)
         end
@@ -155,6 +194,10 @@ defmodule SquidMesh.WorkflowTest do
         use SquidMesh.Workflow
 
         workflow do
+          trigger :manual do
+            manual()
+          end
+
           step(:load_invoice, WorkflowWithoutEntryStep.LoadInvoice)
           step(:send_email, WorkflowWithoutEntryStep.SendEmail)
 
@@ -167,6 +210,123 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
+  test "fails when no triggers are declared" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithoutTriggers do
+        use SquidMesh.Workflow
+
+        workflow do
+          step(:load_invoice, WorkflowWithoutTriggers.LoadInvoice)
+        end
+      end
+      """,
+      "exactly one trigger is required"
+    )
+  end
+
+  test "fails when a trigger does not define a type" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithUntypedTrigger do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            payload do
+              field(:account_id, :string)
+            end
+          end
+
+          step(:load_invoice, WorkflowWithUntypedTrigger.LoadInvoice)
+        end
+      end
+      """,
+      "trigger :manual must define exactly one type"
+    )
+  end
+
+  test "fails when a workflow declares more than one trigger" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithMultipleTriggers do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          trigger :daily do
+            cron("0 9 * * *", timezone: "UTC")
+          end
+
+          step(:load_invoice, WorkflowWithMultipleTriggers.LoadInvoice)
+        end
+      end
+      """,
+      "exactly one trigger is required"
+    )
+  end
+
+  test "fails when a trigger declares more than one type" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithMultipleTriggerTypes do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+            cron("0 9 * * *", timezone: "UTC")
+          end
+
+          step(:load_invoice, WorkflowWithMultipleTriggerTypes.LoadInvoice)
+        end
+      end
+      """,
+      "trigger :manual must define exactly one type"
+    )
+  end
+
+  test "exposes cron trigger metadata and payload defaults" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithCronTrigger do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :daily_standup do
+            cron("0 9 * * 1-5", timezone: "America/Sao_Paulo")
+
+            payload do
+              field(:team_id, :string, default: "backend")
+              field(:prompt_date, :string, default: {:today, :iso8601})
+            end
+          end
+
+          step(:load_team_members, WorkflowWithCronTrigger.LoadTeamMembers)
+          transition(:load_team_members, on: :ok, to: :complete)
+        end
+      end
+      """)
+
+    assert module.workflow_definition().triggers == [
+             %{
+               name: :daily_standup,
+               type: :cron,
+               config: %{
+                 expression: "0 9 * * 1-5",
+                 timezone: "America/Sao_Paulo"
+               },
+               payload: [
+                 %{name: :team_id, type: :string, opts: [default: "backend"]},
+                 %{name: :prompt_date, type: :string, opts: [default: {:today, :iso8601}]}
+               ]
+             }
+           ]
+  end
+
   defp assert_compile_error(source, message) do
     error =
       assert_raise CompileError, fn ->
@@ -174,5 +334,10 @@ defmodule SquidMesh.WorkflowTest do
       end
 
     assert Exception.message(error) |> String.contains?(message)
+  end
+
+  defp compile_module(source) do
+    [{module, _bytecode}] = Code.compile_string(source, "test/support/valid_workflow.exs")
+    module
   end
 end

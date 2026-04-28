@@ -10,9 +10,13 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     use SquidMesh.Workflow
 
     workflow do
-      input do
-        field(:account_id, :string)
-        field(:invoice_id, :string)
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
       end
 
       step(:load_invoice, SuccessfulWorkflow.LoadInvoice)
@@ -68,8 +72,12 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     use SquidMesh.Workflow
 
     workflow do
-      input do
-        field(:account_id, :string)
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
       end
 
       step(:check_gateway, FailingWorkflow.CheckGateway)

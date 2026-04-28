@@ -80,8 +80,8 @@ defmodule SquidMesh.Runtime.StepExecutor do
   defp ensure_running(_repo, %Run{} = run), do: {:ok, run}
 
   @spec build_step_input(Run.t()) :: map()
-  defp build_step_input(%Run{input: input, context: context}) do
-    input
+  defp build_step_input(%Run{payload: payload, context: context}) do
+    payload
     |> Kernel.||(%{})
     |> Map.merge(context || %{})
     |> normalize_map_keys()

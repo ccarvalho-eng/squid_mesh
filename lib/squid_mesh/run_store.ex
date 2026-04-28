@@ -12,8 +12,8 @@ defmodule SquidMesh.RunStore do
   @type list_filters :: [list_filter()]
 
   @type create_error ::
-          {:invalid_input, :expected_map}
-          | {:invalid_input, WorkflowDefinition.input_error_details()}
+          {:invalid_payload, :expected_map}
+          | {:invalid_payload, WorkflowDefinition.payload_error_details()}
           | {:invalid_workflow, module() | String.t()}
           | {:invalid_run, Ecto.Changeset.t()}
 
@@ -29,13 +29,13 @@ defmodule SquidMesh.RunStore do
   @type update_error :: get_error() | {:invalid_run, Ecto.Changeset.t()}
 
   @spec create_run(module(), module(), map()) :: {:ok, Run.t()} | {:error, create_error()}
-  def create_run(repo, workflow, input) when is_map(input) do
+  def create_run(repo, workflow, payload) when is_map(payload) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         :ok <- WorkflowDefinition.validate_input(definition, input) do
+         :ok <- WorkflowDefinition.validate_payload(definition, payload) do
       attrs = %{
         workflow: WorkflowDefinition.serialize_workflow(workflow),
         status: "pending",
-        input: input,
+        input: payload,
         context: %{},
         current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition))
       }
@@ -52,7 +52,7 @@ defmodule SquidMesh.RunStore do
     end
   end
 
-  def create_run(_repo, _workflow, _input), do: {:error, {:invalid_input, :expected_map}}
+  def create_run(_repo, _workflow, _payload), do: {:error, {:invalid_payload, :expected_map}}
 
   @doc """
   Creates a new pending run from a prior run while preserving replay lineage.
@@ -231,7 +231,7 @@ defmodule SquidMesh.RunStore do
       id: run.id,
       workflow: workflow,
       status: deserialize_status(run.status),
-      input: WorkflowDefinition.deserialize_input(definition, run.input || %{}),
+      payload: WorkflowDefinition.deserialize_payload(definition, run.input || %{}),
       context: deserialize_map(run.context || %{}),
       current_step: deserialize_step(definition, run.current_step),
       last_error: deserialize_map(run.last_error),
