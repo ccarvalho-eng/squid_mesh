@@ -99,6 +99,17 @@ not run a separate scheduler or manage `oban_jobs` itself.
 - Jido powers step behavior and action execution inside the runtime.
 - Postgres stores the durable source of truth for runs, steps, and attempts.
 
+Jido's role today is intentionally narrow:
+
+- Squid Mesh uses `Jido.Action` and `Jido.Exec` as the contract for custom workflow steps.
+- Host applications get validated, structured step execution without Squid Mesh having to invent its own action runtime.
+
+Likely future direction:
+
+- reusable step and action libraries for common integrations
+- stronger action-level validation and lifecycle hooks
+- richer agent and action execution patterns behind the same workflow runtime surface
+
 ### C4 Container View
 
 ```text
