@@ -104,6 +104,46 @@ defmodule Billing do
 end
 ```
 
+## Example: Daily RSS Digest To Discord
+
+```elixir
+defmodule Content.Workflows.PostDailyDigest do
+  use SquidMesh.Workflow
+
+  workflow do
+    input do
+      field(:feed_url, :string)
+      field(:discord_webhook_url, :string)
+      field(:posted_on, :string)
+    end
+
+    step(:fetch_feed, Content.Steps.FetchRssFeed)
+    step(:build_digest, Content.Steps.BuildDiscordDigest)
+    step(:post_to_discord, Content.Steps.PostDiscordMessage)
+
+    transition(:fetch_feed, on: :ok, to: :build_digest)
+    transition(:build_digest, on: :ok, to: :post_to_discord)
+    transition(:post_to_discord, on: :ok, to: :complete)
+
+    retry(:fetch_feed, max_attempts: 3)
+    retry(:post_to_discord, max_attempts: 5)
+  end
+end
+
+defmodule Content.DailyDigestJob do
+  def run do
+    SquidMesh.start_run(Content.Workflows.PostDailyDigest, %{
+      feed_url: "https://example.com/feed.xml",
+      discord_webhook_url: System.fetch_env!("DISCORD_WEBHOOK_URL"),
+      posted_on: Date.utc_today() |> Date.to_iso8601()
+    })
+  end
+end
+```
+
+That workflow would typically be triggered by your application's own daily cron
+job or scheduler.
+
 Run lifecycle states currently include:
 
 - `pending`
