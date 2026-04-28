@@ -27,21 +27,31 @@ defmodule SquidMesh.Runtime.StepExecutor do
           | {:unknown_step, atom()}
           | {:missing_config, [atom()]}
 
-  @spec execute(Ecto.UUID.t(), keyword()) :: :ok | {:error, execution_error() | term()}
-  def execute(run_id, overrides \\ []) when is_binary(run_id) do
-    with {:ok, config} <- Config.load(overrides),
+  @type expected_step :: atom() | String.t() | nil
+
+  @spec execute(Ecto.UUID.t(), expected_step(), keyword()) ::
+          :ok | {:error, execution_error() | term()}
+  def execute(run_id, expected_step \\ nil, overrides \\ []) when is_binary(run_id) do
+    with {:ok, normalized_expected_step} <- deserialize_expected_step(expected_step),
+         {:ok, config} <- Config.load(overrides),
          {:ok, run} <- RunStore.get_run(config.repo, run_id) do
-      execute_run(config, run)
+      execute_run(config, run, normalized_expected_step)
     end
   end
 
-  @spec execute_run(Config.t(), Run.t()) :: :ok | {:error, execution_error() | term()}
-  defp execute_run(_config, %Run{status: status})
+  @spec execute_run(Config.t(), Run.t(), atom() | nil) ::
+          :ok | {:error, execution_error() | term()}
+  defp execute_run(_config, %Run{status: status}, _expected_step)
        when status in [:completed, :failed, :cancelled] do
     :ok
   end
 
-  defp execute_run(config, %Run{status: :cancelling} = run) do
+  defp execute_run(_config, %Run{current_step: current_step}, expected_step)
+       when is_atom(expected_step) and current_step != expected_step do
+    :ok
+  end
+
+  defp execute_run(config, %Run{status: :cancelling} = run, _expected_step) do
     case RunStore.transition_run(config.repo, run.id, :cancelled, %{
            current_step: run.current_step
          }) do
@@ -50,22 +60,32 @@ defmodule SquidMesh.Runtime.StepExecutor do
     end
   end
 
-  defp execute_run(config, %Run{workflow: workflow, current_step: current_step} = run)
+  defp execute_run(
+         config,
+         %Run{workflow: workflow, current_step: current_step} = run,
+         _expected_step
+       )
        when is_atom(workflow) and is_atom(current_step) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
          {:ok, step} <- WorkflowDefinition.step(definition, current_step),
          {:ok, running_run} <- ensure_running(config.repo, run),
          input = build_step_input(running_run),
-         {:ok, step_run} <-
-           StepRunStore.start_step(config.repo, running_run.id, current_step, input),
-         attempt_number <- AttemptStore.attempt_count(config.repo, step_run.id) + 1 do
-      current_step
-      |> execute_step(step, input, running_run)
-      |> persist_execution_result(config, definition, running_run, step_run.id, attempt_number)
+         {:ok, step_run, execution_mode} <-
+           StepRunStore.begin_step(config.repo, running_run.id, current_step, input) do
+      maybe_execute_step(
+        execution_mode,
+        current_step,
+        step,
+        input,
+        config,
+        definition,
+        running_run,
+        step_run.id
+      )
     end
   end
 
-  defp execute_run(_config, %Run{current_step: current_step}) do
+  defp execute_run(_config, %Run{current_step: current_step}, _expected_step) do
     {:error, {:invalid_step, current_step}}
   end
 
@@ -79,6 +99,45 @@ defmodule SquidMesh.Runtime.StepExecutor do
   end
 
   defp ensure_running(_repo, %Run{} = run), do: {:ok, run}
+
+  @spec maybe_execute_step(
+          :execute | :skip,
+          atom(),
+          WorkflowDefinition.step(),
+          map(),
+          Config.t(),
+          WorkflowDefinition.t(),
+          Run.t(),
+          Ecto.UUID.t()
+        ) :: :ok | {:error, execution_error() | term()}
+  defp maybe_execute_step(
+         :skip,
+         _current_step,
+         _step,
+         _input,
+         _config,
+         _definition,
+         _run,
+         _step_run_id
+       ),
+       do: :ok
+
+  defp maybe_execute_step(
+         :execute,
+         current_step,
+         step,
+         input,
+         config,
+         definition,
+         run,
+         step_run_id
+       ) do
+    attempt_number = AttemptStore.attempt_count(config.repo, step_run_id) + 1
+
+    current_step
+    |> execute_step(step, input, run)
+    |> persist_execution_result(config, definition, run, step_run_id, attempt_number)
+  end
 
   @spec build_step_input(Run.t()) :: map()
   defp build_step_input(%Run{payload: payload, context: context}) do
@@ -239,6 +298,19 @@ defmodule SquidMesh.Runtime.StepExecutor do
   end
 
   defp retry_dispatch_opts(_delay_ms), do: []
+
+  @spec deserialize_expected_step(expected_step()) ::
+          {:ok, atom() | nil} | {:error, {:invalid_step, String.t()}}
+  defp deserialize_expected_step(nil), do: {:ok, nil}
+  defp deserialize_expected_step(step) when is_atom(step), do: {:ok, step}
+
+  defp deserialize_expected_step(step) when is_binary(step) do
+    try do
+      {:ok, String.to_existing_atom(step)}
+    rescue
+      ArgumentError -> {:error, {:invalid_step, step}}
+    end
+  end
 
   @spec normalize_map_keys(map()) :: map()
   defp normalize_map_keys(map) when is_map(map) do
