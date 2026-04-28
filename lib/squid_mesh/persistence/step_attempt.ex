@@ -43,5 +43,6 @@ defmodule SquidMesh.Persistence.StepAttempt do
     |> validate_required(@required_fields)
     |> validate_number(:attempt_number, greater_than: 0)
     |> foreign_key_constraint(:step_run_id)
+    |> unique_constraint([:step_run_id, :attempt_number])
   end
 end

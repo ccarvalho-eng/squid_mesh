@@ -22,33 +22,26 @@ defmodule SquidMesh.StepRunStore do
   """
   @spec begin_step(module(), Ecto.UUID.t(), step_identifier(), step_input()) :: begin_result()
   def begin_step(repo, run_id, step, input) when is_map(input) do
+    serialized_step = serialize_step(step)
+
     attrs = %{
       run_id: run_id,
-      step: serialize_step(step),
+      step: serialized_step,
       status: "running",
       input: input,
       output: nil,
       last_error: nil
     }
 
-    case get_step_run(repo, run_id, step) do
-      %StepRun{status: status} = step_run when status in ["running", "completed"] ->
-        {:ok, step_run, :skip}
+    case insert_step_run(repo, attrs) do
+      {:ok, step_run} ->
+        {:ok, step_run, :execute}
 
-      %StepRun{} = step_run ->
-        case step_run
-             |> StepRun.changeset(attrs)
-             |> repo.update() do
-          {:ok, updated_step_run} -> {:ok, updated_step_run, :execute}
-          {:error, changeset} -> {:error, changeset}
-        end
-
-      nil ->
-        case %StepRun{}
-             |> StepRun.changeset(attrs)
-             |> repo.insert() do
-          {:ok, step_run} -> {:ok, step_run, :execute}
-          {:error, changeset} -> {:error, changeset}
+      {:error, %Ecto.Changeset{} = changeset} ->
+        if duplicate_step_claim?(changeset) do
+          claim_existing_step(repo, run_id, serialized_step, attrs)
+        else
+          {:error, changeset}
         end
     end
   end
@@ -81,6 +74,67 @@ defmodule SquidMesh.StepRunStore do
     StepRun
     |> where([step_run], step_run.run_id == ^run_id and step_run.step == ^serialized_step)
     |> repo.one()
+  end
+
+  @spec insert_step_run(module(), map()) :: {:ok, StepRun.t()} | {:error, Ecto.Changeset.t()}
+  defp insert_step_run(repo, attrs) do
+    %StepRun{}
+    |> StepRun.changeset(attrs)
+    |> repo.insert()
+  end
+
+  @spec claim_existing_step(module(), Ecto.UUID.t(), String.t(), map()) :: begin_result()
+  defp claim_existing_step(repo, run_id, step, attrs) do
+    case transition_failed_step_to_running(repo, run_id, step, attrs) do
+      {:ok, %StepRun{} = step_run} ->
+        {:ok, step_run, :execute}
+
+      :not_updated ->
+        case get_step_run(repo, run_id, step) do
+          %StepRun{status: status} = step_run when status in ["running", "completed"] ->
+            {:ok, step_run, :skip}
+
+          %StepRun{} = step_run ->
+            {:ok, step_run, :skip}
+
+          nil ->
+            insert_step_run(repo, attrs)
+            |> case do
+              {:ok, step_run} -> {:ok, step_run, :execute}
+              {:error, changeset} -> {:error, changeset}
+            end
+        end
+    end
+  end
+
+  @spec transition_failed_step_to_running(module(), Ecto.UUID.t(), String.t(), map()) ::
+          {:ok, StepRun.t()} | :not_updated
+  defp transition_failed_step_to_running(repo, run_id, step, attrs) do
+    updates = Map.take(attrs, [:status, :input, :output, :last_error])
+
+    {count, _rows} =
+      StepRun
+      |> where(
+        [step_run],
+        step_run.run_id == ^run_id and step_run.step == ^step and step_run.status == "failed"
+      )
+      |> repo.update_all(set: Map.to_list(updates))
+
+    case count do
+      1 -> {:ok, get_step_run(repo, run_id, step)}
+      _ -> :not_updated
+    end
+  end
+
+  @spec duplicate_step_claim?(Ecto.Changeset.t()) :: boolean()
+  defp duplicate_step_claim?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {field, {"has already been taken", opts}} when field in [:run_id, :step] ->
+        Keyword.get(opts, :constraint) == :unique
+
+      _other ->
+        false
+    end)
   end
 
   @spec update_step(module(), Ecto.UUID.t(), map()) ::
