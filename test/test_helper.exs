@@ -41,7 +41,11 @@ end
 {:ok, _pid} = SquidMesh.Test.Repo.start_link()
 
 Ecto.Migrator.with_repo(SquidMesh.Test.Repo, fn repo ->
-  Ecto.Migrator.run(repo, :up, all: true)
+  Ecto.Migrator.run(repo, Application.app_dir(:squid_mesh, "priv/repo/migrations"), :up,
+    all: true
+  )
+
+  Ecto.Migrator.run(repo, Path.expand("support/migrations", __DIR__), :up, all: true)
 end)
 
 {:ok, _pid} =

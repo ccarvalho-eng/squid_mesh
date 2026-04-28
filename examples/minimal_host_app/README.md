@@ -25,8 +25,13 @@ mix setup
 This will:
 
 - create the example app database
+- install Squid Mesh migrations into the example app with `mix squid_mesh.install`
 - run the example app's `Oban` migration
-- run Squid Mesh's library migrations into the same database
+- run both the example app and Squid Mesh migrations through `mix ecto.migrate`
+
+This example is the standalone development harness. Unlike the embedded host-app
+install path, it owns its own `Oban` migration so the runtime can be exercised
+without depending on another application.
 
 ## Smoke Path
 

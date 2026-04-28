@@ -5,6 +5,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Persistence.StepRun
+  alias SquidMesh.Runtime.StepExecutor
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workers.StepWorker
   alias Oban.Job
@@ -154,6 +155,9 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       transition(:wait_for_settlement, on: :ok, to: :log_delivery)
       transition(:log_delivery, on: :ok, to: :complete)
     end
+  end
+
+  defmodule MissingOban do
   end
 
   describe "workflow execution through Oban" do
@@ -350,6 +354,53 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       assert %StepRun{status: "running"} =
                Repo.get!(StepRun, step_run.id)
+    end
+
+    test "marks the run failed when dispatching the next step fails after a successful step" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+      assert :ok = StepExecutor.execute(run.id, nil, repo: Repo, execution: [name: MissingOban])
+
+      assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :send_email
+      assert failed_run.context.account == %{id: "acct_123"}
+      assert failed_run.context.invoice == %{id: "inv_456", status: "open"}
+      assert failed_run.last_error.message == "failed to dispatch workflow step"
+      assert failed_run.last_error.next_step == :send_email
+
+      assert [%SquidMesh.StepRun{} = step_run] = failed_run.step_runs
+      assert step_run.step == :load_invoice
+      assert step_run.status == :completed
+
+      assert Enum.map(step_run.attempts, fn attempt ->
+               {attempt.attempt_number, attempt.status}
+             end) == [{1, :completed}]
+    end
+
+    test "marks the run failed when scheduling a retry fails" do
+      assert {:ok, run} =
+               SquidMesh.RunStore.create_run(Repo, BackoffWorkflow, %{account_id: "acct_123"})
+
+      assert :ok = StepExecutor.execute(run.id, nil, repo: Repo, execution: [name: MissingOban])
+
+      assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :check_gateway
+      assert failed_run.last_error.message == "failed to dispatch workflow step"
+      assert failed_run.last_error.failed_step == :check_gateway
+      assert failed_run.last_error.cause == %{message: "gateway timeout", code: "gateway_timeout"}
+
+      assert [%SquidMesh.StepRun{} = step_run] = failed_run.step_runs
+      assert step_run.step == :check_gateway
+      assert step_run.status == :failed
+
+      assert Enum.map(step_run.attempts, fn attempt ->
+               {attempt.attempt_number, attempt.status}
+             end) == [{1, :failed}]
     end
   end
 end

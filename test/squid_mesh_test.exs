@@ -4,6 +4,8 @@ defmodule SquidMeshTest do
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Run
   alias SquidMesh.RunStore
+  alias SquidMesh.StepAttempt, as: PublicStepAttempt
+  alias SquidMesh.StepRun, as: PublicStepRun
   alias SquidMesh.TestSupport.LazyWorkflow
 
   defmodule InvoiceReminderWorkflow do
@@ -64,6 +66,69 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule InvoiceReminderWorkflow.LoadInvoice do
+    use Jido.Action,
+      name: "load_invoice",
+      description: "Loads invoice details",
+      schema: [
+        account_id: [type: :string, required: true],
+        invoice_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id, invoice_id: invoice_id}, _context) do
+      {:ok,
+       %{
+         account: %{id: account_id},
+         invoice: %{id: invoice_id, status: "open"}
+       }}
+    end
+  end
+
+  defmodule InvoiceReminderWorkflow.SendEmail do
+    use Jido.Action,
+      name: "send_email",
+      description: "Sends an invoice reminder email",
+      schema: [
+        account: [type: :map, required: true],
+        invoice: [type: :map, required: true]
+      ]
+
+    @impl true
+    def run(%{account: account, invoice: invoice}, _context) do
+      {:ok,
+       %{
+         delivery: %{
+           account_id: account.id,
+           invoice_id: invoice.id,
+           channel: "email"
+         }
+       }}
+    end
+  end
+
+  defmodule PaymentRecoveryWorkflow.CheckGateway do
+    use Jido.Action,
+      name: "check_gateway",
+      description: "Checks payment gateway status",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{gateway_check: %{account_id: account_id, status: "healthy"}}}
+    end
+  end
+
+  defmodule ReorderedWorkflow.LoadInvoice do
+    defdelegate run(params, context), to: InvoiceReminderWorkflow.LoadInvoice
+  end
+
+  defmodule ReorderedWorkflow.SendEmail do
+    defdelegate run(params, context), to: InvoiceReminderWorkflow.SendEmail
+  end
+
   defmodule WorkflowWithPayloadDefaults do
     use SquidMesh.Workflow
 
@@ -81,6 +146,9 @@ defmodule SquidMeshTest do
       step(:deliver_invoice, WorkflowWithPayloadDefaults.DeliverInvoice)
       transition(:deliver_invoice, on: :ok, to: :complete)
     end
+  end
+
+  defmodule MissingOban do
   end
 
   test "configures an application supervisor" do
@@ -248,6 +316,20 @@ defmodule SquidMeshTest do
                invoice_id: "inv_456"
              }
     end
+
+    test "rolls back run creation when dispatching the first step fails" do
+      before_count = Repo.aggregate(RunRecord, :count, :id)
+
+      assert {:error, {:dispatch_failed, %RuntimeError{}}} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 repo: Repo,
+                 execution: [name: MissingOban]
+               )
+
+      assert Repo.aggregate(RunRecord, :count, :id) == before_count
+    end
   end
 
   describe "inspect_run/2" do
@@ -287,6 +369,39 @@ defmodule SquidMeshTest do
       assert inspected_run.workflow == InvoiceReminderWorkflow
       assert inspected_run.trigger == :invoice_delivery
       assert inspected_run.current_step == :load_invoice
+    end
+
+    test "optionally includes step and attempt history" do
+      assert {:ok, created_run} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(created_run.id, include_history: true, repo: Repo)
+
+      assert [%PublicStepRun{}, %PublicStepRun{}] = inspected_run.step_runs
+
+      assert Enum.map(inspected_run.step_runs, &{&1.step, &1.status}) == [
+               {:load_invoice, :completed},
+               {:send_email, :completed}
+             ]
+
+      assert Enum.all?(inspected_run.step_runs, fn step_run ->
+               match?([%PublicStepAttempt{}], step_run.attempts)
+             end)
+
+      assert Enum.map(inspected_run.step_runs, fn step_run ->
+               {step_run.step, Enum.map(step_run.attempts, & &1.attempt_number)}
+             end) == [
+               {:load_invoice, [1]},
+               {:send_email, [1]}
+             ]
     end
   end
 
@@ -422,6 +537,26 @@ defmodule SquidMeshTest do
 
     test "returns not found when replaying a missing run" do
       assert {:error, :not_found} = SquidMesh.replay_run(Ecto.UUID.generate(), repo: Repo)
+    end
+
+    test "rolls back replay creation when dispatching the replayed run fails" do
+      assert {:ok, source_run} =
+               RunStore.create_run(
+                 Repo,
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"}
+               )
+
+      before_count = Repo.aggregate(RunRecord, :count, :id)
+
+      assert {:error, {:dispatch_failed, %RuntimeError{}}} =
+               SquidMesh.replay_run(
+                 source_run.id,
+                 repo: Repo,
+                 execution: [name: MissingOban]
+               )
+
+      assert Repo.aggregate(RunRecord, :count, :id) == before_count
     end
   end
 end

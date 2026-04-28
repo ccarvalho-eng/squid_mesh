@@ -10,6 +10,11 @@
 Squid Mesh lets Phoenix and OTP applications define, run, inspect, replay, and
 recover durable workflows in code.
 
+> [!WARNING]
+> Squid Mesh is still in early development. The runtime is suitable for
+> evaluation, local development, and integration work, but it is not yet
+> positioned as production-ready.
+
 ## Requirements
 
 - an existing Elixir application
@@ -20,16 +25,28 @@ recover durable workflows in code.
 
 ## Installation
 
-For local development against a checkout, add Squid Mesh to your application's
-dependencies:
+Add Squid Mesh to your application's dependencies:
 
 ```elixir
 defp deps do
   [
-    {:squid_mesh, path: "../squid_mesh"}
+    {:squid_mesh, path: "../squid_mesh"} # or {:squid_mesh, "~> 0.1.0"} once published
   ]
 end
 ```
+
+Install Squid Mesh's library-owned migrations into the host application and run
+them through the host app's normal migration flow:
+
+```sh
+mix deps.get
+mix squid_mesh.install
+mix ecto.migrate
+```
+
+`mix squid_mesh.install` copies only Squid Mesh tables into
+`priv/repo/migrations`. It does not manage `oban_jobs`; embedded applications
+are expected to use their own existing `Oban` setup.
 
 ## Configuration
 
@@ -53,6 +70,9 @@ Public runtime API:
 - `SquidMesh.list_runs/2`
 - `SquidMesh.cancel_run/2`
 - `SquidMesh.replay_run/2`
+
+For a standalone development harness with its own `Repo` and `Oban`, use
+`examples/minimal_host_app`.
 
 ## Runtime Overview
 

@@ -7,6 +7,7 @@ defmodule SquidMesh.Workflow.Validation do
   """
 
   @terminal_transitions [:complete]
+  @supported_transition_outcomes [:ok]
   @allowed_trigger_types [:manual, :cron]
   @built_in_step_kinds [:wait, :log]
   @log_levels [:debug, :info, :warning, :error]
@@ -256,6 +257,7 @@ defmodule SquidMesh.Workflow.Validation do
     Enum.reduce(transitions, errors, fn transition, acc ->
       acc
       |> validate_transition_from(transition, step_names)
+      |> validate_transition_outcome(transition)
       |> validate_transition_to(transition, step_names)
     end)
   end
@@ -265,6 +267,17 @@ defmodule SquidMesh.Workflow.Validation do
       errors
     else
       ["transition references unknown step: #{inspect(from)}" | errors]
+    end
+  end
+
+  defp validate_transition_outcome(errors, %{from: from, on: outcome}) do
+    if outcome in @supported_transition_outcomes do
+      errors
+    else
+      [
+        "transition from #{inspect(from)} defines unsupported outcome #{inspect(outcome)}"
+        | errors
+      ]
     end
   end
 

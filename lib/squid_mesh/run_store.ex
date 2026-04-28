@@ -10,9 +10,13 @@ defmodule SquidMesh.RunStore do
 
   import Ecto.Query
 
+  alias SquidMesh.Persistence.StepAttempt, as: StepAttemptRecord
   alias SquidMesh.Persistence.Run, as: RunRecord
+  alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Observability
   alias SquidMesh.Run
+  alias SquidMesh.StepAttempt
+  alias SquidMesh.StepRun
   alias SquidMesh.Runtime.StateMachine
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
@@ -36,20 +40,21 @@ defmodule SquidMesh.RunStore do
           get_error() | StateMachine.transition_error() | {:invalid_run, Ecto.Changeset.t()}
   @type replay_error :: get_error() | create_error()
   @type update_error :: get_error() | {:invalid_run, Ecto.Changeset.t()}
+  @type get_option :: {:include_history, boolean()}
+  @type dispatch_fun :: (Run.t() -> {:ok, term()} | {:error, term()})
 
   @doc """
   Creates a new run for a workflow using the workflow's default trigger.
   """
   @spec create_run(module(), module(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, payload) when is_map(payload) do
-    with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         {:ok, trigger} <-
-           WorkflowDefinition.resolve_trigger(
-             definition,
-             WorkflowDefinition.default_trigger(definition)
-           ),
-         {:ok, resolved_payload} <- WorkflowDefinition.resolve_payload(definition, payload) do
-      persist_run(repo, workflow, trigger, definition, resolved_payload)
+    case create_and_dispatch_run(repo, workflow, payload, &noop_dispatch/1) do
+      {:ok, run} ->
+        Observability.emit_run_created(run)
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -61,10 +66,13 @@ defmodule SquidMesh.RunStore do
   @spec create_run(module(), module(), atom(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, trigger_name, payload)
       when is_atom(trigger_name) and is_map(payload) do
-    with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         {:ok, trigger} <- WorkflowDefinition.resolve_trigger(definition, trigger_name),
-         {:ok, resolved_payload} <- WorkflowDefinition.resolve_payload(definition, payload) do
-      persist_run(repo, workflow, trigger, definition, resolved_payload)
+    case create_and_dispatch_run(repo, workflow, trigger_name, payload, &noop_dispatch/1) do
+      {:ok, run} ->
+        Observability.emit_run_created(run)
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -76,37 +84,56 @@ defmodule SquidMesh.RunStore do
   """
   @spec replay_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, replay_error()}
   def replay_run(repo, run_id) do
+    case replay_and_dispatch_run(repo, run_id, &noop_dispatch/1) do
+      {:ok, replay_run} ->
+        Observability.emit_run_replayed(replay_run)
+        {:ok, replay_run}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @spec create_and_dispatch_run(module(), module(), map(), dispatch_fun()) ::
+          {:ok, Run.t()} | {:error, create_error() | term()}
+  def create_and_dispatch_run(repo, workflow, payload, dispatch_fun)
+      when is_map(payload) and is_function(dispatch_fun, 1) do
+    with {:ok, definition} <- WorkflowDefinition.load(workflow),
+         {:ok, trigger} <-
+           WorkflowDefinition.resolve_trigger(
+             definition,
+             WorkflowDefinition.default_trigger(definition)
+           ),
+         {:ok, resolved_payload} <- WorkflowDefinition.resolve_payload(definition, payload) do
+      attrs = build_run_attrs(workflow, trigger, definition, resolved_payload)
+      insert_run_with_dispatch(repo, attrs, dispatch_fun)
+    end
+  end
+
+  @doc false
+  @spec create_and_dispatch_run(module(), module(), atom(), map(), dispatch_fun()) ::
+          {:ok, Run.t()} | {:error, create_error() | term()}
+  def create_and_dispatch_run(repo, workflow, trigger_name, payload, dispatch_fun)
+      when is_atom(trigger_name) and is_map(payload) and is_function(dispatch_fun, 1) do
+    with {:ok, definition} <- WorkflowDefinition.load(workflow),
+         {:ok, trigger} <- WorkflowDefinition.resolve_trigger(definition, trigger_name),
+         {:ok, resolved_payload} <- WorkflowDefinition.resolve_payload(definition, payload) do
+      attrs = build_run_attrs(workflow, trigger, definition, resolved_payload)
+      insert_run_with_dispatch(repo, attrs, dispatch_fun)
+    end
+  end
+
+  @doc false
+  @spec replay_and_dispatch_run(module(), Ecto.UUID.t(), dispatch_fun()) ::
+          {:ok, Run.t()} | {:error, replay_error() | term()}
+  def replay_and_dispatch_run(repo, run_id, dispatch_fun) when is_function(dispatch_fun, 1) do
     case repo.get(RunRecord, run_id) do
       %RunRecord{} = source_run ->
         with {:ok, _workflow, definition} <-
                WorkflowDefinition.load_serialized(source_run.workflow) do
-          attrs = %{
-            workflow: source_run.workflow,
-            trigger: source_run.trigger,
-            status: "pending",
-            input: source_run.input || %{},
-            context: %{},
-            current_step:
-              WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition)),
-            replayed_from_run_id: source_run.id
-          }
-
-          case repo.transaction(fn ->
-                 %RunRecord{}
-                 |> RunRecord.changeset(attrs)
-                 |> repo.insert()
-                 |> case do
-                   {:ok, replay_run} -> to_public_run(replay_run)
-                   {:error, changeset} -> repo.rollback({:invalid_run, changeset})
-                 end
-               end) do
-            {:ok, replay_run} ->
-              Observability.emit_run_replayed(replay_run)
-              {:ok, replay_run}
-
-            {:error, _reason} = error ->
-              error
-          end
+          attrs = replay_run_attrs(source_run, definition)
+          insert_run_with_dispatch(repo, attrs, dispatch_fun)
         end
 
       nil ->
@@ -117,9 +144,16 @@ defmodule SquidMesh.RunStore do
   @doc """
   Fetches one persisted run and returns the public run representation.
   """
-  @spec get_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, get_error()}
-  def get_run(repo, run_id) do
-    case repo.get(RunRecord, run_id) do
+  @spec get_run(module(), Ecto.UUID.t(), [get_option()]) :: {:ok, Run.t()} | {:error, get_error()}
+  def get_run(repo, run_id, opts \\ []) do
+    include_history? = Keyword.get(opts, :include_history, false)
+
+    query =
+      RunRecord
+      |> where([run], run.id == ^run_id)
+      |> maybe_preload_history(include_history?)
+
+    case repo.one(query) do
       %RunRecord{} = run ->
         {:ok, to_public_run(run)}
 
@@ -175,6 +209,47 @@ defmodule SquidMesh.RunStore do
     end)
   end
 
+  @doc false
+  @spec transition_and_dispatch_run(
+          module(),
+          Ecto.UUID.t(),
+          Run.status(),
+          transition_attrs(),
+          dispatch_fun()
+        ) :: {:ok, Run.t()} | {:error, transition_error() | term()}
+  def transition_and_dispatch_run(repo, run_id, to_status, attrs, dispatch_fun)
+      when is_map(attrs) and is_function(dispatch_fun, 1) do
+    case repo.transaction(fn ->
+           case repo.get(RunRecord, run_id) do
+             %RunRecord{} = run ->
+               from_status = deserialize_status(run.status)
+
+               with {:ok, _next_status} <- StateMachine.transition(from_status, to_status),
+                    {:ok, updated_run} <-
+                      update_run_record(
+                        repo,
+                        run,
+                        transition_changeset_attrs(to_status, attrs)
+                      ),
+                    {:ok, _result} <- dispatch_fun.(updated_run) do
+                 {updated_run, from_status}
+               else
+                 {:error, reason} -> repo.rollback(reason)
+               end
+
+             nil ->
+               repo.rollback(:not_found)
+           end
+         end) do
+      {:ok, {run, from_status}} ->
+        Observability.emit_run_transition(run, from_status, to_status)
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   @doc """
   Requests cancellation for a run if its current status allows it.
   """
@@ -213,6 +288,37 @@ defmodule SquidMesh.RunStore do
           repo.rollback(:not_found)
       end
     end)
+  end
+
+  @doc false
+  @spec update_and_dispatch_run(module(), Ecto.UUID.t(), transition_attrs(), dispatch_fun()) ::
+          {:ok, Run.t()} | {:error, update_error() | term()}
+  def update_and_dispatch_run(repo, run_id, attrs, dispatch_fun)
+      when is_map(attrs) and is_function(dispatch_fun, 1) do
+    case repo.transaction(fn ->
+           case repo.get(RunRecord, run_id) do
+             %RunRecord{} = run ->
+               with {:ok, updated_run} <-
+                      update_run_record(
+                        repo,
+                        run,
+                        serialize_transition_attrs(
+                          Map.take(attrs, [:context, :current_step, :last_error])
+                        )
+                      ),
+                    {:ok, _result} <- dispatch_fun.(updated_run) do
+                 updated_run
+               else
+                 {:error, reason} -> repo.rollback(reason)
+               end
+
+             nil ->
+               repo.rollback(:not_found)
+           end
+         end) do
+      {:ok, run} -> {:ok, run}
+      {:error, _reason} = error -> error
+    end
   end
 
   @doc """
@@ -283,11 +389,52 @@ defmodule SquidMesh.RunStore do
       payload: WorkflowDefinition.deserialize_payload(definition, run.input || %{}),
       context: deserialize_map(run.context || %{}),
       current_step: deserialize_step(definition, run.current_step),
-      last_error: deserialize_map(run.last_error),
+      last_error: deserialize_run_error(definition, run.last_error),
+      step_runs: to_public_step_runs(run, definition),
       replayed_from_run_id: run.replayed_from_run_id,
       inserted_at: run.inserted_at,
       updated_at: run.updated_at
     }
+  end
+
+  @spec to_public_step_runs(RunRecord.t(), WorkflowDefinition.t() | nil) :: [StepRun.t()] | nil
+  defp to_public_step_runs(%RunRecord{step_runs: %Ecto.Association.NotLoaded{}}, _definition),
+    do: nil
+
+  defp to_public_step_runs(%RunRecord{step_runs: step_runs}, definition)
+       when is_list(step_runs) do
+    Enum.map(step_runs, &to_public_step_run(&1, definition))
+  end
+
+  @spec to_public_step_run(StepRunRecord.t(), WorkflowDefinition.t() | nil) :: StepRun.t()
+  defp to_public_step_run(step_run, definition) do
+    %StepRun{
+      id: step_run.id,
+      step: WorkflowDefinition.deserialize_step(definition, step_run.step),
+      status: deserialize_step_status(step_run.status),
+      input: deserialize_map(step_run.input || %{}),
+      output: deserialize_map(step_run.output),
+      last_error: deserialize_map(step_run.last_error),
+      attempts: to_public_attempts(step_run),
+      inserted_at: step_run.inserted_at,
+      updated_at: step_run.updated_at
+    }
+  end
+
+  @spec to_public_attempts(StepRunRecord.t()) :: [StepAttempt.t()]
+  defp to_public_attempts(%StepRunRecord{attempts: %Ecto.Association.NotLoaded{}}), do: []
+
+  defp to_public_attempts(%StepRunRecord{attempts: attempts}) when is_list(attempts) do
+    Enum.map(attempts, fn attempt ->
+      %StepAttempt{
+        id: attempt.id,
+        attempt_number: attempt.attempt_number,
+        status: deserialize_attempt_status(attempt.status),
+        error: deserialize_map(attempt.error),
+        inserted_at: attempt.inserted_at,
+        updated_at: attempt.updated_at
+      }
+    end)
   end
 
   @spec deserialize_status(String.t()) :: Run.status()
@@ -299,39 +446,20 @@ defmodule SquidMesh.RunStore do
   defp deserialize_status("cancelling"), do: :cancelling
   defp deserialize_status("cancelled"), do: :cancelled
 
+  @spec deserialize_step_status(String.t()) :: StepRun.status()
+  defp deserialize_step_status("running"), do: :running
+  defp deserialize_step_status("completed"), do: :completed
+  defp deserialize_step_status("failed"), do: :failed
+
+  @spec deserialize_attempt_status(String.t()) :: StepAttempt.status()
+  defp deserialize_attempt_status("completed"), do: :completed
+  defp deserialize_attempt_status("failed"), do: :failed
+
   @spec deserialize_workflow(String.t()) :: {module() | String.t(), WorkflowDefinition.t() | nil}
   defp deserialize_workflow(workflow_name) do
     case WorkflowDefinition.load_serialized(workflow_name) do
       {:ok, workflow, definition} -> {workflow, definition}
       {:error, _reason} -> {workflow_name, nil}
-    end
-  end
-
-  defp persist_run(repo, workflow, trigger, definition, resolved_payload) do
-    attrs = %{
-      workflow: WorkflowDefinition.serialize_workflow(workflow),
-      trigger: WorkflowDefinition.serialize_trigger(trigger),
-      status: "pending",
-      input: resolved_payload,
-      context: %{},
-      current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition))
-    }
-
-    case repo.transaction(fn ->
-           %RunRecord{}
-           |> RunRecord.changeset(attrs)
-           |> repo.insert()
-           |> case do
-             {:ok, run} -> to_public_run(run)
-             {:error, changeset} -> repo.rollback({:invalid_run, changeset})
-           end
-         end) do
-      {:ok, run} ->
-        Observability.emit_run_created(run)
-        {:ok, run}
-
-      {:error, _reason} = error ->
-        error
     end
   end
 
@@ -356,6 +484,96 @@ defmodule SquidMesh.RunStore do
   @spec serialize_status(Run.status()) :: String.t()
   defp serialize_status(status) when is_atom(status), do: Atom.to_string(status)
 
+  @spec maybe_preload_history(Ecto.Queryable.t(), boolean()) :: Ecto.Query.t()
+  defp maybe_preload_history(query, true) do
+    preload(query, [run], step_runs: ^step_runs_preload_query())
+  end
+
+  defp maybe_preload_history(query, false), do: query
+
+  @spec build_run_attrs(module(), atom(), WorkflowDefinition.t(), map()) :: map()
+  defp build_run_attrs(workflow, trigger, definition, resolved_payload) do
+    %{
+      workflow: WorkflowDefinition.serialize_workflow(workflow),
+      trigger: WorkflowDefinition.serialize_trigger(trigger),
+      status: "pending",
+      input: resolved_payload,
+      context: %{},
+      current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition))
+    }
+  end
+
+  @spec replay_run_attrs(RunRecord.t(), WorkflowDefinition.t()) :: map()
+  defp replay_run_attrs(source_run, definition) do
+    %{
+      workflow: source_run.workflow,
+      trigger: source_run.trigger,
+      status: "pending",
+      input: source_run.input || %{},
+      context: %{},
+      current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition)),
+      replayed_from_run_id: source_run.id
+    }
+  end
+
+  @spec insert_run_with_dispatch(module(), map(), dispatch_fun()) ::
+          {:ok, Run.t()} | {:error, {:invalid_run, Ecto.Changeset.t()} | term()}
+  defp insert_run_with_dispatch(repo, attrs, dispatch_fun) do
+    case repo.transaction(fn ->
+           with {:ok, run} <- insert_run_record(repo, attrs),
+                {:ok, _result} <- dispatch_fun.(run) do
+             run
+           else
+             {:error, reason} -> repo.rollback(reason)
+           end
+         end) do
+      {:ok, run} -> {:ok, run}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec insert_run_record(module(), map()) ::
+          {:ok, Run.t()} | {:error, {:invalid_run, Ecto.Changeset.t()}}
+  defp insert_run_record(repo, attrs) do
+    %RunRecord{}
+    |> RunRecord.changeset(attrs)
+    |> repo.insert()
+    |> case do
+      {:ok, run} -> {:ok, to_public_run(run)}
+      {:error, changeset} -> {:error, {:invalid_run, changeset}}
+    end
+  end
+
+  @spec update_run_record(module(), RunRecord.t(), map()) ::
+          {:ok, Run.t()} | {:error, {:invalid_run, Ecto.Changeset.t()}}
+  defp update_run_record(repo, run, attrs) do
+    run
+    |> RunRecord.changeset(attrs)
+    |> repo.update()
+    |> case do
+      {:ok, updated_run} -> {:ok, to_public_run(updated_run)}
+      {:error, changeset} -> {:error, {:invalid_run, changeset}}
+    end
+  end
+
+  @spec noop_dispatch(Run.t()) :: {:ok, :noop}
+  defp noop_dispatch(_run), do: {:ok, :noop}
+
+  @spec step_runs_preload_query() :: Ecto.Query.t()
+  defp step_runs_preload_query do
+    from(step_run in StepRunRecord,
+      order_by: [asc: step_run.inserted_at, asc: step_run.id],
+      preload: [attempts: ^attempts_preload_query()]
+    )
+  end
+
+  @spec attempts_preload_query() :: Ecto.Query.t()
+  defp attempts_preload_query do
+    from(attempt in StepAttemptRecord,
+      order_by: [asc: attempt.attempt_number, asc: attempt.inserted_at, asc: attempt.id]
+    )
+  end
+
   @spec deserialize_map(map() | nil) :: map() | nil
   defp deserialize_map(nil), do: nil
 
@@ -373,6 +591,33 @@ defmodule SquidMesh.RunStore do
   defp deserialize_value(value) when is_map(value), do: deserialize_map(value)
   defp deserialize_value(value) when is_list(value), do: Enum.map(value, &deserialize_value/1)
   defp deserialize_value(value), do: value
+
+  @spec deserialize_run_error(WorkflowDefinition.t() | nil, map() | nil) :: map() | nil
+  defp deserialize_run_error(_definition, nil), do: nil
+
+  defp deserialize_run_error(definition, error) when is_map(error) do
+    error
+    |> deserialize_map()
+    |> maybe_update_error_step(:next_step, definition)
+    |> maybe_update_error_step(:failed_step, definition)
+  end
+
+  @spec deserialize_error_step(WorkflowDefinition.t() | nil, atom() | String.t() | nil) ::
+          atom() | String.t() | nil
+  defp deserialize_error_step(nil, step), do: step
+
+  defp deserialize_error_step(definition, step) when is_binary(step),
+    do: deserialize_step(definition, step)
+
+  defp deserialize_error_step(_definition, step), do: step
+
+  @spec maybe_update_error_step(map(), atom(), WorkflowDefinition.t() | nil) :: map()
+  defp maybe_update_error_step(error, key, definition) do
+    case Map.fetch(error, key) do
+      {:ok, step} -> Map.put(error, key, deserialize_error_step(definition, step))
+      :error -> error
+    end
+  end
 
   @spec deserialize_key(String.t()) :: atom() | String.t()
   defp deserialize_key(key) do

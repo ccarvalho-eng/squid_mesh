@@ -35,12 +35,8 @@ defmodule MinimalHostApp.MixProject do
 
   defp aliases do
     [
-      setup: ["deps.get", "ecto.setup"],
-      "ecto.setup": [
-        "ecto.create",
-        "ecto.migrate",
-        "ecto.migrate --migrations-path ../../priv/repo/migrations"
-      ],
+      setup: ["deps.get", "squid_mesh.install", "ecto.setup"],
+      "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       smoke: ["run -e 'MinimalHostApp.Smoke.run!()'"]
     ]

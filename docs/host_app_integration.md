@@ -11,6 +11,17 @@ This document defines the initial integration contract for:
 Add `:squid_mesh` to the host application's dependencies and fetch dependencies
 as usual with Mix.
 
+Then install Squid Mesh's library-owned migrations into the host app:
+
+```sh
+mix squid_mesh.install
+mix ecto.migrate
+```
+
+`mix squid_mesh.install` copies Squid Mesh migrations into the host
+application's `priv/repo/migrations` directory. It does not install or run
+`Oban` migrations.
+
 ## Configuration
 
 The host application configures Squid Mesh under the `:squid_mesh` application:
@@ -52,6 +63,12 @@ The host application is responsible for:
 - background job infrastructure lifecycle
 - any HTTP or internal API endpoints exposed to end users
 
+That means the embedded install path assumes:
+
+- the host app already owns its `Repo`
+- the host app already owns its `Oban` configuration
+- the host app already manages its `oban_jobs` table
+
 ## Development Setup
 
 For local development and examples, a minimal host app can provide:
@@ -61,6 +78,8 @@ For local development and examples, a minimal host app can provide:
 - direct application code calls into Squid Mesh
 
 This uses the same configuration contract as an existing application setup.
+In that mode, the example app may also own its own `Oban` migration because it
+is acting as a standalone development harness rather than an embedded install.
 
 ## Validation
 
