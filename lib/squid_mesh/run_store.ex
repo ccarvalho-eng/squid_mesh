@@ -5,6 +5,7 @@ defmodule SquidMesh.RunStore do
 
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Run
+  alias SquidMesh.Runtime.StateMachine
 
   @type list_filter :: {:workflow, module()} | {:status, Run.status()} | {:limit, pos_integer()}
   @type list_filters :: [list_filter()]
@@ -15,6 +16,13 @@ defmodule SquidMesh.RunStore do
           | {:invalid_run, Ecto.Changeset.t()}
 
   @type get_error :: :not_found
+  @type transition_attrs :: %{
+          optional(:context) => map(),
+          optional(:current_step) => String.t() | atom() | nil,
+          optional(:last_error) => map() | nil
+        }
+  @type transition_error ::
+          get_error() | StateMachine.transition_error() | {:invalid_run, Ecto.Changeset.t()}
 
   @spec create_run(module(), module(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, input) when is_map(input) do
@@ -61,6 +69,32 @@ defmodule SquidMesh.RunStore do
       |> Enum.map(&to_public_run/1)
 
     {:ok, runs}
+  end
+
+  @spec transition_run(module(), Ecto.UUID.t(), Run.status(), transition_attrs()) ::
+          {:ok, Run.t()} | {:error, transition_error()}
+  def transition_run(repo, run_id, to_status, attrs \\ %{}) when is_map(attrs) do
+    repo.transaction(fn ->
+      case repo.get(RunRecord, run_id) do
+        %RunRecord{} = run ->
+          from_status = deserialize_status(run.status)
+
+          with {:ok, _next_status} <- StateMachine.transition(from_status, to_status) do
+            run
+            |> RunRecord.changeset(transition_changeset_attrs(to_status, attrs))
+            |> repo.update()
+            |> case do
+              {:ok, updated_run} -> to_public_run(updated_run)
+              {:error, changeset} -> repo.rollback({:invalid_run, changeset})
+            end
+          else
+            {:error, reason} -> repo.rollback(reason)
+          end
+
+        nil ->
+          repo.rollback(:not_found)
+      end
+    end)
   end
 
   @spec workflow_definition(module()) :: {:ok, map()} | {:error, {:invalid_workflow, module()}}
@@ -183,4 +217,19 @@ defmodule SquidMesh.RunStore do
 
   @spec serialize_status(Run.status()) :: String.t()
   defp serialize_status(status) when is_atom(status), do: Atom.to_string(status)
+
+  @spec transition_changeset_attrs(Run.status(), transition_attrs()) :: map()
+  defp transition_changeset_attrs(to_status, attrs) do
+    attrs
+    |> Map.take([:context, :current_step, :last_error])
+    |> serialize_transition_attrs()
+    |> Map.put(:status, serialize_status(to_status))
+  end
+
+  defp serialize_transition_attrs(attrs) do
+    Map.update(attrs, :current_step, nil, fn
+      current_step when is_atom(current_step) -> Atom.to_string(current_step)
+      current_step -> current_step
+    end)
+  end
 end
