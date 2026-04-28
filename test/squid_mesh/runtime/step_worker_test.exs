@@ -137,6 +137,49 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     end
   end
 
+  defmodule RetrySurfaceWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:check_gateway, RetrySurfaceWorkflow.FailOnce,
+        retry: [max_attempts: 3, backoff: [type: :exponential, min: 1_000, max: 5_000]]
+      )
+
+      transition(:check_gateway, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule RetrySurfaceWorkflow.FailOnce do
+    use Jido.Action,
+      name: "check_gateway",
+      description: "Fails once so Squid Mesh owns the retry boundary",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @coordination_key {__MODULE__, :attempts}
+
+    @impl true
+    def run(%{account_id: account_id}, %{run_id: run_id}) do
+      seen_runs = :persistent_term.get(@coordination_key, MapSet.new())
+
+      if MapSet.member?(seen_runs, run_id) do
+        {:ok, %{gateway_check: %{account_id: account_id, status: "ok"}}}
+      else
+        :persistent_term.put(@coordination_key, MapSet.put(seen_runs, run_id))
+        {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+      end
+    end
+  end
+
   defmodule BuiltInWorkflow do
     use SquidMesh.Workflow
 
@@ -348,6 +391,35 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert DateTime.compare(scheduled_job.scheduled_at, scheduled_job.inserted_at) == :gt
+    end
+
+    test "does not let Jido retries consume the workflow retry boundary" do
+      :persistent_term.erase({RetrySurfaceWorkflow.FailOnce, :attempts})
+
+      on_exit(fn ->
+        :persistent_term.erase({RetrySurfaceWorkflow.FailOnce, :attempts})
+      end)
+
+      assert {:ok, run} =
+               SquidMesh.start_run(RetrySurfaceWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+
+      assert {:ok, retried_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert retried_run.status == :retrying
+      assert retried_run.current_step == :check_gateway
+      assert retried_run.last_error == %{message: "gateway timeout", code: "gateway_timeout"}
+
+      assert %StepRun{} =
+               step_run =
+               Repo.one!(
+                 from(step_run in StepRun,
+                   where: step_run.run_id == ^run.id and step_run.step == "check_gateway"
+                 )
+               )
+
+      assert step_run.status == "failed"
+      assert AttemptStore.attempt_count(Repo, step_run.id) == 1
     end
 
     test "ignores stale step jobs after the run advances to the next step" do
