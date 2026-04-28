@@ -50,7 +50,7 @@ Current runtime API:
 - `SquidMesh.list_runs/2`
 - `SquidMesh.cancel_run/2`
 
-## Define A Workflow
+## Current Example
 
 ```elixir
 defmodule Content.Workflows.PostDailyDigest do
@@ -77,7 +77,7 @@ defmodule Content.Workflows.PostDailyDigest do
 end
 ```
 
-## Call It From Your App
+## Call It From Your App Today
 
 ```elixir
 defmodule Content.DailyDigestJob do
@@ -105,6 +105,75 @@ end
 
 That workflow would typically be triggered by your application's own daily cron
 job or scheduler.
+
+## Illustrative End-State Example
+
+The snippet below shows the intended runtime shape once replay and execution
+issues are complete.
+
+```elixir
+defmodule Content.Workflows.PostDailyDigest do
+  use SquidMesh.Workflow
+
+  workflow do
+    input do
+      field(:feed_url, :string)
+      field(:discord_webhook_url, :string)
+      field(:posted_on, :string)
+    end
+
+    step(:fetch_feed, Content.Steps.FetchRssFeed)
+    step(:filter_entries, Content.Steps.FilterEntriesForToday)
+    step(:build_digest, Content.Steps.BuildDiscordDigest)
+    step(:post_to_discord, Content.Steps.PostDiscordMessage)
+    step(:record_delivery, Content.Steps.RecordDigestDelivery)
+
+    transition(:fetch_feed, on: :ok, to: :filter_entries)
+    transition(:filter_entries, on: :ok, to: :build_digest)
+    transition(:build_digest, on: :ok, to: :post_to_discord)
+    transition(:post_to_discord, on: :ok, to: :record_delivery)
+    transition(:record_delivery, on: :ok, to: :complete)
+
+    retry(:fetch_feed, max_attempts: 3)
+    retry(:post_to_discord, max_attempts: 5)
+  end
+end
+
+defmodule Content.DigestRuns do
+  def start_daily_digest(feed_url, webhook_url) do
+    SquidMesh.start_run(Content.Workflows.PostDailyDigest, %{
+      feed_url: feed_url,
+      discord_webhook_url: webhook_url,
+      posted_on: Date.utc_today() |> Date.to_iso8601()
+    })
+  end
+
+  def inspect_run(run_id) do
+    SquidMesh.inspect_run(run_id)
+  end
+
+  def list_recent_runs do
+    SquidMesh.list_runs(workflow: Content.Workflows.PostDailyDigest, limit: 20)
+  end
+
+  def cancel_run(run_id) do
+    SquidMesh.cancel_run(run_id)
+  end
+
+  def replay_run(run_id) do
+    SquidMesh.replay_run(run_id)
+  end
+end
+
+defmodule Content.DailyDigestJob do
+  def run do
+    Content.DigestRuns.start_daily_digest(
+      "https://example.com/feed.xml",
+      System.fetch_env!("DISCORD_WEBHOOK_URL")
+    )
+  end
+end
+```
 
 Run lifecycle states currently include:
 
