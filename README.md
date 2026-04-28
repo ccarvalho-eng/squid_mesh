@@ -23,6 +23,13 @@ recover durable workflows in code.
 - an existing `Oban` setup for background execution
 - Elixir step modules that can run as Jido actions
 
+Current verified toolchain:
+
+- Erlang/OTP `28.4.1`
+- Elixir `1.19.5-otp-28`
+- `Oban 2.21`
+- `Jido 2.0`
+
 ## Installation
 
 Add Squid Mesh to your application's dependencies:
@@ -30,7 +37,7 @@ Add Squid Mesh to your application's dependencies:
 ```elixir
 defp deps do
   [
-    {:squid_mesh, path: "../squid_mesh"} # or {:squid_mesh, "~> 0.1.0"} once published
+    {:squid_mesh, path: "../squid_mesh"} # adjust `:path` to your local checkout when evaluating from source
   ]
 end
 ```
@@ -47,6 +54,19 @@ mix ecto.migrate
 `mix squid_mesh.install` copies only Squid Mesh tables into
 `priv/repo/migrations`. It does not manage `oban_jobs`; embedded applications
 are expected to use their own existing `Oban` setup.
+
+If you are wiring Squid Mesh into a fresh app rather than an existing one, add
+an `Oban` migration first and run it through the host app's normal migration
+flow:
+
+```elixir
+defmodule MyApp.Repo.Migrations.AddObanJobs do
+  use Ecto.Migration
+
+  def up, do: Oban.Migrations.up()
+  def down, do: Oban.Migrations.down()
+end
+```
 
 ## Configuration
 
@@ -70,6 +90,17 @@ Public runtime API:
 - `SquidMesh.list_runs/2`
 - `SquidMesh.cancel_run/2`
 - `SquidMesh.replay_run/2`
+
+First successful run checklist:
+
+1. Add the `:squid_mesh` dependency.
+2. Make sure the host app already owns a working `Repo`.
+3. Make sure the host app already owns a working `Oban` instance and `oban_jobs` table.
+4. Run `mix squid_mesh.install`.
+5. Run `mix ecto.migrate`.
+6. Configure `:squid_mesh` with the host app's `Repo` and `Oban` queue.
+7. Start the host app's `Repo` and `Oban` under supervision.
+8. Start one workflow through `SquidMesh.start_run/2` or `start_run/3`.
 
 For a standalone development harness with its own `Repo` and `Oban`, use
 `examples/minimal_host_app`.
@@ -279,6 +310,12 @@ end
 
 If a workflow defines a single trigger, `SquidMesh.start_run/2` remains the
 short path and uses that default trigger automatically.
+
+To inspect the run with step and attempt history:
+
+```elixir
+SquidMesh.inspect_run(run_id, include_history: true)
+```
 
 Trigger boundary today:
 

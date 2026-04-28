@@ -6,6 +6,15 @@ This document defines the initial integration contract for:
 - OTP applications with an existing `Repo`
 - existing installations that already run background jobs
 
+## Tested Toolchain
+
+Current CI and onboarding smoke tests run with:
+
+- Erlang/OTP `28.4.1`
+- Elixir `1.19.5-otp-28`
+- `Oban 2.21`
+- `Jido 2.0`
+
 ## Installation
 
 Add `:squid_mesh` to the host application's dependencies and fetch dependencies
@@ -21,6 +30,18 @@ mix ecto.migrate
 `mix squid_mesh.install` copies Squid Mesh migrations into the host
 application's `priv/repo/migrations` directory. It does not install or run
 `Oban` migrations.
+
+For a fresh host app, add the host app's own `Oban` migration before running
+`mix ecto.migrate`:
+
+```elixir
+defmodule MyApp.Repo.Migrations.AddObanJobs do
+  use Ecto.Migration
+
+  def up, do: Oban.Migrations.up()
+  def down, do: Oban.Migrations.down()
+end
+```
 
 ## Configuration
 
@@ -45,6 +66,20 @@ Optional keys:
 - `:execution[:name]` - the background job system name to target
 - `:execution[:queue]` - queue used for Squid Mesh jobs, defaults to `:squid_mesh`
 
+## First Run Checklist
+
+For a new integration, the shortest path to a successful first run is:
+
+1. Add `:squid_mesh` to the host app's dependencies.
+2. Add or confirm a working Postgres-backed `Repo`.
+3. Add or confirm a working `Oban` instance.
+4. Add the host app's `Oban` migration if the app does not already have `oban_jobs`.
+5. Run `mix squid_mesh.install`.
+6. Run `mix ecto.migrate`.
+7. Configure `:squid_mesh` with the host app's `Repo` and `Oban` queue.
+8. Start the host app's `Repo` and `Oban` under supervision.
+9. Start one workflow through the public API and inspect it with history enabled.
+
 ## Existing Application Setup
 
 For an existing Phoenix or OTP application:
@@ -68,6 +103,94 @@ That means the embedded install path assumes:
 - the host app already owns its `Repo`
 - the host app already owns its `Oban` configuration
 - the host app already manages its `oban_jobs` table
+
+## Minimal OTP Host Skeleton
+
+For a plain OTP application, the minimum moving pieces are:
+
+- a `Repo` module
+- an `Oban` configuration
+- `Repo` and `Oban` in the application supervision tree
+- `:squid_mesh` configuration pointing at that `Repo` and queue
+- one host-facing module that calls `SquidMesh`
+
+Dependency shape:
+
+```elixir
+defp deps do
+  [
+    {:ecto_sql, "~> 3.13"},
+    {:postgrex, "~> 0.20"},
+    {:oban, "~> 2.21"},
+    {:jido, "~> 2.0"},
+    {:squid_mesh, path: "../squid_mesh"}
+  ]
+end
+```
+
+Application supervision shape:
+
+```elixir
+children = [
+  MyApp.Repo,
+  {Oban, Application.fetch_env!(:my_app, Oban)}
+]
+```
+
+Host-facing boundary:
+
+```elixir
+defmodule MyApp.WorkflowRuns do
+  def start_payment_recovery(payload) do
+    SquidMesh.start_run(MyApp.Workflows.PaymentRecovery, :payment_recovery, payload)
+  end
+
+  def inspect_run(run_id) do
+    SquidMesh.inspect_run(run_id, include_history: true)
+  end
+end
+```
+
+## Minimal Phoenix Host Skeleton
+
+A Phoenix application uses the same runtime contract. The main difference is
+that Squid Mesh usually sits behind a context or controller boundary.
+
+Typical shape:
+
+- add `:squid_mesh`, `:oban`, and `:jido` to the Phoenix app
+- keep using the Phoenix app's existing `Repo`
+- start `Oban` in the application supervision tree
+- configure `:squid_mesh` to use that `Repo` and queue
+- expose workflow operations through a context or controller
+
+Context boundary:
+
+```elixir
+defmodule MyApp.WorkflowRuns do
+  def start_payment_recovery(attrs) do
+    SquidMesh.start_run(MyApp.Workflows.PaymentRecovery, :payment_recovery, attrs)
+  end
+
+  def inspect_run(run_id) do
+    SquidMesh.inspect_run(run_id, include_history: true)
+  end
+
+  def list_runs(opts \\ []) do
+    SquidMesh.list_runs(opts)
+  end
+end
+```
+
+Controller shape:
+
+```elixir
+def create(conn, params) do
+  with {:ok, run} <- MyApp.WorkflowRuns.start_payment_recovery(params) do
+    json(conn, %{id: run.id, status: run.status})
+  end
+end
+```
 
 ## Development Setup
 
@@ -119,3 +242,14 @@ The example app wires:
 - its own `MinimalHostApp.Repo`
 - its own `Oban` instance
 - Squid Mesh through `MinimalHostApp.WorkflowRuns`
+
+## Inspecting History
+
+For real host apps, `inspect_run/2` is most useful with history enabled:
+
+```elixir
+SquidMesh.inspect_run(run_id, include_history: true)
+```
+
+That returns the top-level run plus persisted step runs and attempt history for
+debugging, replay decisions, and operator visibility.
