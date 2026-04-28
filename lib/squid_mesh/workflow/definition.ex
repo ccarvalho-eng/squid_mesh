@@ -23,6 +23,7 @@ defmodule SquidMesh.Workflow.Definition do
         }
 
   @type load_error :: {:invalid_workflow, module() | String.t()}
+  @type trigger_error :: {:invalid_trigger, atom() | String.t()}
   @type payload_error_details :: %{
           optional(:missing_fields) => [atom()],
           optional(:unknown_fields) => [atom() | String.t()],
@@ -129,6 +130,21 @@ defmodule SquidMesh.Workflow.Definition do
   @spec entry_step(t()) :: atom()
   def entry_step(definition), do: definition.entry_step
 
+  @spec default_trigger(t()) :: atom()
+  def default_trigger(definition) do
+    definition.triggers
+    |> List.first()
+    |> Map.fetch!(:name)
+  end
+
+  @spec resolve_trigger(t(), atom()) :: {:ok, atom()} | {:error, trigger_error()}
+  def resolve_trigger(definition, trigger_name) when is_atom(trigger_name) do
+    case Enum.find(definition.triggers, &(&1.name == trigger_name)) do
+      %{name: name} -> {:ok, name}
+      nil -> {:error, {:invalid_trigger, trigger_name}}
+    end
+  end
+
   @spec step_module(t(), atom()) :: {:ok, module()} | {:error, {:unknown_step, atom()}}
   def step_module(definition, step_name) when is_atom(step_name) do
     case Enum.find(definition.steps, &(&1.name == step_name)) do
@@ -168,10 +184,25 @@ defmodule SquidMesh.Workflow.Definition do
   @spec serialize_workflow(module()) :: String.t()
   def serialize_workflow(workflow) when is_atom(workflow), do: Atom.to_string(workflow)
 
+  @spec serialize_trigger(atom() | String.t() | nil) :: String.t() | nil
+  def serialize_trigger(nil), do: nil
+  def serialize_trigger(trigger) when is_atom(trigger), do: Atom.to_string(trigger)
+  def serialize_trigger(trigger) when is_binary(trigger), do: trigger
+
   @spec serialize_step(atom() | String.t() | nil) :: String.t() | nil
   def serialize_step(nil), do: nil
   def serialize_step(step) when is_atom(step), do: Atom.to_string(step)
   def serialize_step(step) when is_binary(step), do: step
+
+  @spec deserialize_trigger(t(), String.t() | nil) :: atom() | String.t() | nil
+  def deserialize_trigger(_definition, nil), do: nil
+
+  def deserialize_trigger(definition, trigger_name) when is_binary(trigger_name) do
+    Enum.find_value(definition.triggers, trigger_name, fn
+      %{name: trigger} ->
+        if Atom.to_string(trigger) == trigger_name, do: trigger, else: false
+    end)
+  end
 
   @spec deserialize_step(t(), String.t() | nil) :: atom() | String.t() | nil
   def deserialize_step(_definition, nil), do: nil

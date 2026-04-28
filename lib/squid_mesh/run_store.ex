@@ -14,6 +14,7 @@ defmodule SquidMesh.RunStore do
   @type create_error ::
           {:invalid_payload, :expected_map}
           | {:invalid_payload, WorkflowDefinition.payload_error_details()}
+          | {:invalid_trigger, atom() | String.t()}
           | {:invalid_workflow, module() | String.t()}
           | {:invalid_run, Ecto.Changeset.t()}
 
@@ -31,28 +32,30 @@ defmodule SquidMesh.RunStore do
   @spec create_run(module(), module(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, payload) when is_map(payload) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
+         {:ok, trigger} <-
+           WorkflowDefinition.resolve_trigger(
+             definition,
+             WorkflowDefinition.default_trigger(definition)
+           ),
          {:ok, resolved_payload} <- WorkflowDefinition.resolve_payload(definition, payload) do
-      attrs = %{
-        workflow: WorkflowDefinition.serialize_workflow(workflow),
-        status: "pending",
-        input: resolved_payload,
-        context: %{},
-        current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition))
-      }
-
-      repo.transaction(fn ->
-        %RunRecord{}
-        |> RunRecord.changeset(attrs)
-        |> repo.insert()
-        |> case do
-          {:ok, run} -> to_public_run(run)
-          {:error, changeset} -> repo.rollback({:invalid_run, changeset})
-        end
-      end)
+      persist_run(repo, workflow, trigger, definition, resolved_payload)
     end
   end
 
   def create_run(_repo, _workflow, _payload), do: {:error, {:invalid_payload, :expected_map}}
+
+  @spec create_run(module(), module(), atom(), map()) :: {:ok, Run.t()} | {:error, create_error()}
+  def create_run(repo, workflow, trigger_name, payload)
+      when is_atom(trigger_name) and is_map(payload) do
+    with {:ok, definition} <- WorkflowDefinition.load(workflow),
+         {:ok, trigger} <- WorkflowDefinition.resolve_trigger(definition, trigger_name),
+         {:ok, resolved_payload} <- WorkflowDefinition.resolve_payload(definition, payload) do
+      persist_run(repo, workflow, trigger, definition, resolved_payload)
+    end
+  end
+
+  def create_run(_repo, _workflow, _trigger_name, _payload),
+    do: {:error, {:invalid_payload, :expected_map}}
 
   @doc """
   Creates a new pending run from a prior run while preserving replay lineage.
@@ -65,6 +68,7 @@ defmodule SquidMesh.RunStore do
                WorkflowDefinition.load_serialized(source_run.workflow) do
           attrs = %{
             workflow: source_run.workflow,
+            trigger: source_run.trigger,
             status: "pending",
             input: source_run.input || %{},
             context: %{},
@@ -230,6 +234,7 @@ defmodule SquidMesh.RunStore do
     %Run{
       id: run.id,
       workflow: workflow,
+      trigger: WorkflowDefinition.deserialize_trigger(definition, run.trigger),
       status: deserialize_status(run.status),
       payload: WorkflowDefinition.deserialize_payload(definition, run.input || %{}),
       context: deserialize_map(run.context || %{}),
@@ -256,6 +261,27 @@ defmodule SquidMesh.RunStore do
       {:ok, workflow, definition} -> {workflow, definition}
       {:error, _reason} -> {workflow_name, nil}
     end
+  end
+
+  defp persist_run(repo, workflow, trigger, definition, resolved_payload) do
+    attrs = %{
+      workflow: WorkflowDefinition.serialize_workflow(workflow),
+      trigger: WorkflowDefinition.serialize_trigger(trigger),
+      status: "pending",
+      input: resolved_payload,
+      context: %{},
+      current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition))
+    }
+
+    repo.transaction(fn ->
+      %RunRecord{}
+      |> RunRecord.changeset(attrs)
+      |> repo.insert()
+      |> case do
+        {:ok, run} -> to_public_run(run)
+        {:error, changeset} -> repo.rollback({:invalid_run, changeset})
+      end
+    end)
   end
 
   @spec deserialize_step(WorkflowDefinition.t() | nil, String.t() | nil) ::

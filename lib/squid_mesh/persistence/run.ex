@@ -21,11 +21,12 @@ defmodule SquidMesh.Persistence.Run do
 
   @type t :: %__MODULE__{}
 
-  @required_fields ~w(workflow status input)a
+  @required_fields ~w(workflow trigger status input)a
   @optional_fields ~w(context current_step last_error replayed_from_run_id)a
 
   schema "squid_mesh_runs" do
     field(:workflow, :string)
+    field(:trigger, :string)
     field(:status, :string)
     field(:input, :map)
     field(:context, :map, default: %{})

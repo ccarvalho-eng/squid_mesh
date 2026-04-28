@@ -8,7 +8,7 @@ defmodule SquidMesh.Workflow do
         use SquidMesh.Workflow
 
         workflow do
-          trigger :manual do
+          trigger :invoice_delivery do
             manual()
 
             payload do

@@ -10,6 +10,7 @@ defmodule SquidMesh.AttemptStoreTest do
       %RunRecord{}
       |> RunRecord.changeset(%{
         workflow: "Elixir.SquidMesh.AttemptStoreTest.Workflow",
+        trigger: "manual",
         status: "pending",
         input: %{}
       })

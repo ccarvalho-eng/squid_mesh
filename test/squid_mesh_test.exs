@@ -10,7 +10,7 @@ defmodule SquidMeshTest do
     use SquidMesh.Workflow
 
     workflow do
-      trigger :manual do
+      trigger :invoice_delivery do
         manual()
 
         payload do
@@ -31,7 +31,7 @@ defmodule SquidMeshTest do
     use SquidMesh.Workflow
 
     workflow do
-      trigger :manual do
+      trigger :gateway_recovery do
         manual()
 
         payload do
@@ -48,7 +48,7 @@ defmodule SquidMeshTest do
     use SquidMesh.Workflow
 
     workflow do
-      trigger :manual do
+      trigger :invoice_delivery do
         manual()
 
         payload do
@@ -130,6 +130,7 @@ defmodule SquidMeshTest do
                SquidMesh.start_run(InvoiceReminderWorkflow, payload, repo: Repo)
 
       assert run.workflow == InvoiceReminderWorkflow
+      assert run.trigger == :invoice_delivery
       assert run.status == :pending
       assert run.payload == payload
       assert run.context == %{}
@@ -155,6 +156,28 @@ defmodule SquidMeshTest do
                SquidMesh.start_run(LazyWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
       assert run.workflow == LazyWorkflow
+    end
+
+    test "starts a run through an explicit trigger name" do
+      assert {:ok, %Run{} = run} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 :invoice_delivery,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 repo: Repo
+               )
+
+      assert run.trigger == :invoice_delivery
+    end
+
+    test "rejects unknown trigger names" do
+      assert {:error, {:invalid_trigger, :unknown_trigger}} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 :unknown_trigger,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 repo: Repo
+               )
     end
 
     test "rejects non-map payloads" do
@@ -262,6 +285,7 @@ defmodule SquidMeshTest do
       assert {:ok, inspected_run} = SquidMesh.inspect_run(created_run.id, repo: Repo)
 
       assert inspected_run.workflow == InvoiceReminderWorkflow
+      assert inspected_run.trigger == :invoice_delivery
       assert inspected_run.current_step == :load_invoice
     end
   end
@@ -389,6 +413,7 @@ defmodule SquidMeshTest do
 
       assert replay_run.id != source_run.id
       assert replay_run.workflow == InvoiceReminderWorkflow
+      assert replay_run.trigger == :invoice_delivery
       assert replay_run.status == :pending
       assert replay_run.payload == source_run.payload
       assert replay_run.current_step == :load_invoice
