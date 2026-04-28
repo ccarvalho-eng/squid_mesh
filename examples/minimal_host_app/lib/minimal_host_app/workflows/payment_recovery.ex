@@ -13,6 +13,7 @@ defmodule MinimalHostApp.Workflows.PaymentRecovery do
         field(:account_id, :string)
         field(:invoice_id, :string)
         field(:attempt_id, :string)
+        field(:gateway_url, :string)
       end
     end
 

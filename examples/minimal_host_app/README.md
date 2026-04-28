@@ -37,7 +37,8 @@ MIX_ENV=test mix example.smoke
 ```
 
 This command creates the test database if needed, runs migrations, starts the
-repo and Oban, then runs the workflow to completion.
+repo and Oban, starts a local HTTP gateway stub, then runs the workflow to
+completion.
 
 Run the development-like path after `mix setup`:
 
@@ -58,7 +59,8 @@ The host-facing boundary is:
 MinimalHostApp.WorkflowRuns.start_payment_recovery(%{
   account_id: "acct_123",
   invoice_id: "inv_456",
-  attempt_id: "attempt_789"
+  attempt_id: "attempt_789",
+  gateway_url: "http://127.0.0.1:4010/gateway"
 })
 ```
 

@@ -25,6 +25,7 @@ defmodule MinimalHostApp.MixProject do
 
   defp deps do
     [
+      {:bypass, "~> 2.1", only: :test},
       {:ecto_sql, "~> 3.13"},
       {:oban, "~> 2.22"},
       {:postgrex, ">= 0.0.0"},

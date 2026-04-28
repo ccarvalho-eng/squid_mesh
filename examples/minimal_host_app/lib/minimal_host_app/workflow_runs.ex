@@ -9,7 +9,8 @@ defmodule MinimalHostApp.WorkflowRuns do
   @type payment_recovery_attrs :: %{
           required(:account_id) => String.t(),
           required(:invoice_id) => String.t(),
-          required(:attempt_id) => String.t()
+          required(:attempt_id) => String.t(),
+          required(:gateway_url) => String.t()
         }
 
   @spec start_payment_recovery(payment_recovery_attrs()) ::

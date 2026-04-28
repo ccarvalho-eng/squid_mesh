@@ -5,10 +5,13 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   alias MinimalHostApp.WorkflowRuns
 
   test "starts the example payment recovery workflow through the host boundary" do
+    bypass = Bypass.open()
+
     attrs = %{
       account_id: "acct_123",
       invoice_id: "inv_456",
-      attempt_id: "attempt_789"
+      attempt_id: "attempt_789",
+      gateway_url: endpoint_url(bypass.port, "/gateway")
     }
 
     assert {:ok, run} = WorkflowRuns.start_payment_recovery(attrs)
@@ -16,7 +19,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert_enqueued(
       worker: SquidMesh.Workers.StepWorker,
       queue: "squid_mesh",
-      args: %{"run_id" => run.id}
+      args: %{"run_id" => run.id, "step" => "load_invoice"}
     )
 
     assert run.workflow == MinimalHostApp.Workflows.PaymentRecovery
@@ -31,7 +34,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              WorkflowRuns.start_payment_recovery(%{
                account_id: "acct_123",
                invoice_id: "inv_456",
-               attempt_id: "attempt_789"
+               attempt_id: "attempt_789",
+               gateway_url: "http://127.0.0.1:4010/gateway"
              })
 
     assert {:ok, inspected_run} = WorkflowRuns.inspect_payment_recovery(run.id)
@@ -42,5 +46,10 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert %SquidMesh.Run{} = run = Smoke.run!()
     assert run.status == :completed
     assert run.context.notification.channel == "email"
+    assert run.context.gateway_check.status == "retry_required"
+  end
+
+  defp endpoint_url(port, path) do
+    "http://127.0.0.1:#{port}#{path}"
   end
 end

@@ -38,9 +38,11 @@ defmodule SquidMesh.MixProject do
   defp deps do
     [
       {:ecto_sql, "~> 3.13"},
+      {:bypass, "~> 2.1", only: :test},
       {:jason, "~> 1.4"},
       {:jido, "~> 2.0"},
       {:oban, "~> 2.21"},
+      {:req, "~> 0.5"},
       {:postgrex, "~> 0.20", only: :test}
     ]
   end
