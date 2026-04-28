@@ -53,60 +53,6 @@ Current runtime API:
 ## Define A Workflow
 
 ```elixir
-defmodule Billing.Workflows.PaymentRecovery do
-  use SquidMesh.Workflow
-
-  workflow do
-    input do
-      field(:account_id, :string)
-      field(:invoice_id, :string)
-      field(:attempt_id, :string)
-    end
-
-    step(:load_invoice, Billing.Steps.LoadInvoice)
-    step(:check_gateway, Billing.Steps.CheckGatewayStatus)
-    step(:notify_customer, Billing.Steps.NotifyCustomer)
-    step(:open_follow_up, Billing.Steps.OpenFollowUpTask)
-
-    transition(:load_invoice, on: :ok, to: :check_gateway)
-    transition(:check_gateway, on: :retry_required, to: :notify_customer)
-    transition(:notify_customer, on: :ok, to: :open_follow_up)
-    transition(:open_follow_up, on: :ok, to: :complete)
-
-    retry(:check_gateway, max_attempts: 5)
-  end
-end
-```
-
-## Call It From Your App
-
-```elixir
-defmodule Billing do
-  def recover_failed_payment(account_id, invoice_id, attempt_id) do
-    SquidMesh.start_run(Billing.Workflows.PaymentRecovery, %{
-      account_id: account_id,
-      invoice_id: invoice_id,
-      attempt_id: attempt_id
-    })
-  end
-
-  def inspect_payment_recovery(run_id) do
-    SquidMesh.inspect_run(run_id)
-  end
-
-  def list_active_recoveries do
-    SquidMesh.list_runs(status: :running)
-  end
-
-  def cancel_payment_recovery(run_id) do
-    SquidMesh.cancel_run(run_id)
-  end
-end
-```
-
-## Example: Daily RSS Digest To Discord
-
-```elixir
 defmodule Content.Workflows.PostDailyDigest do
   use SquidMesh.Workflow
 
@@ -129,7 +75,11 @@ defmodule Content.Workflows.PostDailyDigest do
     retry(:post_to_discord, max_attempts: 5)
   end
 end
+```
 
+## Call It From Your App
+
+```elixir
 defmodule Content.DailyDigestJob do
   def run do
     SquidMesh.start_run(Content.Workflows.PostDailyDigest, %{
@@ -137,6 +87,18 @@ defmodule Content.DailyDigestJob do
       discord_webhook_url: System.fetch_env!("DISCORD_WEBHOOK_URL"),
       posted_on: Date.utc_today() |> Date.to_iso8601()
     })
+  end
+
+  def inspect_digest_run(run_id) do
+    SquidMesh.inspect_run(run_id)
+  end
+
+  def list_active_digests do
+    SquidMesh.list_runs(status: :running)
+  end
+
+  def cancel_digest_run(run_id) do
+    SquidMesh.cancel_run(run_id)
   end
 end
 ```
