@@ -25,6 +25,7 @@ defmodule SquidMesh.RunStore do
         }
   @type transition_error ::
           get_error() | StateMachine.transition_error() | {:invalid_run, Ecto.Changeset.t()}
+  @type replay_error :: get_error() | create_error()
 
   @spec create_run(module(), module(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, input) when is_map(input) do
@@ -51,6 +52,41 @@ defmodule SquidMesh.RunStore do
   end
 
   def create_run(_repo, _workflow, _input), do: {:error, {:invalid_input, :expected_map}}
+
+  @doc """
+  Creates a new pending run from a prior run while preserving replay lineage.
+  """
+  @spec replay_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, replay_error()}
+  def replay_run(repo, run_id) do
+    case repo.get(RunRecord, run_id) do
+      %RunRecord{} = source_run ->
+        with {:ok, workflow} <- workflow_module(source_run.workflow),
+             {:ok, definition} <- workflow_definition(workflow),
+             {:ok, first_step} <- first_step(workflow, definition) do
+          attrs = %{
+            workflow: source_run.workflow,
+            status: "pending",
+            input: source_run.input || %{},
+            context: %{},
+            current_step: Atom.to_string(first_step),
+            replayed_from_run_id: source_run.id
+          }
+
+          repo.transaction(fn ->
+            %RunRecord{}
+            |> RunRecord.changeset(attrs)
+            |> repo.insert()
+            |> case do
+              {:ok, replay_run} -> to_public_run(replay_run)
+              {:error, changeset} -> repo.rollback({:invalid_run, changeset})
+            end
+          end)
+        end
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
 
   @spec get_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, get_error()}
   def get_run(repo, run_id) do

@@ -305,4 +305,26 @@ defmodule SquidMeshTest do
       assert {:error, :not_found} = SquidMesh.cancel_run(Ecto.UUID.generate(), repo: Repo)
     end
   end
+
+  describe "replay_run/2" do
+    test "creates a new run linked to the source run through the public API" do
+      assert {:ok, source_run} =
+               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
+                 repo: FakeRepo
+               )
+
+      assert {:ok, replay_run} = SquidMesh.replay_run(source_run.id, repo: FakeRepo)
+
+      assert replay_run.id != source_run.id
+      assert replay_run.workflow == InvoiceReminderWorkflow
+      assert replay_run.status == :pending
+      assert replay_run.input == source_run.input
+      assert replay_run.current_step == :load_invoice
+      assert replay_run.replayed_from_run_id == source_run.id
+    end
+
+    test "returns not found when replaying a missing run" do
+      assert {:error, :not_found} = SquidMesh.replay_run(Ecto.UUID.generate(), repo: FakeRepo)
+    end
+  end
 end
