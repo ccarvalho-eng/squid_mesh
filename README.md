@@ -36,6 +36,48 @@ Squid Mesh lets application teams define workflows declaratively in Elixir and e
 - Declarative developer experience that hides execution internals
 - Built for operational visibility from day one
 
+## Example Workflow
+
+```elixir
+defmodule Billing.Workflows.PaymentRecovery do
+  use SquidMesh.Workflow
+
+  workflow do
+    input do
+      field(:account_id, :string)
+      field(:invoice_id, :string)
+      field(:attempt_id, :string)
+    end
+
+    step(:load_invoice, Billing.Steps.LoadInvoice)
+    step(:check_gateway, Billing.Steps.CheckGatewayStatus)
+    step(:notify_customer, Billing.Steps.NotifyCustomer)
+    step(:open_follow_up, Billing.Steps.OpenFollowUpTask)
+
+    transition(:load_invoice, on: :ok, to: :check_gateway)
+    transition(:check_gateway, on: :retry_required, to: :notify_customer)
+    transition(:notify_customer, on: :ok, to: :open_follow_up)
+    transition(:open_follow_up, on: :ok, to: :complete)
+
+    retry(:check_gateway, max_attempts: 5)
+  end
+end
+```
+
+## Example Host App Call
+
+```elixir
+defmodule Billing do
+  def recover_failed_payment(account_id, invoice_id, attempt_id) do
+    SquidMesh.start_run(Billing.Workflows.PaymentRecovery, %{
+      account_id: account_id,
+      invoice_id: invoice_id,
+      attempt_id: attempt_id
+    })
+  end
+end
+```
+
 ## Documentation
 
 - [Host app integration](docs/host_app_integration.md)
