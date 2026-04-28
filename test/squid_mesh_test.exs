@@ -1,9 +1,9 @@
 defmodule SquidMeshTest do
-  use ExUnit.Case
+  use SquidMesh.DataCase
 
+  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Run
   alias SquidMesh.RunStore
-  alias SquidMesh.TestSupport.FakeRepo
   alias SquidMesh.TestSupport.LazyWorkflow
 
   defmodule InvoiceReminderWorkflow do
@@ -39,19 +39,20 @@ defmodule SquidMeshTest do
     end
   end
 
-  setup_all do
-    start_supervised!(FakeRepo)
-    :ok
-  end
+  defmodule ReorderedWorkflow do
+    use SquidMesh.Workflow
 
-  setup do
-    FakeRepo.reset()
+    workflow do
+      input do
+        field(:account_id, :string)
+      end
 
-    on_exit(fn ->
-      Application.delete_env(:squid_mesh, :repo)
-    end)
+      step(:send_email, ReorderedWorkflow.SendEmail)
+      step(:load_invoice, ReorderedWorkflow.LoadInvoice)
 
-    :ok
+      transition(:load_invoice, on: :ok, to: :send_email)
+      transition(:send_email, on: :ok, to: :complete)
+    end
   end
 
   test "configures an application supervisor" do
@@ -90,7 +91,7 @@ defmodule SquidMeshTest do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, %Run{} = run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, input, repo: FakeRepo)
+               SquidMesh.start_run(InvoiceReminderWorkflow, input, repo: Repo)
 
       assert run.workflow == InvoiceReminderWorkflow
       assert run.status == :pending
@@ -105,7 +106,7 @@ defmodule SquidMeshTest do
 
     test "rejects modules that do not define the workflow contract" do
       assert {:error, {:invalid_workflow, String}} =
-               SquidMesh.start_run(String, %{}, repo: FakeRepo)
+               SquidMesh.start_run(String, %{}, repo: Repo)
     end
 
     test "loads workflow modules on demand before validating the contract" do
@@ -115,67 +116,118 @@ defmodule SquidMeshTest do
       refute :code.is_loaded(LazyWorkflow)
 
       assert {:ok, %Run{} = run} =
-               SquidMesh.start_run(LazyWorkflow, %{account_id: "acct_123"}, repo: FakeRepo)
+               SquidMesh.start_run(LazyWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
       assert run.workflow == LazyWorkflow
     end
 
     test "rejects non-map input payloads" do
       assert {:error, {:invalid_input, :expected_map}} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, [:not_a_map], repo: FakeRepo)
+               SquidMesh.start_run(InvoiceReminderWorkflow, [:not_a_map], repo: Repo)
+    end
+
+    test "starts from the semantic entry step rather than declaration order" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ReorderedWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert run.current_step == :load_invoice
+    end
+
+    test "rejects missing required input fields" do
+      assert {:error, {:invalid_input, %{missing_fields: [:invoice_id]}}} =
+               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"}, repo: Repo)
+    end
+
+    test "rejects undeclared input fields" do
+      assert {:error, {:invalid_input, %{unknown_fields: [:unexpected]}}} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456", unexpected: true},
+                 repo: Repo
+               )
+    end
+
+    test "rejects input fields with invalid types" do
+      assert {:error, {:invalid_input, %{invalid_types: %{invoice_id: :string}}}} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: 123},
+                 repo: Repo
+               )
     end
   end
 
   describe "inspect_run/2" do
     test "fetches a persisted run by id" do
       assert {:ok, created_run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
-                 repo: FakeRepo
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
                )
 
-      assert {:ok, %Run{} = inspected_run} = SquidMesh.inspect_run(created_run.id, repo: FakeRepo)
+      assert {:ok, %Run{} = inspected_run} = SquidMesh.inspect_run(created_run.id, repo: Repo)
 
       assert inspected_run == created_run
     end
 
     test "returns not found when the run does not exist" do
       assert {:error, :not_found} =
-               SquidMesh.inspect_run(Ecto.UUID.generate(), repo: FakeRepo)
+               SquidMesh.inspect_run(Ecto.UUID.generate(), repo: Repo)
+    end
+
+    test "returns stable workflow and step identifiers from persisted runs" do
+      assert {:ok, created_run} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_456"},
+                 repo: Repo
+               )
+
+      persisted_run = Repo.get!(RunRecord, created_run.id)
+
+      assert persisted_run.workflow == "Elixir.SquidMeshTest.InvoiceReminderWorkflow"
+      assert persisted_run.current_step == "load_invoice"
+
+      assert {:ok, inspected_run} = SquidMesh.inspect_run(created_run.id, repo: Repo)
+
+      assert inspected_run.workflow == InvoiceReminderWorkflow
+      assert inspected_run.current_step == :load_invoice
     end
   end
 
   describe "list_runs/2" do
     test "returns runs newest first" do
       assert {:ok, first_run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
-                 repo: FakeRepo
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
                )
 
       Process.sleep(1)
 
       assert {:ok, second_run} =
-               SquidMesh.start_run(PaymentRecoveryWorkflow, %{account_id: "acct_456"},
-                 repo: FakeRepo
-               )
+               SquidMesh.start_run(PaymentRecoveryWorkflow, %{account_id: "acct_456"}, repo: Repo)
 
-      assert {:ok, runs} = SquidMesh.list_runs([], repo: FakeRepo)
+      assert {:ok, runs} = SquidMesh.list_runs([], repo: Repo)
 
       assert Enum.map(runs, & &1.id) == [second_run.id, first_run.id]
     end
 
     test "filters runs by workflow" do
       assert {:ok, _first_run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
-                 repo: FakeRepo
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
                )
 
       assert {:ok, second_run} =
-               SquidMesh.start_run(PaymentRecoveryWorkflow, %{account_id: "acct_456"},
-                 repo: FakeRepo
-               )
+               SquidMesh.start_run(PaymentRecoveryWorkflow, %{account_id: "acct_456"}, repo: Repo)
 
       assert {:ok, runs} =
-               SquidMesh.list_runs([workflow: PaymentRecoveryWorkflow], repo: FakeRepo)
+               SquidMesh.list_runs([workflow: PaymentRecoveryWorkflow], repo: Repo)
 
       assert Enum.map(runs, & &1.id) == [second_run.id]
       assert Enum.map(runs, & &1.workflow) == [PaymentRecoveryWorkflow]
@@ -183,13 +235,15 @@ defmodule SquidMeshTest do
 
     test "filters runs by status" do
       assert {:ok, pending_run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
-                 repo: FakeRepo
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
                )
 
-      FakeRepo.update_run_status!(pending_run.id, "failed")
+      assert {:ok, _failed_run} = RunStore.transition_run(Repo, pending_run.id, :failed)
 
-      assert {:ok, runs} = SquidMesh.list_runs([status: :failed], repo: FakeRepo)
+      assert {:ok, runs} = SquidMesh.list_runs([status: :failed], repo: Repo)
 
       assert Enum.map(runs, & &1.id) == [pending_run.id]
       assert Enum.map(runs, & &1.status) == [:failed]
@@ -197,18 +251,22 @@ defmodule SquidMeshTest do
 
     test "limits the number of returned runs" do
       assert {:ok, _first_run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
-                 repo: FakeRepo
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
                )
 
       Process.sleep(1)
 
       assert {:ok, second_run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_456"},
-                 repo: FakeRepo
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_456", invoice_id: "inv_456"},
+                 repo: Repo
                )
 
-      assert {:ok, runs} = SquidMesh.list_runs([limit: 1], repo: FakeRepo)
+      assert {:ok, runs} = SquidMesh.list_runs([limit: 1], repo: Repo)
 
       assert Enum.map(runs, & &1.id) == [second_run.id]
     end
@@ -217,11 +275,13 @@ defmodule SquidMeshTest do
   describe "cancel_run/2" do
     test "cancels pending runs through the public API" do
       assert {:ok, run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
-                 repo: FakeRepo
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
                )
 
-      assert {:ok, cancelled_run} = SquidMesh.cancel_run(run.id, repo: FakeRepo)
+      assert {:ok, cancelled_run} = SquidMesh.cancel_run(run.id, repo: Repo)
 
       assert cancelled_run.id == run.id
       assert cancelled_run.status == :cancelled
@@ -229,18 +289,20 @@ defmodule SquidMeshTest do
 
     test "marks active runs as cancelling through the public API" do
       assert {:ok, run} =
-               SquidMesh.start_run(InvoiceReminderWorkflow, %{account_id: "acct_123"},
-                 repo: FakeRepo
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
                )
 
-      assert {:ok, running_run} = RunStore.transition_run(FakeRepo, run.id, :running)
-      assert {:ok, cancelling_run} = SquidMesh.cancel_run(running_run.id, repo: FakeRepo)
+      assert {:ok, running_run} = RunStore.transition_run(Repo, run.id, :running)
+      assert {:ok, cancelling_run} = SquidMesh.cancel_run(running_run.id, repo: Repo)
 
       assert cancelling_run.status == :cancelling
     end
 
     test "returns not found for missing runs" do
-      assert {:error, :not_found} = SquidMesh.cancel_run(Ecto.UUID.generate(), repo: FakeRepo)
+      assert {:error, :not_found} = SquidMesh.cancel_run(Ecto.UUID.generate(), repo: Repo)
     end
   end
 

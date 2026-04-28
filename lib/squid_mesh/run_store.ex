@@ -6,13 +6,15 @@ defmodule SquidMesh.RunStore do
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Run
   alias SquidMesh.Runtime.StateMachine
+  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type list_filter :: {:workflow, module()} | {:status, Run.status()} | {:limit, pos_integer()}
   @type list_filters :: [list_filter()]
 
   @type create_error ::
           {:invalid_input, :expected_map}
-          | {:invalid_workflow, module()}
+          | {:invalid_input, WorkflowDefinition.input_error_details()}
+          | {:invalid_workflow, module() | String.t()}
           | {:invalid_run, Ecto.Changeset.t()}
 
   @type get_error :: :not_found
@@ -27,14 +29,14 @@ defmodule SquidMesh.RunStore do
 
   @spec create_run(module(), module(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, input) when is_map(input) do
-    with {:ok, definition} <- workflow_definition(workflow),
-         {:ok, first_step} <- first_step(workflow, definition) do
+    with {:ok, definition} <- WorkflowDefinition.load(workflow),
+         :ok <- WorkflowDefinition.validate_input(definition, input) do
       attrs = %{
-        workflow: Atom.to_string(workflow),
+        workflow: WorkflowDefinition.serialize_workflow(workflow),
         status: "pending",
         input: input,
         context: %{},
-        current_step: Atom.to_string(first_step)
+        current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition))
       }
 
       repo.transaction(fn ->
@@ -151,39 +153,6 @@ defmodule SquidMesh.RunStore do
   def schedule_next_step?(status) when is_atom(status),
     do: StateMachine.schedule_next_step?(status)
 
-  @spec workflow_definition(module()) :: {:ok, map()} | {:error, {:invalid_workflow, module()}}
-  defp workflow_definition(workflow) do
-    case Code.ensure_loaded(workflow) do
-      {:module, ^workflow} ->
-        if function_exported?(workflow, :workflow_definition, 0) do
-          {:ok, workflow.workflow_definition()}
-        else
-          {:error, {:invalid_workflow, workflow}}
-        end
-
-      {:error, _reason} ->
-        {:error, {:invalid_workflow, workflow}}
-    end
-  end
-
-  @spec first_step(module(), map()) :: {:ok, atom()} | {:error, {:invalid_workflow, module()}}
-  defp first_step(_workflow, %{steps: [%{name: step_name} | _rest]}) when is_atom(step_name),
-    do: {:ok, step_name}
-
-  defp first_step(workflow, _definition), do: {:error, {:invalid_workflow, workflow}}
-
-  @spec workflow_module(String.t() | module()) ::
-          {:ok, module()} | {:error, {:invalid_workflow, module() | String.t()}}
-  defp workflow_module(workflow) when is_atom(workflow), do: {:ok, workflow}
-
-  defp workflow_module(workflow) when is_binary(workflow) do
-    try do
-      {:ok, String.to_existing_atom(workflow)}
-    rescue
-      ArgumentError -> {:error, {:invalid_workflow, workflow}}
-    end
-  end
-
   @spec query_runs(module(), list_filters()) :: [RunRecord.t()]
   defp query_runs(repo, filters) do
     if function_exported?(repo, :list_runs, 1) do
@@ -205,7 +174,7 @@ defmodule SquidMesh.RunStore do
         query
 
       workflow ->
-        where(query, [run], run.workflow == ^serialize_workflow(workflow))
+        where(query, [run], run.workflow == ^WorkflowDefinition.serialize_workflow(workflow))
     end
   end
 
@@ -233,13 +202,15 @@ defmodule SquidMesh.RunStore do
 
   @spec to_public_run(RunRecord.t()) :: Run.t()
   defp to_public_run(run) do
+    {workflow, definition} = deserialize_workflow(run.workflow)
+
     %Run{
       id: run.id,
-      workflow: deserialize_identifier(run.workflow),
+      workflow: workflow,
       status: deserialize_status(run.status),
-      input: run.input || %{},
+      input: WorkflowDefinition.deserialize_input(definition, run.input || %{}),
       context: run.context || %{},
-      current_step: deserialize_identifier(run.current_step),
+      current_step: deserialize_step(definition, run.current_step),
       last_error: run.last_error,
       replayed_from_run_id: run.replayed_from_run_id,
       inserted_at: run.inserted_at,
@@ -256,30 +227,31 @@ defmodule SquidMesh.RunStore do
   defp deserialize_status("cancelling"), do: :cancelling
   defp deserialize_status("cancelled"), do: :cancelled
 
-  @spec deserialize_identifier(String.t() | nil) :: atom() | String.t() | nil
-  defp deserialize_identifier(nil), do: nil
-
-  defp deserialize_identifier(identifier) when is_binary(identifier) do
-    try do
-      String.to_existing_atom(identifier)
-    rescue
-      ArgumentError -> identifier
+  @spec deserialize_workflow(String.t()) :: {module() | String.t(), WorkflowDefinition.t() | nil}
+  defp deserialize_workflow(workflow_name) do
+    case WorkflowDefinition.load_serialized(workflow_name) do
+      {:ok, workflow, definition} -> {workflow, definition}
+      {:error, _reason} -> {workflow_name, nil}
     end
+  end
+
+  @spec deserialize_step(WorkflowDefinition.t() | nil, String.t() | nil) ::
+          atom() | String.t() | nil
+  defp deserialize_step(nil, step_name), do: step_name
+
+  defp deserialize_step(definition, step_name) do
+    WorkflowDefinition.deserialize_step(definition, step_name)
   end
 
   @spec serialize_filters(list_filters()) :: keyword()
   defp serialize_filters(filters) do
     filters
     |> Enum.map(fn
-      {:workflow, workflow} -> {:workflow, serialize_workflow(workflow)}
+      {:workflow, workflow} -> {:workflow, WorkflowDefinition.serialize_workflow(workflow)}
       {:status, status} -> {:status, serialize_status(status)}
       {:limit, limit} -> {:limit, limit}
     end)
   end
-
-  @spec serialize_workflow(module() | String.t()) :: String.t()
-  defp serialize_workflow(workflow) when is_atom(workflow), do: Atom.to_string(workflow)
-  defp serialize_workflow(workflow) when is_binary(workflow), do: workflow
 
   @spec serialize_status(Run.status()) :: String.t()
   defp serialize_status(status) when is_atom(status), do: Atom.to_string(status)
