@@ -18,10 +18,9 @@ defmodule SquidMesh.Workflow do
           end
 
           step :load_invoice, Billing.Steps.LoadInvoice
-          step :send_email, Billing.Steps.SendReminderEmail
+          step :send_email, Billing.Steps.SendReminderEmail, retry: [max_attempts: 3]
 
           transition :load_invoice, on: :ok, to: :send_email
-          retry :send_email, max_attempts: 3
         end
       end
 
@@ -31,7 +30,7 @@ defmodule SquidMesh.Workflow do
 
   @contract %{
     required: [:trigger, :step],
-    optional: [:transition, :retry]
+    optional: [:transition]
   }
 
   alias SquidMesh.Workflow.Validation
@@ -43,7 +42,6 @@ defmodule SquidMesh.Workflow do
       Module.register_attribute(__MODULE__, :squid_mesh_triggers, accumulate: true)
       Module.register_attribute(__MODULE__, :squid_mesh_steps, accumulate: true)
       Module.register_attribute(__MODULE__, :squid_mesh_transitions, accumulate: true)
-      Module.register_attribute(__MODULE__, :squid_mesh_retries, accumulate: true)
       Module.register_attribute(__MODULE__, :squid_mesh_current_field_target, persist: false)
       Module.register_attribute(__MODULE__, :squid_mesh_current_trigger_name, persist: false)
 
@@ -155,12 +153,6 @@ defmodule SquidMesh.Workflow do
     end
   end
 
-  defmacro retry(step, opts) do
-    quote bind_quoted: [step: step, opts: opts] do
-      @squid_mesh_retries %{step: step, opts: opts}
-    end
-  end
-
   defmacro __before_compile__(env) do
     triggers =
       env.module
@@ -177,16 +169,11 @@ defmodule SquidMesh.Workflow do
       |> Module.get_attribute(:squid_mesh_transitions)
       |> Enum.reverse()
 
-    retries =
-      env.module
-      |> Module.get_attribute(:squid_mesh_retries)
-      |> Enum.reverse()
-
     definition = %{
       triggers: triggers,
       steps: steps,
       transitions: transitions,
-      retries: retries
+      retries: Validation.derive_retries(steps)
     }
 
     Validation.validate!(definition, env)

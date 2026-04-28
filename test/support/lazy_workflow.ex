@@ -12,8 +12,7 @@ defmodule SquidMesh.TestSupport.LazyWorkflow do
       end
     end
 
-    step(:load_invoice, SquidMesh.TestSupport.LazyWorkflow.LoadInvoice)
+    step(:load_invoice, SquidMesh.TestSupport.LazyWorkflow.LoadInvoice, retry: [max_attempts: 1])
     transition(:load_invoice, on: :ok, to: :complete)
-    retry(:load_invoice, max_attempts: 1)
   end
 end
