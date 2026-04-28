@@ -1,6 +1,6 @@
 <div align="center">
-  <img width="85" alt="squid-mesh" src="https://github.com/user-attachments/assets/ce1d756d-82a0-4be4-ba5b-98174557e00c" />
-  <h1>Squid Mesh</h1>
+<img width="350" alt="squid-mesh-logo" src="https://github.com/user-attachments/assets/3a896b87-8d6f-45fa-af2d-a16ee92abc09" />
+
   <p><i>Durable workflow runtime for Elixir applications.</i></p>
 
   [![CI](https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml)
