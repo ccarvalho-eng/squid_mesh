@@ -4,6 +4,8 @@
   <p><i>Workflow automation platform for Elixir applications.</i></p>
 
   [![CI](https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml)
+  [![Hex pm](https://img.shields.io/hexpm/v/squid_mesh.svg)](https://hex.pm/packages/squid_mesh)
+  [![Hex Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/squid_mesh/0.1.0-alpha.1)
   [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 </div>
 
