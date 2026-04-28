@@ -1,5 +1,10 @@
 defmodule SquidMesh.StepRunStore do
-  @moduledoc false
+  @moduledoc """
+  Durable store for per-step workflow execution state.
+
+  Step runs are used to detect stale or duplicate deliveries and to persist
+  step input, output, and failure details separately from the parent run.
+  """
 
   import Ecto.Query
 
@@ -48,18 +53,27 @@ defmodule SquidMesh.StepRunStore do
     end
   end
 
+  @doc """
+  Marks a step run as completed and persists its output.
+  """
   @spec complete_step(module(), Ecto.UUID.t(), step_output()) ::
           {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def complete_step(repo, step_run_id, output) when is_map(output) do
     update_step(repo, step_run_id, %{status: "completed", output: output, last_error: nil})
   end
 
+  @doc """
+  Marks a step run as failed and persists the last error.
+  """
   @spec fail_step(module(), Ecto.UUID.t(), step_error()) ::
           {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def fail_step(repo, step_run_id, error) when is_map(error) do
     update_step(repo, step_run_id, %{status: "failed", last_error: error})
   end
 
+  @doc """
+  Fetches the persisted step run for one workflow run and step identifier.
+  """
   @spec get_step_run(module(), Ecto.UUID.t(), step_identifier()) :: StepRun.t() | nil
   def get_step_run(repo, run_id, step) do
     serialized_step = serialize_step(step)

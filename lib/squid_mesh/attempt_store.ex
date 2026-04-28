@@ -1,5 +1,11 @@
 defmodule SquidMesh.AttemptStore do
-  @moduledoc false
+  @moduledoc """
+  Durable store for step-attempt history.
+
+  Attempts are recorded separately from step runs so retry policy and
+  observability can reason about attempt numbers, failure history, and the
+  latest known attempt state.
+  """
 
   import Ecto.Query
 
@@ -7,6 +13,9 @@ defmodule SquidMesh.AttemptStore do
 
   @type attempt_attrs :: %{optional(:error) => map() | nil}
 
+  @doc """
+  Records one step attempt with optional failure details.
+  """
   @spec record_attempt(module(), Ecto.UUID.t(), pos_integer(), String.t(), attempt_attrs()) ::
           {:ok, StepAttempt.t()} | {:error, Ecto.Changeset.t()}
   def record_attempt(repo, step_run_id, attempt_number, status, attrs \\ %{})
@@ -25,6 +34,9 @@ defmodule SquidMesh.AttemptStore do
     |> repo.insert()
   end
 
+  @doc """
+  Returns how many attempts have been recorded for a step run.
+  """
   @spec attempt_count(module(), Ecto.UUID.t()) :: non_neg_integer()
   def attempt_count(repo, step_run_id) do
     repo
@@ -32,6 +44,9 @@ defmodule SquidMesh.AttemptStore do
     |> length()
   end
 
+  @doc """
+  Returns the latest recorded attempt for a step run.
+  """
   @spec latest_attempt(module(), Ecto.UUID.t()) :: StepAttempt.t() | nil
   def latest_attempt(repo, step_run_id) do
     repo

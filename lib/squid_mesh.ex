@@ -12,9 +12,16 @@ defmodule SquidMesh do
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
 
+  @doc """
+  Loads Squid Mesh configuration from the application environment with optional
+  runtime overrides.
+  """
   @spec config(keyword()) :: {:ok, Config.t()} | {:error, {:missing_config, [atom()]}}
   defdelegate config(overrides \\ []), to: Config, as: :load
 
+  @doc """
+  Loads Squid Mesh configuration and raises if required keys are missing.
+  """
   @spec config!(keyword()) :: Config.t()
   defdelegate config!(overrides \\ []), to: Config, as: :load!
 

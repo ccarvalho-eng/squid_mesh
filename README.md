@@ -233,12 +233,20 @@ Run lifecycle states currently include:
 - `cancelling`
 - `cancelled`
 
-## Getting Started
+## Documentation
 
+- [Workflow authoring guide](docs/workflow_authoring.md)
 - [Host app integration](docs/host_app_integration.md)
-- [Observability](docs/observability.md)
 - [Tool adapters](docs/tool_adapters.md)
+- [Observability](docs/observability.md)
+- [Architecture](docs/architecture.md)
+- [ADR index](docs/adr/README.md)
 - [Example host app harness](examples/minimal_host_app/README.md)
+
+## Contributing
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
 
 Fast local smoke path:
 

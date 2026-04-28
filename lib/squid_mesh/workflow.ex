@@ -61,8 +61,14 @@ defmodule SquidMesh.Workflow do
     end
   end
 
+  @doc """
+  Declares the workflow body.
+  """
   defmacro workflow(do: block), do: block
 
+  @doc """
+  Declares a named workflow trigger.
+  """
   defmacro trigger(name, do: block) do
     quote bind_quoted: [name: name, block: Macro.escape(block)] do
       Module.put_attribute(__MODULE__, :squid_mesh_current_trigger_name, name)
@@ -91,6 +97,9 @@ defmodule SquidMesh.Workflow do
     end
   end
 
+  @doc """
+  Declares a manual trigger.
+  """
   defmacro manual do
     quote do
       SquidMesh.Workflow.__push_current_trigger_definition__(__MODULE__, %{
@@ -100,6 +109,9 @@ defmodule SquidMesh.Workflow do
     end
   end
 
+  @doc """
+  Declares a cron-based trigger.
+  """
   defmacro cron(expression, opts \\ []) do
     quote bind_quoted: [expression: expression, opts: opts] do
       SquidMesh.Workflow.__push_current_trigger_definition__(__MODULE__, %{
@@ -112,6 +124,9 @@ defmodule SquidMesh.Workflow do
     end
   end
 
+  @doc """
+  Declares the payload contract for the current trigger.
+  """
   defmacro payload(do: block) do
     quote bind_quoted: [block: Macro.escape(block)] do
       Module.put_attribute(__MODULE__, :squid_mesh_current_field_target, :trigger_payload)
@@ -120,6 +135,9 @@ defmodule SquidMesh.Workflow do
     end
   end
 
+  @doc """
+  Declares one payload field inside a trigger payload block.
+  """
   defmacro field(name, type, opts \\ []) do
     quote bind_quoted: [name: name, type: type, opts: opts] do
       field = %{name: name, type: type, opts: opts}
@@ -137,12 +155,18 @@ defmodule SquidMesh.Workflow do
     end
   end
 
+  @doc """
+  Declares one workflow step.
+  """
   defmacro step(name, module, opts \\ []) do
     quote bind_quoted: [name: name, module: module, opts: opts] do
       @squid_mesh_steps %{name: name, module: module, opts: opts}
     end
   end
 
+  @doc """
+  Declares a transition from one step outcome to the next step.
+  """
   defmacro transition(from, opts) do
     quote bind_quoted: [from: from, opts: opts] do
       @squid_mesh_transitions %{

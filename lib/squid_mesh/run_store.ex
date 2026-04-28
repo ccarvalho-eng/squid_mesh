@@ -1,5 +1,12 @@
 defmodule SquidMesh.RunStore do
-  @moduledoc false
+  @moduledoc """
+  Durable run persistence and lifecycle operations.
+
+  This module translates between the public `SquidMesh.Run` struct and the
+  underlying persistence schema while applying workflow-level rules such as
+  payload validation, trigger resolution, replay lineage, and legal run-state
+  transitions.
+  """
 
   import Ecto.Query
 
@@ -30,6 +37,9 @@ defmodule SquidMesh.RunStore do
   @type replay_error :: get_error() | create_error()
   @type update_error :: get_error() | {:invalid_run, Ecto.Changeset.t()}
 
+  @doc """
+  Creates a new run for a workflow using the workflow's default trigger.
+  """
   @spec create_run(module(), module(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, payload) when is_map(payload) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
@@ -45,6 +55,9 @@ defmodule SquidMesh.RunStore do
 
   def create_run(_repo, _workflow, _payload), do: {:error, {:invalid_payload, :expected_map}}
 
+  @doc """
+  Creates a new run for a workflow through an explicit trigger.
+  """
   @spec create_run(module(), module(), atom(), map()) :: {:ok, Run.t()} | {:error, create_error()}
   def create_run(repo, workflow, trigger_name, payload)
       when is_atom(trigger_name) and is_map(payload) do
@@ -101,6 +114,9 @@ defmodule SquidMesh.RunStore do
     end
   end
 
+  @doc """
+  Fetches one persisted run and returns the public run representation.
+  """
   @spec get_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, get_error()}
   def get_run(repo, run_id) do
     case repo.get(RunRecord, run_id) do
@@ -112,6 +128,9 @@ defmodule SquidMesh.RunStore do
     end
   end
 
+  @doc """
+  Lists runs using the supported filter set.
+  """
   @spec list_runs(module(), list_filters()) :: {:ok, [Run.t()]}
   def list_runs(repo, filters \\ []) do
     runs =
@@ -122,6 +141,9 @@ defmodule SquidMesh.RunStore do
     {:ok, runs}
   end
 
+  @doc """
+  Applies a validated run-state transition and persists the updated run.
+  """
   @spec transition_run(module(), Ecto.UUID.t(), Run.status(), transition_attrs()) ::
           {:ok, Run.t()} | {:error, transition_error()}
   def transition_run(repo, run_id, to_status, attrs \\ %{}) when is_map(attrs) do
@@ -153,6 +175,9 @@ defmodule SquidMesh.RunStore do
     end)
   end
 
+  @doc """
+  Requests cancellation for a run if its current status allows it.
+  """
   @spec cancel_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, transition_error()}
   def cancel_run(repo, run_id) do
     with {:ok, run} <- get_run(repo, run_id) do
@@ -165,6 +190,9 @@ defmodule SquidMesh.RunStore do
     end
   end
 
+  @doc """
+  Updates durable run fields without changing the run state machine directly.
+  """
   @spec update_run(module(), Ecto.UUID.t(), transition_attrs()) ::
           {:ok, Run.t()} | {:error, update_error()}
   def update_run(repo, run_id, attrs) when is_map(attrs) do
@@ -187,6 +215,9 @@ defmodule SquidMesh.RunStore do
     end)
   end
 
+  @doc """
+  Returns whether a run in the given state should schedule additional step work.
+  """
   @spec schedule_next_step?(Run.t() | Run.status()) :: boolean()
   def schedule_next_step?(%Run{status: status}), do: StateMachine.schedule_next_step?(status)
 
