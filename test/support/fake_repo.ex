@@ -4,6 +4,7 @@ defmodule SquidMesh.TestSupport.FakeRepo do
   use Agent
 
   alias Ecto.Changeset
+  alias SquidMesh.Persistence.Run, as: RunRecord
 
   @rollback_tag :fake_repo_rollback
 
@@ -55,6 +56,62 @@ defmodule SquidMesh.TestSupport.FakeRepo do
     Agent.get(__MODULE__, &Map.get(&1, {schema, id}))
   end
 
+  @spec list_runs(keyword()) :: [RunRecord.t()]
+  def list_runs(filters) do
+    Agent.get(__MODULE__, fn state ->
+      state
+      |> Map.values()
+      |> Enum.filter(&match?(%RunRecord{}, &1))
+      |> filter_runs(filters)
+      |> Enum.sort(&run_desc?/2)
+      |> limit_runs(filters)
+    end)
+  end
+
+  @spec update_run_status!(Ecto.UUID.t(), String.t()) :: RunRecord.t()
+  def update_run_status!(run_id, status) when is_binary(status) do
+    Agent.get_and_update(__MODULE__, fn state ->
+      key = {RunRecord, run_id}
+      run = Map.fetch!(state, key)
+
+      updated_run = %{
+        run
+        | status: status,
+          updated_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      }
+
+      {updated_run, Map.put(state, key, updated_run)}
+    end)
+  end
+
   defp ensure_id(%{id: nil} = struct), do: %{struct | id: Ecto.UUID.generate()}
   defp ensure_id(struct), do: struct
+
+  defp filter_runs(runs, filters) do
+    Enum.reduce(filters, runs, fn
+      {:workflow, workflow}, acc ->
+        Enum.filter(acc, &(&1.workflow == workflow))
+
+      {:status, status}, acc ->
+        Enum.filter(acc, &(&1.status == status))
+
+      {_other_key, _other_value}, acc ->
+        acc
+    end)
+  end
+
+  defp limit_runs(runs, filters) do
+    case Keyword.get(filters, :limit) do
+      limit when is_integer(limit) and limit > 0 -> Enum.take(runs, limit)
+      _ -> runs
+    end
+  end
+
+  defp run_desc?(left, right) do
+    case DateTime.compare(left.inserted_at, right.inserted_at) do
+      :gt -> true
+      :lt -> false
+      :eq -> left.id >= right.id
+    end
+  end
 end

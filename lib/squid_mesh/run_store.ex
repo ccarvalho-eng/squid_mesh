@@ -1,8 +1,13 @@
 defmodule SquidMesh.RunStore do
   @moduledoc false
 
+  import Ecto.Query
+
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Run
+
+  @type list_filter :: {:workflow, module()} | {:status, Run.status()} | {:limit, pos_integer()}
+  @type list_filters :: [list_filter()]
 
   @type create_error ::
           {:invalid_input, :expected_map}
@@ -48,6 +53,16 @@ defmodule SquidMesh.RunStore do
     end
   end
 
+  @spec list_runs(module(), list_filters()) :: {:ok, [Run.t()]}
+  def list_runs(repo, filters \\ []) do
+    runs =
+      repo
+      |> query_runs(filters)
+      |> Enum.map(&to_public_run/1)
+
+    {:ok, runs}
+  end
+
   @spec workflow_definition(module()) :: {:ok, map()} | {:error, {:invalid_workflow, module()}}
   defp workflow_definition(workflow) do
     case Code.ensure_loaded(workflow) do
@@ -68,6 +83,53 @@ defmodule SquidMesh.RunStore do
     do: {:ok, step_name}
 
   defp first_step(workflow, _definition), do: {:error, {:invalid_workflow, workflow}}
+
+  @spec query_runs(module(), list_filters()) :: [RunRecord.t()]
+  defp query_runs(repo, filters) do
+    if function_exported?(repo, :list_runs, 1) do
+      repo.list_runs(serialize_filters(filters))
+    else
+      RunRecord
+      |> maybe_filter_workflow(filters)
+      |> maybe_filter_status(filters)
+      |> order_by([run], desc: run.inserted_at, desc: run.id)
+      |> maybe_limit(filters)
+      |> repo.all()
+    end
+  end
+
+  @spec maybe_filter_workflow(Ecto.Queryable.t(), list_filters()) :: Ecto.Query.t()
+  defp maybe_filter_workflow(query, filters) do
+    case Keyword.get(filters, :workflow) do
+      nil ->
+        query
+
+      workflow ->
+        where(query, [run], run.workflow == ^serialize_workflow(workflow))
+    end
+  end
+
+  @spec maybe_filter_status(Ecto.Queryable.t(), list_filters()) :: Ecto.Query.t()
+  defp maybe_filter_status(query, filters) do
+    case Keyword.get(filters, :status) do
+      nil ->
+        query
+
+      status ->
+        where(query, [run], run.status == ^serialize_status(status))
+    end
+  end
+
+  @spec maybe_limit(Ecto.Queryable.t(), list_filters()) :: Ecto.Query.t()
+  defp maybe_limit(query, filters) do
+    case Keyword.get(filters, :limit) do
+      limit when is_integer(limit) and limit > 0 ->
+        limit(query, ^limit)
+
+      _ ->
+        query
+    end
+  end
 
   @spec to_public_run(RunRecord.t()) :: Run.t()
   defp to_public_run(run) do
@@ -104,4 +166,21 @@ defmodule SquidMesh.RunStore do
       ArgumentError -> identifier
     end
   end
+
+  @spec serialize_filters(list_filters()) :: keyword()
+  defp serialize_filters(filters) do
+    filters
+    |> Enum.map(fn
+      {:workflow, workflow} -> {:workflow, serialize_workflow(workflow)}
+      {:status, status} -> {:status, serialize_status(status)}
+      {:limit, limit} -> {:limit, limit}
+    end)
+  end
+
+  @spec serialize_workflow(module() | String.t()) :: String.t()
+  defp serialize_workflow(workflow) when is_atom(workflow), do: Atom.to_string(workflow)
+  defp serialize_workflow(workflow) when is_binary(workflow), do: workflow
+
+  @spec serialize_status(Run.status()) :: String.t()
+  defp serialize_status(status) when is_atom(status), do: Atom.to_string(status)
 end

@@ -40,4 +40,15 @@ defmodule SquidMesh do
       RunStore.get_run(config.repo, run_id)
     end
   end
+
+  @doc """
+  Lists workflow runs with optional filters.
+  """
+  @spec list_runs(RunStore.list_filters(), keyword()) ::
+          {:ok, [Run.t()]} | {:error, {:missing_config, [atom()]}}
+  def list_runs(filters \\ [], overrides \\ []) do
+    with {:ok, config} <- Config.load(overrides) do
+      RunStore.list_runs(config.repo, filters)
+    end
+  end
 end
