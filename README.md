@@ -1,5 +1,5 @@
 <div align="center">
-  <img width="350" alt="squid-mesh-logo" src="https://github.com/user-attachments/assets/546a171a-6042-46ad-b02a-e5ea230473ae" />
+  <img width="350" alt="image" src="https://github.com/user-attachments/assets/13d54dc4-e8f3-4183-84ab-b6bbe47f8081" />
 
   <p><i>Durable workflow runtime for Elixir applications.</i></p>
 
