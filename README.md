@@ -112,6 +112,13 @@ The snippet below shows the intended runtime shape once replay and execution
 issues are complete.
 
 ```elixir
+config :squid_mesh,
+  repo: MyApp.Repo,
+  execution: [
+    name: MyApp.Oban,
+    queue: :daily_digests
+  ]
+
 defmodule Content.Workflows.PostDailyDigest do
   use SquidMesh.Workflow
 
@@ -136,6 +143,25 @@ defmodule Content.Workflows.PostDailyDigest do
 
     retry(:fetch_feed, max_attempts: 3)
     retry(:post_to_discord, max_attempts: 5)
+  end
+end
+
+defmodule Content.Steps.FetchRssFeed do
+  def run(input, context) do
+    Content.Agents.FetchRssFeed.run(input, context)
+  end
+end
+
+defmodule Content.Agents.FetchRssFeed do
+  # Jido-backed agent or action module
+  def run(%{feed_url: feed_url} = input, _context) do
+    with {:ok, response} <- Req.get(feed_url),
+         {:ok, entries} <- Content.Rss.parse_entries(response.body) do
+      {:ok, Map.put(input, :entries, entries)}
+    else
+      {:error, reason} ->
+        {:error, %{message: "failed to fetch RSS feed", reason: reason}}
+    end
   end
 end
 
