@@ -99,6 +99,47 @@ not run a separate scheduler or manage `oban_jobs` itself.
 - Jido powers step behavior and action execution inside the runtime.
 - Postgres stores the durable source of truth for runs, steps, and attempts.
 
+### C4 Container View
+
+```text
++--------------------------------------------------------------------------------+
+| Person / System: Host Elixir or Phoenix application                            |
+|                                                                                |
+| - defines workflow modules with `use SquidMesh.Workflow`                       |
+| - starts and inspects runs through `SquidMesh`                                 |
+| - may opt into `SquidMesh.Plugins.Cron` through its Oban config                |
++---------------------------------------------+----------------------------------+
+                                              |
+                                              v
++--------------------------------------------------------------------------------+
+| Container: Squid Mesh library                                                   |
+|                                                                                |
+| Responsibilities                                                               |
+| - public runtime API (`SquidMesh`)                                             |
+| - workflow definition + payload/trigger validation                             |
+| - durable run state (`RunStore`, `StepRunStore`, `AttemptStore`)               |
+| - step execution flow (`Dispatcher` -> `StepWorker` -> `StepExecutor`)         |
+| - retry policy, replay/cancel semantics, built-in steps, observability         |
++-------------------------------+-----------------------------+------------------+
+                                |                             |
+                                v                             v
+                    +-----------+-----------+     +-----------+-----------+
+                    | Container: Oban       |     | Container: Jido       |
+                    | durable job execution |     | executes custom step  |
+                    | queues + scheduling   |     | modules               |
+                    +-----------+-----------+     +-----------+-----------+
+                                |                             ^
+                                v                             |
+                    +-----------+-----------------------------+-----------+
+                    | Container: Postgres                                 |
+                    | source of truth for runs, step runs, attempts,      |
+                    | and Oban-managed jobs                               |
+                    +-----------------------------------------------------+
+
+External integration path:
+custom workflow step -> `SquidMesh.Tools` -> adapter (for example HTTP) -> external system
+```
+
 ## Execution Model
 
 - One workflow step execution maps to one Oban job.
