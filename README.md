@@ -1,5 +1,5 @@
 <div align="center">
-  <h2>Squid Mesh</h2>
+  <h2>🦑 Squid Mesh</h2>
 
   <p><i>Workflow automation platform for Elixir applications.</i></p>
 
