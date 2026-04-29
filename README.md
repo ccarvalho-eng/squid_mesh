@@ -11,7 +11,7 @@
       <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh.svg?color=4B275F&label=hex" />
     </a>
     <a href="https://hexdocs.pm/squid_mesh">
-      <img alt="HexDocs" src="https://img.shields.io/badge/hex-docs-blue.svg" />
+      <img alt="HexDocs" src="https://img.shields.io/badge/docs-hexdocs-purple" />
     </a>
     <a href="https://github.com/ccarvalho-eng/squid_mesh/blob/main/LICENSE">
       <img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" />
