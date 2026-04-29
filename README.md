@@ -22,7 +22,7 @@
 Squid Mesh lets Phoenix and OTP applications define, run, inspect, replay, and
 recover durable workflows in code.
 
-> <i>The name comes from two ideas: a squid’s many coordinated arms, and a mesh of connected workflow steps. It reflects the goal of orchestrating many moving parts without forcing each application to build that coordination layer itself.</i>
+> <i>The name blends a squid’s coordinated arms with a mesh of connected workflow steps—capturing the idea of orchestrating many moving parts without rebuilding the coordination layer in every app..</i>
 
 ## Features 
 
