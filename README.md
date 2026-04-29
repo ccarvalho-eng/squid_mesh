@@ -13,9 +13,13 @@
     <a href="https://hexdocs.pm/squid_mesh">
       <img alt="HexDocs" src="https://img.shields.io/badge/docs-hexdocs-purple" />
     </a>
+    <a href="https://elixirforum.com/t/squid-mesh-workflow-automation-runtime-for-elixir-applications/75162">
+      <img alt="Elixir Forum" src="https://img.shields.io/badge/Elixir_Forum-Join_Discussion-4B275F?logo=elixir&logoColor=white" />
+    </a>
     <a href="https://github.com/ccarvalho-eng/squid_mesh/blob/main/LICENSE">
       <img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" />
     </a>
+    
   </p>
 </div>
 
