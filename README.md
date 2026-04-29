@@ -22,6 +22,11 @@
 Squid Mesh lets Phoenix and OTP applications define, run, inspect, replay, and
 recover durable workflows in code.
 
+- Define workflows with triggers, payload contracts, steps, transitions, and retries.
+- Run them durably on top of your app's existing `Repo` and `Oban`.
+- Inspect runs with step and attempt history.
+- Replay, cancel, and schedule recurring runs without inventing the runtime yourself.
+
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for
 > evaluation, local development, and integration work, but it is not yet
@@ -29,31 +34,16 @@ recover durable workflows in code.
 > [Production Readiness](docs/production_readiness.md) for the current
 > checklist and remaining bar.
 
-## Requirements
+## Quick Start
 
+Requirements:
 - an existing Elixir application
 - an existing Ecto `Repo`
 - Postgres for persisted runtime state
 - an existing `Oban` setup for background execution
-- Elixir step modules that can run as Jido actions
+- step modules that can run as Jido actions
 
-## Supported Baseline
-
-Current verified baseline:
-
-| Component | Baseline |
-| --- | --- |
-| Elixir | `1.19.5-otp-28` |
-| Erlang/OTP | `28.4.1` |
-| Postgres | `15+` |
-| Oban | `2.21` and `2.22` |
-| Jido | `2.0+` |
-
-See [Compatibility Matrix](docs/compatibility.md) for support policy details.
-
-## Installation
-
-Add Squid Mesh to your application's dependencies:
+### 1. Add the dependency
 
 ```elixir
 defp deps do
@@ -63,7 +53,7 @@ defp deps do
 end
 ```
 
-If you want to evaluate directly from Git instead of Hex:
+For direct Git evaluation:
 
 ```elixir
 defp deps do
@@ -73,8 +63,18 @@ defp deps do
 end
 ```
 
-Install Squid Mesh's library-owned migrations into the host application and run
-them through the host app's normal migration flow:
+### 2. Configure Squid Mesh
+
+```elixir
+config :squid_mesh,
+  repo: MyApp.Repo,
+  execution: [
+    name: Oban,
+    queue: :squid_mesh
+  ]
+```
+
+### 3. Install Squid Mesh migrations
 
 ```sh
 mix deps.get
@@ -87,8 +87,7 @@ mix ecto.migrate
 are expected to use their own existing `Oban` setup.
 
 If you are wiring Squid Mesh into a fresh app rather than an existing one, add
-an `Oban` migration first and run it through the host app's normal migration
-flow:
+the host app's `Oban` migration first:
 
 ```elixir
 defmodule MyApp.Repo.Migrations.AddObanJobs do
@@ -99,45 +98,10 @@ defmodule MyApp.Repo.Migrations.AddObanJobs do
 end
 ```
 
-## Configuration
+### 4. Activate cron workflows if needed
 
-Configure Squid Mesh under the `:squid_mesh` application:
-
-```elixir
-config :squid_mesh,
-  repo: MyApp.Repo,
-  execution: [
-    name: Oban,
-    queue: :squid_mesh
-  ]
-```
-
-Public runtime API:
-
-- `SquidMesh.start_run/2`
-- `SquidMesh.start_run/3`
-- `SquidMesh.start_run/4`
-- `SquidMesh.inspect_run/2`
-- `SquidMesh.list_runs/2`
-- `SquidMesh.cancel_run/2`
-- `SquidMesh.replay_run/2`
-
-First successful run checklist:
-
-1. Add the `:squid_mesh` dependency.
-2. Make sure the host app already owns a working `Repo`.
-3. Make sure the host app already owns a working `Oban` instance and `oban_jobs` table.
-4. Run `mix squid_mesh.install`.
-5. Run `mix ecto.migrate`.
-6. Configure `:squid_mesh` with the host app's `Repo` and `Oban` queue.
-7. Start the host app's `Repo` and `Oban` under supervision.
-8. Start one workflow through `SquidMesh.start_run/2` or `start_run/3`.
-
-For a standalone development harness with its own `Repo` and `Oban`, use
-`examples/minimal_host_app`.
-
-To activate cron triggers in a host app, opt in through the host app's Oban
-plugins:
+Cron triggers are declared in workflows and activated through the host app's
+Oban plugins:
 
 ```elixir
 config :my_app, Oban,
@@ -156,95 +120,13 @@ not run a separate scheduler or manage `oban_jobs` itself.
 
 ## Runtime Overview
 
-- Squid Mesh defines workflow structure, run state, retries, replay, and inspection.
-- Oban handles durable execution, scheduling, and redelivery of workflow step jobs.
-- Jido powers step behavior and action execution inside the runtime.
-- Postgres stores the durable source of truth for runs, steps, and attempts.
-
-Jido's role today is intentionally narrow:
-
-- Squid Mesh uses `Jido.Action` and `Jido.Exec` as the contract for custom workflow steps.
-- Host applications get validated, structured step execution without Squid Mesh having to invent its own action runtime.
-
-Likely future direction:
-
-- reusable step and action libraries for common integrations
-- stronger action-level validation and lifecycle hooks
-- richer agent and action execution patterns behind the same workflow runtime surface
-
-### C4 Container View
-
-```text
-+--------------------------------------------------------------------------------+
-| Person / System: Host Elixir or Phoenix application                            |
-|                                                                                |
-| - defines workflow modules with `use SquidMesh.Workflow`                       |
-| - starts and inspects runs through `SquidMesh`                                 |
-| - may opt into `SquidMesh.Plugins.Cron` through its Oban config                |
-+---------------------------------------------+----------------------------------+
-                                              |
-                                              v
-+--------------------------------------------------------------------------------+
-| Container: Squid Mesh library                                                  |
-|                                                                                |
-| Responsibilities                                                               |
-| - public runtime API (`SquidMesh`)                                             |
-| - workflow definition + payload/trigger validation                             |
-| - durable run state (`RunStore`, `StepRunStore`, `AttemptStore`)               |
-| - step execution flow (`Dispatcher` -> `StepWorker` -> `StepExecutor`)         |
-| - retry policy, replay/cancel semantics, built-in steps, observability         |
-+-------------------------------+-----------------------------+------------------+
-                                |                             |
-                                v                             v
-                    +-----------+-----------+     +-----------+-----------+
-                    | Container: Oban       |     | Container: Jido       |
-                    | durable job execution |     | executes custom step  |
-                    | queues + scheduling   |     | modules               |
-                    +-----------+-----------+     +-----------+-----------+
-                                |                             ^
-                                v                             |
-                    +-----------+-----------------------------+-----------+
-                    | Container: Postgres                                 |
-                    | source of truth for runs, step runs, attempts,      |
-                    | and Oban-managed jobs                               |
-                    +-----------------------------------------------------+
-
-External integration path:
-custom workflow step -> `SquidMesh.Tools` -> adapter (for example HTTP) -> external system
-```
-
-## Execution Model
-
-- One workflow step execution maps to one Oban job.
-- Squid Mesh decides whether a step should run, retry, fail, complete, or no-op.
-- Oban owns job durability, scheduling, and redelivery.
-- Step retry policy is declared in the workflow and scheduled through Oban.
-- Jido action retries are disabled at the Squid Mesh boundary so workflow attempts, persisted step attempts, and backoff policy stay aligned.
-- Built-in `:wait` schedules delayed continuation through Oban instead of sleeping inside a worker.
-- Step implementations should be idempotent when they perform external side effects.
-- Tool adapters report the first transport or status failure; workflow retries stay at the step layer.
+- Squid Mesh owns workflow structure, run state, retries, replay, and inspection.
+- Oban owns durable execution, scheduling, and job redelivery.
+- Jido provides the action contract for custom workflow steps.
+- Postgres stores runs, step runs, attempts, and queued execution state.
 
 Squid Mesh does not try to re-implement worker coordination that Oban already
-provides. The runtime stays focused on workflow semantics and durable run
-state, while Oban remains the execution engine underneath.
-
-## Recovery Boundaries
-
-V1 guarantees:
-
-- Runs, steps, and attempts are persisted in Postgres.
-- Queued and scheduled step work survives deploys and restarts through Oban.
-- Retry, replay, inspection, and cancellation operate on durable run state.
-- Stale or duplicate step deliveries are treated as workflow-level no-ops when possible.
-
-V1 does not claim:
-
-- Custom heartbeats or worker leases beyond Oban's own job lifecycle.
-- Automatic reclamation of an interrupted in-flight step that died mid-side-effect.
-- Exactly-once delivery for external effects without idempotent step implementations.
-
-If a workflow step talks to an external system, the step should own its own
-idempotency key or duplicate-protection strategy at that boundary.
+provides. The runtime stays focused on workflow semantics and durable run state.
 
 ## Workflow Example
 
@@ -354,29 +236,16 @@ end
 If a workflow defines a single trigger, `SquidMesh.start_run/2` remains the
 short path and uses that default trigger automatically.
 
-To inspect the run with step and attempt history:
+Inspect a run with history:
 
 ```elixir
 SquidMesh.inspect_run(run_id, include_history: true)
 ```
 
-Trigger boundary today:
-
-- `manual()` triggers are runnable through the public API
-- `cron(...)` triggers are activated by opting the workflow into `SquidMesh.Plugins.Cron` under the host app's Oban configuration
-- cron activation is static at boot today, matching Oban's built-in cron plugin model
-
-Workflows can mix custom step modules and built-in primitives:
-
-- module steps for domain behavior and external integrations
-- `:wait` for delayed continuation between steps
-- `:log` for durable, declarative operational markers in the flow
-
-Workflow steps can also call tool adapters through the shared boundary:
-
-- `SquidMesh.Tools.invoke/4` for adapter invocation
-- `SquidMesh.Tools.HTTP` for normalized HTTP calls with Req
-- `SquidMesh.Tools.Error.to_map/1` when a step wants to return adapter errors as workflow failures
+Workflows can mix:
+- custom step modules for domain behavior
+- built-in `:wait` and `:log` steps
+- tool adapters like `SquidMesh.Tools.HTTP` for normalized integrations
 
 Retry behavior stays on the step that owns the work:
 
@@ -386,21 +255,21 @@ step(:check_gateway_status, Billing.Steps.CheckGatewayStatus,
 )
 ```
 
-That keeps retry policy on the step that owns the work while Squid Mesh and
-Oban handle delayed rescheduling underneath.
+## Operational Boundaries
 
-Run lifecycle states currently include:
+Current guarantees:
+- runs, steps, and attempts are durable in Postgres
+- queued and scheduled work survives restarts through Oban
+- retry, replay, inspection, and cancellation operate on persisted run state
 
-- `pending`
-- `running`
-- `retrying`
-- `failed`
-- `completed`
-- `cancelling`
-- `cancelled`
+Current non-goals:
+- exactly-once external effects without idempotent step design
+- custom worker leases or heartbeats beyond Oban
+- dynamic cron registration after boot
 
 ## Documentation
 
+- [HexDocs](https://hexdocs.pm/squid_mesh)
 - [Compatibility matrix](docs/compatibility.md)
 - [Workflow authoring guide](docs/workflow_authoring.md)
 - [Host app integration](docs/host_app_integration.md)
@@ -416,6 +285,9 @@ Run lifecycle states currently include:
 
 - [Contributing guide](CONTRIBUTING.md)
 - [Code of conduct](CODE_OF_CONDUCT.md)
+
+For a standalone development harness with its own `Repo` and `Oban`, use
+`examples/minimal_host_app`.
 
 Fast local smoke path:
 
