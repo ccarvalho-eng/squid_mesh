@@ -22,6 +22,8 @@
 Squid Mesh lets Phoenix and OTP applications define, run, inspect, replay, and
 recover durable workflows in code.
 
+> <i>The name comes from two ideas: a squid’s many coordinated arms, and a mesh of connected workflow steps. It reflects the goal of orchestrating many moving parts without forcing each application to build that coordination layer itself.</i>
+
 - Define workflows with triggers, payload contracts, steps, transitions, and retries.
 - Run them durably on top of your app's existing `Repo` and `Oban`.
 - Inspect runs with step and attempt history.
