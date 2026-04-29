@@ -30,6 +30,19 @@ defp deps do
 end
 ```
 
+If the host app defines custom steps with `use Jido.Action`, add `:jido`
+explicitly to the host app as well rather than relying on a transitive
+dependency:
+
+```elixir
+defp deps do
+  [
+    {:jido, "~> 2.0"},
+    {:squid_mesh, "~> 0.1.0-alpha.1"}
+  ]
+end
+```
+
 If you are evaluating directly from Git instead of Hex:
 
 ```elixir

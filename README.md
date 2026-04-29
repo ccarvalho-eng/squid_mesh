@@ -45,13 +45,25 @@ Requirements:
 - an existing Ecto `Repo`
 - Postgres for persisted runtime state
 - an existing `Oban` setup for background execution
-- step modules that can run as Jido actions
+- step modules that can run as Jido actions when you want custom steps
 
 ### 1. Add the dependency
 
 ```elixir
 defp deps do
   [
+    {:squid_mesh, "~> 0.1.0-alpha.1"}
+  ]
+end
+```
+
+If the host app defines custom steps with `use Jido.Action`, add `:jido`
+explicitly as well:
+
+```elixir
+defp deps do
+  [
+    {:jido, "~> 2.0"},
     {:squid_mesh, "~> 0.1.0-alpha.1"}
   ]
 end
