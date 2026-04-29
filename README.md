@@ -8,7 +8,7 @@
       <img alt="CI" src="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg" />
     </a>
     <a href="https://hex.pm/packages/squid_mesh">
-      <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh.svg?color=4B275F&label=hex" />
+      <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh" alt="Hex.pm"/></a>
     </a>
     <a href="https://hexdocs.pm/squid_mesh">
       <img alt="HexDocs" src="https://img.shields.io/badge/docs-hexdocs-purple" />
