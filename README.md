@@ -1,5 +1,5 @@
 <div align="center">
-  <img width="200" alt="logo" src="https://github.com/user-attachments/assets/7e6a0fd3-f836-421c-bdf6-aefbb4c77111" />
+  <h2>Squid Mesh</h2>
 
   <p><i>Workflow automation platform for Elixir applications.</i></p>
 
