@@ -121,13 +121,16 @@ config :my_app, Oban,
 
 ## Runtime Overview
 
-- Squid Mesh owns workflow structure, run state, retries, replay, and inspection.
+- Squid Mesh owns workflow structure, run state, step state, retries, replay, and inspection.
 - Oban owns durable execution, scheduling, and job redelivery.
 - Jido provides the action contract for custom workflow steps.
 - Postgres stores runs, step runs, attempts, and queued execution state.
 
 Squid Mesh does not try to re-implement worker coordination that Oban already
-provides. The runtime stays focused on workflow semantics and durable run state.
+provides. It records workflow state, then inserts and schedules step jobs
+through Oban for first execution, step progression, and retries. Oban is the
+durable execution layer underneath that flow; Squid Mesh remains the workflow
+runtime and source of truth for what should happen next.
 
 ## Example Uses
 
