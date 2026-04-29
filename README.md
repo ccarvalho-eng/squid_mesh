@@ -8,7 +8,7 @@
       <img alt="CI" src="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg" />
     </a>
     <a href="https://hex.pm/packages/squid_mesh">
-      <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh.svg" />
+      <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh.svg?color=4B275F&label=hex" />
     </a>
     <a href="https://hexdocs.pm/squid_mesh">
       <img alt="HexDocs" src="https://img.shields.io/badge/hex-docs-blue.svg" />
@@ -82,12 +82,12 @@ mix squid_mesh.install
 mix ecto.migrate
 ```
 
-`mix squid_mesh.install` copies only Squid Mesh tables into
+`mix squid_mesh.install` copies only Squid Mesh tables into the host app's
 `priv/repo/migrations`. It does not manage `oban_jobs`; embedded applications
 are expected to use their own existing `Oban` setup.
 
-If you are wiring Squid Mesh into a fresh app rather than an existing one, add
-the host app's `Oban` migration first:
+If you are wiring Squid Mesh into a fresh app, add the host app's `Oban`
+migration first:
 
 ```elixir
 defmodule MyApp.Repo.Migrations.AddObanJobs do
@@ -109,14 +109,11 @@ config :my_app, Oban,
   plugins: [
     {SquidMesh.Plugins.Cron,
      workflows: [
-       MyApp.Workflows.DailyStandup
+       MyApp.Workflows.DailyDigest
      ]}
   ],
   queues: [squid_mesh: 10]
 ```
-
-`SquidMesh.Plugins.Cron` uses Oban's cron scheduler underneath. Squid Mesh does
-not run a separate scheduler or manage `oban_jobs` itself.
 
 ## Runtime Overview
 
@@ -128,40 +125,65 @@ not run a separate scheduler or manage `oban_jobs` itself.
 Squid Mesh does not try to re-implement worker coordination that Oban already
 provides. The runtime stays focused on workflow semantics and durable run state.
 
-## Workflow Example
+## Example Uses
+
+- Post an RSS digest to Discord every morning.
+- Turn a Linear issue into a planning workflow for your team.
+- Run recovery, approval, and back-office flows inside Phoenix apps.
+
+## Cron Workflow Example: Daily RSS To Discord
 
 ```elixir
-defmodule Billing.Workflows.PaymentRecovery do
+defmodule Content.Workflows.PostDailyDigest do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :payment_recovery do
-      manual()
+    trigger :daily_digest do
+      cron("0 9 * * 1-5", timezone: "Etc/UTC")
 
       payload do
-        field(:account_id, :string)
-        field(:invoice_id, :string)
-        field(:attempt_id, :string)
-        field(:gateway_url, :string)
+        field(:feed_url, :string, default: "https://example.com/feed.xml")
+        field(:discord_webhook_url, :string)
+        field(:posted_on, :string, default: {:today, :iso8601})
       end
     end
 
-    step(:load_invoice, Billing.Steps.LoadInvoice)
-    step(:wait_for_settlement, :wait, duration: 5_000)
-    step(:log_recovery_attempt, :log,
-      message: "Invoice loaded, checking gateway status",
-      level: :info
-    )
-    step(:check_gateway_status, Billing.Steps.CheckGatewayStatus,
+    step(:fetch_feed, Content.Steps.FetchFeed)
+    step(:build_digest, Content.Steps.BuildDigest)
+    step(:post_to_discord, Content.Steps.PostToDiscord,
       retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
     )
-    step(:notify_customer, Billing.Steps.NotifyCustomer)
 
-    transition(:load_invoice, on: :ok, to: :wait_for_settlement)
-    transition(:wait_for_settlement, on: :ok, to: :log_recovery_attempt)
-    transition(:log_recovery_attempt, on: :ok, to: :check_gateway_status)
-    transition(:check_gateway_status, on: :ok, to: :notify_customer)
-    transition(:notify_customer, on: :ok, to: :complete)
+    transition(:fetch_feed, on: :ok, to: :build_digest)
+    transition(:build_digest, on: :ok, to: :post_to_discord)
+    transition(:post_to_discord, on: :ok, to: :complete)
+  end
+end
+```
+
+## Manual Workflow Example: Plan A Linear Task
+
+```elixir
+defmodule Planning.Workflows.PlanLinearTask do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :plan_task do
+      manual()
+
+      payload do
+        field(:linear_issue_id, :string)
+        field(:requester_id, :string)
+      end
+    end
+
+    step(:load_issue, Planning.Steps.LoadLinearIssue)
+    step(:draft_plan, Planning.Steps.DraftExecutionPlan)
+    step(:attach_plan, Planning.Steps.AttachPlanToLinearIssue)
+
+    transition(:load_issue, on: :ok, to: :draft_plan)
+    transition(:draft_plan, on: :ok, to: :attach_plan)
+    transition(:attach_plan, on: :ok, to: :complete)
   end
 end
 ```
@@ -169,31 +191,24 @@ end
 ## Step Example
 
 ```elixir
-defmodule Billing.Steps.CheckGatewayStatus do
+defmodule Content.Steps.PostToDiscord do
   use Jido.Action,
-    name: "check_gateway_status",
-    description: "Checks gateway state",
+    name: "post_to_discord",
+    description: "Posts the digest to Discord",
     schema: [
-      invoice: [type: :map, required: true],
-      gateway_url: [type: :string, required: true]
+      discord_webhook_url: [type: :string, required: true],
+      digest: [type: :string, required: true]
     ]
 
   @impl true
-  def run(%{invoice: invoice, gateway_url: gateway_url}, _context) do
+  def run(%{discord_webhook_url: webhook_url, digest: digest}, _context) do
     case SquidMesh.Tools.invoke(SquidMesh.Tools.HTTP, %{
-           method: :get,
-           url: gateway_url,
-           timeout: 1_000
+           method: :post,
+           url: webhook_url,
+           json: %{content: digest}
          }) do
       {:ok, result} ->
-        {:ok,
-         %{
-           gateway_check: %{
-             status: result.payload.body,
-             invoice_id: invoice.id,
-             status_code: result.payload.status
-           }
-         }}
+        {:ok, %{discord_status: result.payload.status}}
 
       {:error, error} ->
         {:error, SquidMesh.Tools.Error.to_map(error)}
@@ -205,36 +220,18 @@ end
 ## Call It From Your App
 
 ```elixir
-defmodule Billing.WorkflowRuns do
-  def start_payment_recovery(account_id, invoice_id, attempt_id) do
-    SquidMesh.start_run(Billing.Workflows.PaymentRecovery, :payment_recovery, %{
-      account_id: account_id,
-      invoice_id: invoice_id,
-      attempt_id: attempt_id,
-      gateway_url: "https://gateway.internal/checks/#{attempt_id}"
+defmodule Planning.WorkflowRuns do
+  def plan_linear_task(linear_issue_id, requester_id) do
+    SquidMesh.start_run(Planning.Workflows.PlanLinearTask, %{
+      linear_issue_id: linear_issue_id,
+      requester_id: requester_id
     })
-  end
-
-  def inspect_payment_recovery(run_id) do
-    SquidMesh.inspect_run(run_id)
-  end
-
-  def list_recent_payment_recoveries do
-    SquidMesh.list_runs(workflow: Billing.Workflows.PaymentRecovery, limit: 20)
-  end
-
-  def cancel_payment_recovery(run_id) do
-    SquidMesh.cancel_run(run_id)
-  end
-
-  def replay_payment_recovery(run_id) do
-    SquidMesh.replay_run(run_id)
   end
 end
 ```
 
-If a workflow defines a single trigger, `SquidMesh.start_run/2` remains the
-short path and uses that default trigger automatically.
+If a workflow defines a single trigger, `SquidMesh.start_run/2` uses that
+trigger automatically.
 
 Inspect a run with history:
 
@@ -254,7 +251,6 @@ step(:check_gateway_status, Billing.Steps.CheckGatewayStatus,
   retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
 )
 ```
-
 ## Operational Boundaries
 
 Current guarantees:
@@ -273,13 +269,9 @@ Current non-goals:
 - [Compatibility matrix](docs/compatibility.md)
 - [Workflow authoring guide](docs/workflow_authoring.md)
 - [Host app integration](docs/host_app_integration.md)
-- [Operations guide](docs/operations.md)
-- [Tool adapters](docs/tool_adapters.md)
-- [Observability](docs/observability.md)
 - [Architecture](docs/architecture.md)
-- [Production readiness](docs/production_readiness.md)
-- [ADR index](docs/adr/index.md)
-- [Example host app harness](examples/minimal_host_app/README.md)
+- [Operations guide](docs/operations.md)
+- [Example host app](examples/minimal_host_app/README.md)
 
 ## Contributing
 
