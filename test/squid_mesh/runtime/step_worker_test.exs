@@ -10,12 +10,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.FailingWorkflow
   alias __MODULE__.MissingOban
+  alias __MODULE__.OrderedDependencyWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
   alias __MODULE__.SuccessfulWorkflow
 
   alias SquidMesh.AttemptStore
+  alias SquidMesh.Config
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.Runtime.StepExecutor
+  alias SquidMesh.Runtime.StepExecutor.Outcome
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workers.StepWorker
   alias Oban.Job
@@ -142,6 +145,33 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                {"load_account", "completed"},
                {"load_invoice", "failed"}
              ]
+    end
+
+    test "runs remaining root steps before newly unlocked dependent steps" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(OrderedDependencyWorkflow, input, repo: Repo)
+      assert run.current_step == :load_account
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_account"}
+               })
+
+      assert {:ok, running_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert running_run.current_step == :load_invoice
+      refute Map.has_key?(running_run.context, :account_message)
+
+      assert %{success: 4, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert completed_run.status == :completed
+
+      assert completed_run.context.account_message == %{
+               account_id: "acct_123",
+               status: "prepared"
+             }
     end
 
     test "persists failed step execution and marks the run failed when no retry is declared" do
@@ -362,6 +392,135 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              end) == [{1, :completed}]
     end
 
+    test "marks the run failed if dependency resolution cannot find a runnable next step" do
+      config = Config.load!(repo: Repo)
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+
+      assert {:ok, completed_root, :execute} =
+               StepRunStore.begin_step(Repo, run.id, :load_account, input)
+
+      assert {:ok, _completed_root} =
+               StepRunStore.complete_step(Repo, completed_root.id, %{
+                 account: %{id: "acct_123", tier: "pro"}
+               })
+
+      assert {:ok, prepared_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :load_invoice,
+                 context: %{account: %{id: "acct_123", tier: "pro"}}
+               })
+
+      assert {:ok, step_run, :execute} =
+               StepRunStore.begin_step(Repo, prepared_run.id, :load_invoice, input)
+
+      assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+      invalid_definition =
+        DependencyWorkflow.workflow_definition()
+        |> Map.update!(:steps, fn steps ->
+          Enum.map(steps, fn
+            %{name: :send_email} = step ->
+              %{step | opts: [after: [:missing_dependency]]}
+
+            step ->
+              step
+          end)
+        end)
+
+      assert :ok =
+               Outcome.persist_execution_result(
+                 {:ok, %{invoice: %{id: "inv_456", status: "open"}}, []},
+                 config,
+                 invalid_definition,
+                 prepared_run,
+                 step_run.id,
+                 attempt.id,
+                 attempt.attempt_number,
+                 System.monotonic_time()
+               )
+
+      assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :load_invoice
+      assert failed_run.context.invoice == %{id: "inv_456", status: "open"}
+
+      assert failed_run.last_error.message ==
+               "workflow step completed but no runnable next step was found"
+
+      assert failed_run.last_error.failed_step == :load_invoice
+      assert failed_run.last_error.pending_steps == ["send_email"]
+    end
+
+    test "marks the run failed if dependency resolution raises after the step succeeds" do
+      config = Config.load!(repo: Repo)
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+
+      assert {:ok, completed_root, :execute} =
+               StepRunStore.begin_step(Repo, run.id, :load_account, input)
+
+      assert {:ok, _completed_root} =
+               StepRunStore.complete_step(Repo, completed_root.id, %{
+                 account: %{id: "acct_123", tier: "pro"}
+               })
+
+      assert {:ok, prepared_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :load_invoice,
+                 context: %{account: %{id: "acct_123", tier: "pro"}}
+               })
+
+      assert {:ok, step_run, :execute} =
+               StepRunStore.begin_step(Repo, prepared_run.id, :load_invoice, input)
+
+      assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+      invalid_definition =
+        DependencyWorkflow.workflow_definition()
+        |> Map.update!(:steps, fn steps ->
+          Enum.map(steps, fn
+            %{name: :load_account} = step ->
+              %{step | opts: [after: [:send_email]]}
+
+            %{name: :send_email} = step ->
+              %{step | opts: [after: [:load_account, :load_invoice]]}
+
+            step ->
+              step
+          end)
+        end)
+
+      assert :ok =
+               Outcome.persist_execution_result(
+                 {:ok, %{invoice: %{id: "inv_456", status: "open"}}, []},
+                 config,
+                 invalid_definition,
+                 prepared_run,
+                 step_run.id,
+                 attempt.id,
+                 attempt.attempt_number,
+                 System.monotonic_time()
+               )
+
+      assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :load_invoice
+      assert failed_run.context.invoice == %{id: "inv_456", status: "open"}
+
+      assert failed_run.last_error.message ==
+               "workflow step completed but next step resolution failed"
+
+      assert failed_run.last_error.failed_step == :load_invoice
+
+      assert failed_run.last_error.cause == %{
+               reason: "invalid_dependency_graph",
+               message: "workflow dependency graph must be acyclic"
+             }
+    end
+
     test "marks the run failed when scheduling a retry fails" do
       assert {:ok, run} =
                SquidMesh.RunStore.create_run(Repo, BackoffWorkflow, %{account_id: "acct_123"})
@@ -528,6 +687,69 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
        %{
          delivery: %{
            account_id: account.id,
+           invoice_id: invoice.id,
+           channel: "email"
+         }
+       }}
+    end
+  end
+
+  defmodule OrderedDependencyWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_account, DependencyWorkflow.LoadAccount)
+
+      step(:prepare_account_message, OrderedDependencyWorkflow.PrepareAccountMessage,
+        after: [:load_account]
+      )
+
+      step(:load_invoice, DependencyWorkflow.LoadInvoice)
+
+      step(:send_email, OrderedDependencyWorkflow.SendEmail,
+        after: [:prepare_account_message, :load_invoice]
+      )
+    end
+  end
+
+  defmodule OrderedDependencyWorkflow.PrepareAccountMessage do
+    use Jido.Action,
+      name: "prepare_account_message",
+      description: "Builds intermediate account context",
+      schema: [
+        account: [type: :map, required: true]
+      ]
+
+    @impl true
+    def run(%{account: account}, _context) do
+      {:ok, %{account_message: %{account_id: account.id, status: "prepared"}}}
+    end
+  end
+
+  defmodule OrderedDependencyWorkflow.SendEmail do
+    use Jido.Action,
+      name: "send_email",
+      description: "Sends a recovery email after ordered dependency execution",
+      schema: [
+        account_message: [type: :map, required: true],
+        invoice: [type: :map, required: true]
+      ]
+
+    @impl true
+    def run(%{account_message: account_message, invoice: invoice}, _context) do
+      {:ok,
+       %{
+         delivery: %{
+           account_id: account_message.account_id,
            invoice_id: invoice.id,
            channel: "email"
          }

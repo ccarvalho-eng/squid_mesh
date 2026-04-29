@@ -9,7 +9,8 @@ Workflows are Elixir modules that `use SquidMesh.Workflow` and declare:
 - one trigger
 - one payload contract
 - one or more steps
-- either transitions between steps or dependency-based `after: [...]` joins
+- transitions between steps
+- optional dependency-based `after: [...]` joins on steps that wait for other work
 - optional retry policy on the steps that own side effects
 
 ```elixir
@@ -203,12 +204,14 @@ Current dependency validation requires:
 - every `after:` reference names a declared step
 - the dependency graph is acyclic
 - workflows may define multiple entry steps when dependency execution is used
-- dependency-based workflows do not also declare `transition/2`
+- `after: []` is rejected because it changes execution semantics without adding an edge
+- dependency-based workflows cannot also declare `transition/2`
 
 Current execution boundary:
 
 - a step becomes runnable only after every dependency has completed successfully
-- multiple ready root steps are executed in deterministic workflow declaration order today
+- multiple ready root steps are executed one at a time in deterministic phase order today
+- the current scheduler resolves dependency readiness from persisted step history after each successful dependency step, so it is intended for small and medium graph workflows
 - Squid Mesh does not yet dispatch multiple ready steps in parallel
 
 ## Transitions
@@ -225,6 +228,7 @@ Current workflow validation requires:
 - at least one step
 - exactly one trigger
 - exactly one workflow entry step for transition-based workflows
+- dependency-based workflows expose `entry_steps` plus `initial_step`; the singular `entry_step` is `nil`
 - transitions that reference known steps
 
 ## Retries And Backoff

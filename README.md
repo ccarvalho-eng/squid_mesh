@@ -233,9 +233,12 @@ end
 ```
 
 `after: [...]` makes a step runnable only after every named dependency
-completes successfully. Today, ready dependency roots still execute one at a
-time in deterministic declaration order; parallel dispatch is a follow-up
-runtime slice.
+completes successfully. Dependency workflows do not mix with `transition/2` in
+this slice. Today, ready dependency roots still execute one at a time in phase
+order. The current dependency scheduler resolves readiness from persisted step
+history after each successful dependency step, so this slice is aimed at small
+and medium graph workflows; parallel dispatch and larger-graph optimization are
+follow-up runtime work.
 
 ## Step Example
 

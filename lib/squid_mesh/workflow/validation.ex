@@ -68,8 +68,22 @@ defmodule SquidMesh.Workflow.Validation do
   Returns the single workflow entry step or raises when the workflow does not
   define exactly one entry step.
   """
-  @spec entry_step!(map(), Macro.Env.t()) :: atom()
+  @spec entry_step!(map(), Macro.Env.t()) :: atom() | nil
   def entry_step!(definition, env) do
+    if dependency_mode?(definition.steps) do
+      nil
+    else
+      definition
+      |> entry_steps!(env)
+      |> List.first()
+    end
+  end
+
+  @doc """
+  Returns the first step to schedule for runtime dispatch.
+  """
+  @spec initial_step!(map(), Macro.Env.t()) :: atom()
+  def initial_step!(definition, env) do
     definition
     |> entry_steps!(env)
     |> List.first()
@@ -128,24 +142,16 @@ defmodule SquidMesh.Workflow.Validation do
     |> require_steps(step_names)
     |> validate_built_in_steps(definition.steps)
     |> validate_unique_step_names(step_names)
-    |> validate_dependency_graph(definition.steps, definition.transitions, step_names)
+    |> validate_dependency_graph(definition.steps, step_names)
     |> validate_transitions(definition.transitions, step_names)
+    |> validate_dependency_transitions(definition.steps, definition.transitions)
     |> validate_retries(definition.retries, step_names)
   end
 
-  defp validate_dependency_graph(errors, steps, transitions, step_names) do
+  defp validate_dependency_graph(errors, steps, step_names) do
     errors
-    |> validate_transition_dependency_mode(steps, transitions)
     |> validate_step_dependencies(steps, step_names)
     |> validate_dependency_cycles(steps)
-  end
-
-  defp validate_transition_dependency_mode(errors, steps, transitions) do
-    if dependency_mode?(steps) and transitions != [] do
-      ["dependency-based workflows cannot also declare transitions" | errors]
-    else
-      errors
-    end
   end
 
   defp validate_step_dependencies(errors, steps, step_names) do
@@ -343,6 +349,14 @@ defmodule SquidMesh.Workflow.Validation do
     end)
   end
 
+  defp validate_dependency_transitions(errors, steps, transitions) do
+    if dependency_mode?(steps) and transitions != [] do
+      ["dependency-based workflows cannot declare transitions" | errors]
+    else
+      errors
+    end
+  end
+
   defp validate_transition_from(errors, %{from: from}, step_names) do
     if from in step_names do
       errors
@@ -445,13 +459,14 @@ defmodule SquidMesh.Workflow.Validation do
 
   defp entry_steps(definition) do
     if dependency_mode?(definition.steps) do
-      Enum.flat_map(definition.steps, fn %{name: name, opts: opts} ->
-        case dependency_list(opts) do
-          {:ok, []} -> [name]
-          :absent -> [name]
-          {:ok, _dependencies} -> []
-          :error -> []
-        end
+      incoming_dependencies = dependency_map(definition.steps)
+
+      definition.steps
+      |> Enum.map(& &1.name)
+      |> Enum.reject(fn step_name ->
+        incoming_dependencies
+        |> Map.get(step_name, [])
+        |> Enum.any?()
       end)
     else
       transition_targets =
@@ -466,11 +481,19 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp dependency_mode?(steps) when is_list(steps) do
-    Enum.any?(steps, &Keyword.has_key?(&1.opts, :after))
+    Enum.any?(steps, fn step ->
+      case Keyword.get(step.opts, :after) do
+        dependencies when is_list(dependencies) -> dependencies != []
+        _other -> false
+      end
+    end)
   end
 
   defp dependency_list(opts) do
     case Keyword.fetch(opts, :after) do
+      {:ok, []} ->
+        :error
+
       {:ok, dependencies} when is_list(dependencies) ->
         if Enum.all?(dependencies, &is_atom/1) do
           {:ok, Enum.uniq(dependencies)}
@@ -487,16 +510,7 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp dependency_graph_acyclic?(steps) do
-    adjacency =
-      Map.new(steps, fn %{name: name, opts: opts} ->
-        dependencies =
-          case dependency_list(opts) do
-            {:ok, deps} -> deps
-            _other -> []
-          end
-
-        {name, dependencies}
-      end)
+    adjacency = dependency_map(steps)
 
     {result, _state} =
       Enum.reduce_while(
@@ -512,6 +526,18 @@ defmodule SquidMesh.Workflow.Validation do
       )
 
     result == :ok
+  end
+
+  defp dependency_map(steps) do
+    Map.new(steps, fn %{name: name, opts: opts} ->
+      explicit_dependencies =
+        case dependency_list(opts) do
+          {:ok, dependencies} -> dependencies
+          _other -> []
+        end
+
+      {name, explicit_dependencies}
+    end)
   end
 
   defp visit_dependency(step_name, adjacency, %{visited: visited} = state) do

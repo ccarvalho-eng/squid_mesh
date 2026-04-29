@@ -26,7 +26,7 @@ defmodule SquidMesh.RunStore.Persistence do
       status: "pending",
       input: resolved_payload,
       context: %{},
-      current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition))
+      current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.initial_step(definition))
     }
   end
 
@@ -38,7 +38,8 @@ defmodule SquidMesh.RunStore.Persistence do
       status: "pending",
       input: source_run.input || %{},
       context: %{},
-      current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.entry_step(definition)),
+      current_step:
+        WorkflowDefinition.serialize_step(WorkflowDefinition.initial_step(definition)),
       replayed_from_run_id: source_run.id
     }
   end

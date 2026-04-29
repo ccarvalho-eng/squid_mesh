@@ -77,12 +77,19 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         started_at
       ) do
     duration = System.monotonic_time() - started_at
+    context = Map.merge(run.context || %{}, output)
 
     with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
-         {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, output),
-         {:ok, target} <- success_target(config.repo, definition, run) do
+         {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, output) do
       Observability.emit_step_completed(run, run.current_step, attempt_number, duration)
-      advance_after_success(config, run, target, output, execution_opts)
+
+      case success_target(config.repo, definition, run) do
+        {:ok, target} ->
+          advance_after_success(config, run, target, output, execution_opts)
+
+        {:error, reason} ->
+          mark_failed_after_success_resolution_error(config.repo, run, context, reason)
+      end
     end
   end
 
@@ -155,9 +162,18 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   defp success_target(repo, definition, run) do
     if WorkflowDefinition.dependency_mode?(definition) do
-      repo
-      |> StepRunStore.completed_steps(run.id)
-      |> then(&WorkflowDefinition.next_step_after_success(definition, run.current_step, &1))
+      completed_steps = StepRunStore.completed_steps(repo, run.id)
+
+      try do
+        WorkflowDefinition.next_step_after_success(definition, run.current_step, completed_steps)
+      rescue
+        exception in ArgumentError ->
+          if Exception.message(exception) == "workflow dependency graph must be acyclic" do
+            {:error, {:invalid_dependency_graph, Exception.message(exception)}}
+          else
+            reraise exception, __STACKTRACE__
+          end
+      end
     else
       WorkflowDefinition.transition_target(definition, run.current_step, :ok)
     end
@@ -247,6 +263,41 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   defp normalize_error(%{} = error), do: error
   defp normalize_error(error), do: %{message: inspect(error)}
 
+  defp mark_failed_after_success_resolution_error(
+         repo,
+         run,
+         context,
+         {:no_runnable_step, pending_steps}
+       ) do
+    case RunStore.transition_run(repo, run.id, :failed, %{
+           context: context,
+           current_step: run.current_step,
+           last_error: %{
+             message: "workflow step completed but no runnable next step was found",
+             failed_step: run.current_step,
+             pending_steps: pending_steps
+           }
+         }) do
+      {:ok, _failed_run} -> :ok
+      {:error, transition_reason} -> {:error, transition_reason}
+    end
+  end
+
+  defp mark_failed_after_success_resolution_error(repo, run, context, reason) do
+    case RunStore.transition_run(repo, run.id, :failed, %{
+           context: context,
+           current_step: run.current_step,
+           last_error: %{
+             message: "workflow step completed but next step resolution failed",
+             failed_step: run.current_step,
+             cause: normalize_success_resolution_error(reason)
+           }
+         }) do
+      {:ok, _failed_run} -> :ok
+      {:error, transition_reason} -> {:error, transition_reason}
+    end
+  end
+
   defp mark_failed_after_next_step_dispatch_error(repo, run_id, next_step, context, reason) do
     dispatch_error = %{
       message: "failed to dispatch workflow step",
@@ -280,6 +331,16 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       {:error, transition_reason} -> {:error, transition_reason}
     end
   end
+
+  defp normalize_success_resolution_error({:unknown_transition, from_step, outcome}) do
+    %{from_step: from_step, outcome: outcome}
+  end
+
+  defp normalize_success_resolution_error({:invalid_dependency_graph, message}) do
+    %{reason: :invalid_dependency_graph, message: message}
+  end
+
+  defp normalize_success_resolution_error(other), do: %{reason: inspect(other)}
 
   defp normalize_dispatch_cause({:dispatch_failed, reason}), do: normalize_dispatch_cause(reason)
 

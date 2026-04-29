@@ -68,7 +68,8 @@ defmodule SquidMesh.WorkflowTest do
            ]
 
     assert definition.entry_steps == [:load_account, :load_invoice]
-    assert definition.entry_step == :load_account
+    assert definition.initial_step == :load_account
+    assert definition.entry_step == nil
   end
 
   test "supports introspection of definition segments" do
@@ -87,6 +88,8 @@ defmodule SquidMesh.WorkflowTest do
 
   test "exposes dependency entry steps for introspection" do
     assert DependencyWorkflow.__workflow__(:entry_steps) == [:load_account, :load_invoice]
+    assert DependencyWorkflow.__workflow__(:initial_step) == :load_account
+    assert DependencyWorkflow.__workflow__(:entry_step) == nil
   end
 
   test "fails when no steps are declared" do
@@ -315,7 +318,7 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
-  test "fails when a workflow mixes dependency execution with transitions" do
+  test "fails when a workflow mixes dependency joins with transitions" do
     assert_compile_error(
       """
       defmodule WorkflowWithMixedProgression do
@@ -326,14 +329,19 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
+          step(:load_account, WorkflowWithMixedProgression.LoadAccount)
           step(:load_invoice, WorkflowWithMixedProgression.LoadInvoice)
-          step(:send_email, WorkflowWithMixedProgression.SendEmail, after: [:load_invoice])
+          step(:prepare_notification, WorkflowWithMixedProgression.PrepareNotification,
+            after: [:load_account, :load_invoice]
+          )
+          step(:record_delivery, WorkflowWithMixedProgression.RecordDelivery)
 
-          transition(:load_invoice, on: :ok, to: :send_email)
+          transition(:prepare_notification, on: :ok, to: :record_delivery)
+          transition(:record_delivery, on: :ok, to: :complete)
         end
       end
       """,
-      "dependency-based workflows cannot also declare transitions"
+      "dependency-based workflows cannot declare transitions"
     )
   end
 
@@ -350,6 +358,26 @@ defmodule SquidMesh.WorkflowTest do
 
           step(:load_invoice, WorkflowWithInvalidAfterShape.LoadInvoice)
           step(:send_email, WorkflowWithInvalidAfterShape.SendEmail, after: "load_invoice")
+        end
+      end
+      """,
+      "step :send_email defines an invalid :after dependency list"
+    )
+  end
+
+  test "fails when :after is empty" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithEmptyAfter do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:load_invoice, WorkflowWithEmptyAfter.LoadInvoice)
+          step(:send_email, WorkflowWithEmptyAfter.SendEmail, after: [])
         end
       end
       """,

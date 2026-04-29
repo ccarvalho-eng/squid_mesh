@@ -27,7 +27,8 @@ defmodule SquidMesh.Workflow.Definition do
           transitions: [transition()],
           retries: [retry()],
           entry_steps: [atom()],
-          entry_step: atom()
+          initial_step: atom(),
+          entry_step: atom() | nil
         }
 
   @type load_error :: {:invalid_workflow, module() | String.t()}
@@ -150,7 +151,7 @@ defmodule SquidMesh.Workflow.Definition do
   @doc """
   Returns the workflow entry step.
   """
-  @spec entry_step(t()) :: atom()
+  @spec entry_step(t()) :: atom() | nil
   def entry_step(definition), do: definition.entry_step
 
   @doc """
@@ -158,6 +159,12 @@ defmodule SquidMesh.Workflow.Definition do
   """
   @spec entry_steps(t()) :: [atom()]
   def entry_steps(definition), do: definition.entry_steps
+
+  @doc """
+  Returns the first step scheduled when a run starts.
+  """
+  @spec initial_step(t()) :: atom()
+  def initial_step(definition), do: definition.initial_step
 
   @doc """
   Returns the default trigger for the workflow definition.
@@ -266,7 +273,12 @@ defmodule SquidMesh.Workflow.Definition do
   """
   @spec dependency_mode?(t()) :: boolean()
   def dependency_mode?(definition) do
-    Enum.any?(definition.steps, &Keyword.has_key?(&1.opts, :after))
+    Enum.any?(definition.steps, fn step ->
+      case Keyword.get(step.opts, :after) do
+        dependencies when is_list(dependencies) -> dependencies != []
+        _other -> false
+      end
+    end)
   end
 
   defp next_dependency_step(definition, completed_steps) do
@@ -275,38 +287,110 @@ defmodule SquidMesh.Workflow.Definition do
       |> Enum.map(&serialize_step/1)
       |> MapSet.new()
 
-    case Enum.find(definition.steps, fn step ->
-           step_name = serialize_step(step.name)
+    pending_steps =
+      definition.steps
+      |> Enum.map(& &1.name)
+      |> Enum.reject(fn step_name ->
+        MapSet.member?(completed_steps, serialize_step(step_name))
+      end)
 
-           not MapSet.member?(completed_steps, step_name) and
-             dependencies_satisfied?(step, completed_steps)
-         end) do
-      %{name: step_name} ->
-        {:ok, step_name}
+    cond do
+      pending_steps == [] ->
+        {:ok, :complete}
 
-      nil ->
-        if Enum.all?(definition.steps, fn step ->
-             MapSet.member?(completed_steps, serialize_step(step.name))
-           end) do
-          {:ok, :complete}
-        else
-          pending_steps =
-            definition.steps
-            |> Enum.map(& &1.name)
-            |> Enum.reject(fn step_name ->
-              MapSet.member?(completed_steps, serialize_step(step_name))
-            end)
-
-          {:error, {:no_runnable_step, pending_steps}}
+      true ->
+        definition
+        |> dependency_step_order()
+        |> Enum.find(fn step_name ->
+          step_name in pending_steps and
+            dependencies_satisfied?(definition, step_name, completed_steps)
+        end)
+        |> case do
+          nil -> {:error, {:no_runnable_step, pending_steps}}
+          step_name -> {:ok, step_name}
         end
     end
   end
 
-  defp dependencies_satisfied?(step, completed_steps) do
-    step.opts
-    |> Keyword.get(:after, [])
+  defp dependencies_satisfied?(definition, step_name, completed_steps) do
+    definition
+    |> dependency_map()
+    |> Map.get(step_name, [])
     |> Enum.all?(fn dependency ->
       MapSet.member?(completed_steps, serialize_step(dependency))
+    end)
+  end
+
+  defp dependency_step_order(definition) do
+    phases = dependency_phases(definition)
+
+    declaration_order =
+      definition.steps
+      |> Enum.map(& &1.name)
+      |> Enum.with_index()
+      |> Map.new()
+
+    definition.steps
+    |> Enum.map(& &1.name)
+    |> Enum.sort_by(fn step_name ->
+      {Map.fetch!(phases, step_name), Map.fetch!(declaration_order, step_name)}
+    end)
+  end
+
+  defp dependency_phases(definition) do
+    dependencies = dependency_map(definition)
+    step_names = definition.steps |> Enum.map(& &1.name)
+
+    {phases, _visiting} =
+      Enum.reduce(step_names, {%{}, MapSet.new()}, fn step_name, {phases, visiting} ->
+        {phase, phases, visiting} = dependency_phase(step_name, dependencies, phases, visiting)
+        {Map.put(phases, step_name, phase), visiting}
+      end)
+
+    phases
+  end
+
+  defp dependency_phase(step_name, dependencies, phases, visiting) do
+    case Map.fetch(phases, step_name) do
+      {:ok, phase} ->
+        {phase, phases, visiting}
+
+      :error ->
+        if MapSet.member?(visiting, step_name) do
+          raise ArgumentError, "workflow dependency graph must be acyclic"
+        end
+
+        visiting = MapSet.put(visiting, step_name)
+
+        {dependency_phases, phases, visiting} =
+          Enum.reduce(Map.get(dependencies, step_name, []), {[], phases, visiting}, fn dependency,
+                                                                                       {acc,
+                                                                                        phases,
+                                                                                        visiting} ->
+            {phase, phases, visiting} =
+              dependency_phase(dependency, dependencies, phases, visiting)
+
+            {[phase | acc], phases, visiting}
+          end)
+
+        phase =
+          case dependency_phases do
+            [] -> 0
+            phases -> Enum.max(phases) + 1
+          end
+
+        {phase, Map.put(phases, step_name, phase), MapSet.delete(visiting, step_name)}
+    end
+  end
+
+  defp dependency_map(definition) do
+    Map.new(definition.steps, fn %{name: name, opts: opts} ->
+      explicit_dependencies =
+        opts
+        |> Keyword.get(:after, [])
+        |> List.wrap()
+
+      {name, explicit_dependencies}
     end)
   end
 
