@@ -3,248 +3,22 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
   import Ecto.Query
 
+  alias __MODULE__.BackoffWorkflow
+  alias __MODULE__.BuiltInWorkflow
+  alias __MODULE__.CancellationCompletionWorkflow
+  alias __MODULE__.DependencyFailureWorkflow
+  alias __MODULE__.DependencyWorkflow
+  alias __MODULE__.FailingWorkflow
+  alias __MODULE__.MissingOban
+  alias __MODULE__.RetrySurfaceWorkflow
+  alias __MODULE__.SuccessfulWorkflow
+
   alias SquidMesh.AttemptStore
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.Runtime.StepExecutor
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workers.StepWorker
   alias Oban.Job
-
-  defmodule SuccessfulWorkflow do
-    use SquidMesh.Workflow
-
-    workflow do
-      trigger :manual do
-        manual()
-
-        payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
-        end
-      end
-
-      step(:load_invoice, SuccessfulWorkflow.LoadInvoice)
-      step(:send_email, SuccessfulWorkflow.SendEmail)
-
-      transition(:load_invoice, on: :ok, to: :send_email)
-      transition(:send_email, on: :ok, to: :complete)
-    end
-  end
-
-  defmodule SuccessfulWorkflow.LoadInvoice do
-    use Jido.Action,
-      name: "load_invoice",
-      description: "Loads invoice details",
-      schema: [
-        account_id: [type: :string, required: true],
-        invoice_id: [type: :string, required: true]
-      ]
-
-    @impl true
-    def run(%{account_id: account_id, invoice_id: invoice_id}, _context) do
-      {:ok,
-       %{
-         account: %{id: account_id},
-         invoice: %{id: invoice_id, status: "open"}
-       }}
-    end
-  end
-
-  defmodule SuccessfulWorkflow.SendEmail do
-    use Jido.Action,
-      name: "send_email",
-      description: "Sends a recovery email",
-      schema: [
-        account: [type: :map, required: true],
-        invoice: [type: :map, required: true]
-      ]
-
-    @impl true
-    def run(%{account: account, invoice: invoice}, _context) do
-      {:ok,
-       %{
-         delivery: %{
-           account_id: account.id,
-           invoice_id: invoice.id,
-           channel: "email"
-         }
-       }}
-    end
-  end
-
-  defmodule FailingWorkflow do
-    use SquidMesh.Workflow
-
-    workflow do
-      trigger :manual do
-        manual()
-
-        payload do
-          field(:account_id, :string)
-        end
-      end
-
-      step(:check_gateway, FailingWorkflow.CheckGateway)
-      transition(:check_gateway, on: :ok, to: :complete)
-    end
-  end
-
-  defmodule FailingWorkflow.CheckGateway do
-    use Jido.Action,
-      name: "check_gateway",
-      description: "Checks gateway availability",
-      schema: [
-        account_id: [type: :string, required: true]
-      ]
-
-    @impl true
-    def run(_params, _context) do
-      {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
-    end
-  end
-
-  defmodule BackoffWorkflow do
-    use SquidMesh.Workflow
-
-    workflow do
-      trigger :manual do
-        manual()
-
-        payload do
-          field(:account_id, :string)
-        end
-      end
-
-      step(:check_gateway, BackoffWorkflow.CheckGateway,
-        retry: [max_attempts: 3, backoff: [type: :exponential, min: 1_000, max: 5_000]]
-      )
-
-      transition(:check_gateway, on: :ok, to: :complete)
-    end
-  end
-
-  defmodule BackoffWorkflow.CheckGateway do
-    use Jido.Action,
-      name: "check_gateway",
-      description: "Checks gateway availability with retry backoff",
-      schema: [
-        account_id: [type: :string, required: true]
-      ]
-
-    @impl true
-    def run(_params, _context) do
-      {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
-    end
-  end
-
-  defmodule RetrySurfaceWorkflow do
-    use SquidMesh.Workflow
-
-    workflow do
-      trigger :manual do
-        manual()
-
-        payload do
-          field(:account_id, :string)
-        end
-      end
-
-      step(:check_gateway, RetrySurfaceWorkflow.FailOnce,
-        retry: [max_attempts: 3, backoff: [type: :exponential, min: 1_000, max: 5_000]]
-      )
-
-      transition(:check_gateway, on: :ok, to: :complete)
-    end
-  end
-
-  defmodule RetrySurfaceWorkflow.FailOnce do
-    use Jido.Action,
-      name: "check_gateway",
-      description: "Fails once so Squid Mesh owns the retry boundary",
-      schema: [
-        account_id: [type: :string, required: true]
-      ]
-
-    @coordination_key {__MODULE__, :attempts}
-
-    @impl true
-    def run(%{account_id: account_id}, %{run_id: run_id}) do
-      seen_runs = :persistent_term.get(@coordination_key, MapSet.new())
-
-      if MapSet.member?(seen_runs, run_id) do
-        {:ok, %{gateway_check: %{account_id: account_id, status: "ok"}}}
-      else
-        :persistent_term.put(@coordination_key, MapSet.put(seen_runs, run_id))
-        {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
-      end
-    end
-  end
-
-  defmodule BuiltInWorkflow do
-    use SquidMesh.Workflow
-
-    workflow do
-      trigger :manual do
-        manual()
-
-        payload do
-          field(:account_id, :string)
-        end
-      end
-
-      step(:wait_for_settlement, :wait, duration: 10)
-      step(:log_delivery, :log, message: "delivery completed", level: :info)
-
-      transition(:wait_for_settlement, on: :ok, to: :log_delivery)
-      transition(:log_delivery, on: :ok, to: :complete)
-    end
-  end
-
-  defmodule CancellationCompletionWorkflow do
-    use SquidMesh.Workflow
-
-    workflow do
-      trigger :manual do
-        manual()
-
-        payload do
-          field(:account_id, :string)
-        end
-      end
-
-      step(:wait_for_settlement, :wait, duration: 10)
-      step(:record_delivery, CancellationCompletionWorkflow.RecordDelivery)
-
-      transition(:wait_for_settlement, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
-    end
-  end
-
-  defmodule CancellationCompletionWorkflow.RecordDelivery do
-    use Jido.Action,
-      name: "record_delivery",
-      description: "Blocks until the test allows completion",
-      schema: [
-        account_id: [type: :string, required: true]
-      ]
-
-    @coordination_key {__MODULE__, :test_pid}
-
-    @impl true
-    def run(%{account_id: account_id}, _context) do
-      test_pid = :persistent_term.get(@coordination_key)
-      send(test_pid, {:record_delivery_started, self(), account_id})
-
-      receive do
-        :continue -> {:ok, %{delivery: %{account_id: account_id, status: "recorded"}}}
-      after
-        5_000 -> {:error, %{message: "timed out waiting for test continuation"}}
-      end
-    end
-  end
-
-  defmodule MissingOban do
-  end
 
   describe "workflow execution through Oban" do
     test "enqueues and executes the declared steps through Jido-backed actions" do
@@ -289,6 +63,85 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              ]
 
       assert Enum.map(step_runs, &AttemptStore.attempt_count(Repo, &1.id)) == [1, 1]
+    end
+
+    test "holds a join step until all declared dependencies complete" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(DependencyWorkflow, input, repo: Repo)
+
+      assert run.current_step == :load_account
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_account"}
+               })
+
+      assert {:ok, running_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert running_run.status == :running
+      assert running_run.current_step == :load_invoice
+      assert running_run.context.account == %{id: "acct_123", tier: "pro"}
+      refute Map.has_key?(running_run.context, :delivery)
+
+      assert %{success: 3, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.current_step == nil
+      assert completed_run.context.account == %{id: "acct_123", tier: "pro"}
+      assert completed_run.context.invoice == %{id: "inv_456", status: "open"}
+
+      assert completed_run.context.delivery == %{
+               account_id: "acct_123",
+               invoice_id: "inv_456",
+               channel: "email"
+             }
+
+      step_runs =
+        Repo.all(
+          from(step_run in StepRun,
+            where: step_run.run_id == ^run.id,
+            order_by: [asc: step_run.inserted_at]
+          )
+        )
+
+      assert Enum.map(step_runs, &{&1.step, &1.status}) == [
+               {"load_account", "completed"},
+               {"load_invoice", "completed"},
+               {"send_email", "completed"}
+             ]
+    end
+
+    test "does not run a dependency join step when one prerequisite fails" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(DependencyFailureWorkflow, input, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :load_invoice
+      assert failed_run.context.account == %{id: "acct_123", tier: "pro"}
+
+      refute Map.has_key?(failed_run.context, :invoice)
+      refute Map.has_key?(failed_run.context, :delivery)
+
+      step_runs =
+        Repo.all(
+          from(step_run in StepRun,
+            where: step_run.run_id == ^run.id,
+            order_by: [asc: step_run.inserted_at]
+          )
+        )
+
+      assert Enum.map(step_runs, &{&1.step, &1.status}) == [
+               {"load_account", "completed"},
+               {"load_invoice", "failed"}
+             ]
     end
 
     test "persists failed step execution and marks the run failed when no retry is declared" do
@@ -592,5 +445,344 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert cancelled_run.status == :cancelled
       assert cancelled_run.current_step == nil
     end
+  end
+
+  defmodule DependencyWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_account, DependencyWorkflow.LoadAccount)
+      step(:load_invoice, DependencyWorkflow.LoadInvoice)
+      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+    end
+  end
+
+  defmodule DependencyFailureWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_account, DependencyWorkflow.LoadAccount)
+      step(:load_invoice, DependencyFailureWorkflow.LoadInvoice)
+      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+    end
+  end
+
+  defmodule DependencyWorkflow.LoadAccount do
+    use Jido.Action,
+      name: "load_account",
+      description: "Loads account details",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{account: %{id: account_id, tier: "pro"}}}
+    end
+  end
+
+  defmodule DependencyWorkflow.LoadInvoice do
+    use Jido.Action,
+      name: "load_invoice",
+      description: "Loads invoice details",
+      schema: [
+        invoice_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{invoice_id: invoice_id}, _context) do
+      {:ok, %{invoice: %{id: invoice_id, status: "open"}}}
+    end
+  end
+
+  defmodule DependencyWorkflow.SendEmail do
+    use Jido.Action,
+      name: "send_email",
+      description: "Sends a recovery email after both inputs are ready",
+      schema: [
+        account: [type: :map, required: true],
+        invoice: [type: :map, required: true]
+      ]
+
+    @impl true
+    def run(%{account: account, invoice: invoice}, _context) do
+      {:ok,
+       %{
+         delivery: %{
+           account_id: account.id,
+           invoice_id: invoice.id,
+           channel: "email"
+         }
+       }}
+    end
+  end
+
+  defmodule DependencyFailureWorkflow.LoadInvoice do
+    use Jido.Action,
+      name: "load_invoice",
+      description: "Fails while loading invoice details",
+      schema: [
+        invoice_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{invoice_id: invoice_id}, _context) do
+      {:error,
+       %{message: "invoice unavailable", code: "invoice_unavailable", invoice_id: invoice_id}}
+    end
+  end
+
+  defmodule SuccessfulWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_invoice, SuccessfulWorkflow.LoadInvoice)
+      step(:send_email, SuccessfulWorkflow.SendEmail)
+
+      transition(:load_invoice, on: :ok, to: :send_email)
+      transition(:send_email, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule SuccessfulWorkflow.LoadInvoice do
+    use Jido.Action,
+      name: "load_invoice",
+      description: "Loads invoice details",
+      schema: [
+        account_id: [type: :string, required: true],
+        invoice_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id, invoice_id: invoice_id}, _context) do
+      {:ok,
+       %{
+         account: %{id: account_id},
+         invoice: %{id: invoice_id, status: "open"}
+       }}
+    end
+  end
+
+  defmodule SuccessfulWorkflow.SendEmail do
+    use Jido.Action,
+      name: "send_email",
+      description: "Sends a recovery email",
+      schema: [
+        account: [type: :map, required: true],
+        invoice: [type: :map, required: true]
+      ]
+
+    @impl true
+    def run(%{account: account, invoice: invoice}, _context) do
+      {:ok,
+       %{
+         delivery: %{
+           account_id: account.id,
+           invoice_id: invoice.id,
+           channel: "email"
+         }
+       }}
+    end
+  end
+
+  defmodule FailingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:check_gateway, FailingWorkflow.CheckGateway)
+      transition(:check_gateway, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule FailingWorkflow.CheckGateway do
+    use Jido.Action,
+      name: "check_gateway",
+      description: "Checks gateway availability",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(_params, _context) do
+      {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+    end
+  end
+
+  defmodule BackoffWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:check_gateway, BackoffWorkflow.CheckGateway,
+        retry: [max_attempts: 3, backoff: [type: :exponential, min: 1_000, max: 5_000]]
+      )
+
+      transition(:check_gateway, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule BackoffWorkflow.CheckGateway do
+    use Jido.Action,
+      name: "check_gateway",
+      description: "Checks gateway availability with retry backoff",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(_params, _context) do
+      {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+    end
+  end
+
+  defmodule RetrySurfaceWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:check_gateway, RetrySurfaceWorkflow.FailOnce,
+        retry: [max_attempts: 3, backoff: [type: :exponential, min: 1_000, max: 5_000]]
+      )
+
+      transition(:check_gateway, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule RetrySurfaceWorkflow.FailOnce do
+    use Jido.Action,
+      name: "check_gateway",
+      description: "Fails once so Squid Mesh owns the retry boundary",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @coordination_key {__MODULE__, :attempts}
+
+    @impl true
+    def run(%{account_id: account_id}, %{run_id: run_id}) do
+      seen_runs = :persistent_term.get(@coordination_key, MapSet.new())
+
+      if MapSet.member?(seen_runs, run_id) do
+        {:ok, %{gateway_check: %{account_id: account_id, status: "ok"}}}
+      else
+        :persistent_term.put(@coordination_key, MapSet.put(seen_runs, run_id))
+        {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+      end
+    end
+  end
+
+  defmodule BuiltInWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_settlement, :wait, duration: 10)
+      step(:log_delivery, :log, message: "delivery completed", level: :info)
+
+      transition(:wait_for_settlement, on: :ok, to: :log_delivery)
+      transition(:log_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule CancellationCompletionWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_settlement, :wait, duration: 10)
+      step(:record_delivery, CancellationCompletionWorkflow.RecordDelivery)
+
+      transition(:wait_for_settlement, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule CancellationCompletionWorkflow.RecordDelivery do
+    use Jido.Action,
+      name: "record_delivery",
+      description: "Blocks until the test allows completion",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @coordination_key {__MODULE__, :test_pid}
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      test_pid = :persistent_term.get(@coordination_key)
+      send(test_pid, {:record_delivery_started, self(), account_id})
+
+      receive do
+        :continue -> {:ok, %{delivery: %{account_id: account_id, status: "recorded"}}}
+      after
+        5_000 -> {:error, %{message: "timed out waiting for test continuation"}}
+      end
+    end
+  end
+
+  defmodule MissingOban do
   end
 end

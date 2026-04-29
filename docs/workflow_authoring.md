@@ -9,7 +9,7 @@ Workflows are Elixir modules that `use SquidMesh.Workflow` and declare:
 - one trigger
 - one payload contract
 - one or more steps
-- transitions between steps
+- either transitions between steps or dependency-based `after: [...]` joins
 - optional retry policy on the steps that own side effects
 
 ```elixir
@@ -186,6 +186,31 @@ When a step succeeds:
 That means later steps can use values produced by earlier steps without manual
 state persistence in the host application.
 
+## Dependency-Based Steps
+
+Steps can also wait on explicit dependencies instead of success transitions:
+
+```elixir
+step(:load_account, Billing.Steps.LoadAccount)
+step(:load_invoice, Billing.Steps.LoadInvoice)
+step(:prepare_notification, Billing.Steps.PrepareNotification,
+  after: [:load_account, :load_invoice]
+)
+```
+
+Current dependency validation requires:
+
+- every `after:` reference names a declared step
+- the dependency graph is acyclic
+- workflows may define multiple entry steps when dependency execution is used
+- dependency-based workflows do not also declare `transition/2`
+
+Current execution boundary:
+
+- a step becomes runnable only after every dependency has completed successfully
+- multiple ready root steps are executed in deterministic workflow declaration order today
+- Squid Mesh does not yet dispatch multiple ready steps in parallel
+
 ## Transitions
 
 Transitions define the path through the workflow.
@@ -199,7 +224,7 @@ Current workflow validation requires:
 
 - at least one step
 - exactly one trigger
-- exactly one workflow entry step
+- exactly one workflow entry step for transition-based workflows
 - transitions that reference known steps
 
 ## Retries And Backoff
@@ -252,12 +277,13 @@ Supported today:
 
 - one trigger per workflow
 - sequential transitions
+- dependency-based joins with `after: [...]`
 - durable retries and replay
 - built-in `:wait` and `:log` steps
 
 Not implemented today:
 
-- parallel step execution
+- parallel dispatch of multiple ready steps
 - conditional branching beyond transition outcomes
 - dynamic cron registration after boot
 - custom reclaim logic for interrupted in-flight step ownership

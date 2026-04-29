@@ -204,12 +204,14 @@ defmodule SquidMesh.Workflow do
 
     triggers = Validation.normalize_triggers!(definition)
     payload = Validation.workflow_payload!(triggers)
+    entry_steps = Validation.entry_steps!(definition, env)
     entry_step = Validation.entry_step!(definition, env)
 
     definition =
       definition
       |> Map.put(:triggers, triggers)
       |> Map.put(:payload, payload)
+      |> Map.put(:entry_steps, entry_steps)
       |> Map.put(:entry_step, entry_step)
 
     quote do
@@ -239,6 +241,9 @@ defmodule SquidMesh.Workflow do
 
       @doc false
       def __workflow__(:entry_step), do: unquote(Macro.escape(definition.entry_step))
+
+      @doc false
+      def __workflow__(:entry_steps), do: unquote(Macro.escape(definition.entry_steps))
     end
   end
 

@@ -35,22 +35,44 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   @doc """
-  Returns the single workflow entry step or raises when the workflow does not
-  define exactly one entry step.
+  Returns the workflow entry steps or raises when the workflow declaration does
+  not define a valid entry set.
   """
-  @spec entry_step!(map(), Macro.Env.t()) :: atom()
-  def entry_step!(definition, env) do
+  @spec entry_steps!(map(), Macro.Env.t()) :: [atom()]
+  def entry_steps!(definition, env) do
     case entry_steps(definition) do
-      [entry_step] ->
-        entry_step
-
-      _other_steps ->
+      [] ->
         raise CompileError,
           file: env.file,
           line: env.line,
           description:
             "workflow validation failed:\n- workflow must define exactly one entry step"
+
+      [entry_step] ->
+        [entry_step]
+
+      entry_steps ->
+        if dependency_mode?(definition.steps) do
+          entry_steps
+        else
+          raise CompileError,
+            file: env.file,
+            line: env.line,
+            description:
+              "workflow validation failed:\n- workflow must define exactly one entry step"
+        end
     end
+  end
+
+  @doc """
+  Returns the single workflow entry step or raises when the workflow does not
+  define exactly one entry step.
+  """
+  @spec entry_step!(map(), Macro.Env.t()) :: atom()
+  def entry_step!(definition, env) do
+    definition
+    |> entry_steps!(env)
+    |> List.first()
   end
 
   @doc """
@@ -106,8 +128,67 @@ defmodule SquidMesh.Workflow.Validation do
     |> require_steps(step_names)
     |> validate_built_in_steps(definition.steps)
     |> validate_unique_step_names(step_names)
+    |> validate_dependency_graph(definition.steps, definition.transitions, step_names)
     |> validate_transitions(definition.transitions, step_names)
     |> validate_retries(definition.retries, step_names)
+  end
+
+  defp validate_dependency_graph(errors, steps, transitions, step_names) do
+    errors
+    |> validate_transition_dependency_mode(steps, transitions)
+    |> validate_step_dependencies(steps, step_names)
+    |> validate_dependency_cycles(steps)
+  end
+
+  defp validate_transition_dependency_mode(errors, steps, transitions) do
+    if dependency_mode?(steps) and transitions != [] do
+      ["dependency-based workflows cannot also declare transitions" | errors]
+    else
+      errors
+    end
+  end
+
+  defp validate_step_dependencies(errors, steps, step_names) do
+    Enum.reduce(steps, errors, fn %{name: name, opts: opts}, acc ->
+      case dependency_list(opts) do
+        {:ok, dependencies} ->
+          acc
+          |> validate_known_dependencies(name, dependencies, step_names)
+          |> validate_self_dependency(name, dependencies)
+
+        :absent ->
+          acc
+
+        :error ->
+          ["step #{inspect(name)} defines an invalid :after dependency list" | acc]
+      end
+    end)
+  end
+
+  defp validate_known_dependencies(errors, step_name, dependencies, step_names) do
+    Enum.reduce(dependencies, errors, fn dependency, acc ->
+      if dependency in step_names do
+        acc
+      else
+        ["step #{inspect(step_name)} depends on unknown step #{inspect(dependency)}" | acc]
+      end
+    end)
+  end
+
+  defp validate_self_dependency(errors, step_name, dependencies) do
+    if step_name in dependencies do
+      ["step #{inspect(step_name)} cannot depend on itself" | errors]
+    else
+      errors
+    end
+  end
+
+  defp validate_dependency_cycles(errors, steps) do
+    if dependency_mode?(steps) and not dependency_graph_acyclic?(steps) do
+      ["workflow dependency graph must be acyclic" | errors]
+    else
+      errors
+    end
   end
 
   defp validate_triggers(errors, triggers) do
@@ -363,14 +444,107 @@ defmodule SquidMesh.Workflow.Validation do
   defp workflow_payload_fields(_definition), do: []
 
   defp entry_steps(definition) do
-    transition_targets =
-      definition.transitions
-      |> Enum.map(& &1.to)
-      |> MapSet.new()
+    if dependency_mode?(definition.steps) do
+      Enum.flat_map(definition.steps, fn %{name: name, opts: opts} ->
+        case dependency_list(opts) do
+          {:ok, []} -> [name]
+          :absent -> [name]
+          {:ok, _dependencies} -> []
+          :error -> []
+        end
+      end)
+    else
+      transition_targets =
+        definition.transitions
+        |> Enum.map(& &1.to)
+        |> MapSet.new()
 
-    definition.steps
-    |> Enum.map(& &1.name)
-    |> Enum.reject(&MapSet.member?(transition_targets, &1))
+      definition.steps
+      |> Enum.map(& &1.name)
+      |> Enum.reject(&MapSet.member?(transition_targets, &1))
+    end
+  end
+
+  defp dependency_mode?(steps) when is_list(steps) do
+    Enum.any?(steps, &Keyword.has_key?(&1.opts, :after))
+  end
+
+  defp dependency_list(opts) do
+    case Keyword.fetch(opts, :after) do
+      {:ok, dependencies} when is_list(dependencies) ->
+        if Enum.all?(dependencies, &is_atom/1) do
+          {:ok, Enum.uniq(dependencies)}
+        else
+          :error
+        end
+
+      {:ok, _other} ->
+        :error
+
+      :error ->
+        :absent
+    end
+  end
+
+  defp dependency_graph_acyclic?(steps) do
+    adjacency =
+      Map.new(steps, fn %{name: name, opts: opts} ->
+        dependencies =
+          case dependency_list(opts) do
+            {:ok, deps} -> deps
+            _other -> []
+          end
+
+        {name, dependencies}
+      end)
+
+    {result, _state} =
+      Enum.reduce_while(
+        Map.keys(adjacency),
+        {:ok, %{visiting: MapSet.new(), visited: MapSet.new()}},
+        fn
+          step_name, {:ok, state} ->
+            case visit_dependency(step_name, adjacency, state) do
+              {:ok, next_state} -> {:cont, {:ok, next_state}}
+              {:error, :cycle} -> {:halt, {:error, :cycle}}
+            end
+        end
+      )
+
+    result == :ok
+  end
+
+  defp visit_dependency(step_name, adjacency, %{visited: visited} = state) do
+    cond do
+      MapSet.member?(visited, step_name) ->
+        {:ok, state}
+
+      MapSet.member?(state.visiting, step_name) ->
+        {:error, :cycle}
+
+      true ->
+        state = %{state | visiting: MapSet.put(state.visiting, step_name)}
+
+        Enum.reduce_while(Map.get(adjacency, step_name, []), {:ok, state}, fn dependency,
+                                                                              {:ok, acc} ->
+          case visit_dependency(dependency, adjacency, acc) do
+            {:ok, next_acc} -> {:cont, {:ok, next_acc}}
+            {:error, :cycle} -> {:halt, {:error, :cycle}}
+          end
+        end)
+        |> case do
+          {:ok, next_state} ->
+            {:ok,
+             %{
+               next_state
+               | visiting: MapSet.delete(next_state.visiting, step_name),
+                 visited: MapSet.put(next_state.visited, step_name)
+             }}
+
+          {:error, :cycle} ->
+            {:error, :cycle}
+        end
+    end
   end
 
   defp input_matches_type?(value, :string), do: is_binary(value)

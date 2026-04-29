@@ -1,28 +1,8 @@
 defmodule SquidMesh.WorkflowTest do
   use ExUnit.Case
 
-  defmodule InvoiceReminder do
-    use SquidMesh.Workflow
-
-    workflow do
-      trigger :manual do
-        manual()
-
-        payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
-        end
-      end
-
-      step(:load_invoice, InvoiceReminder.LoadInvoice)
-      step(:send_email, InvoiceReminder.SendEmail, retry: [max_attempts: 3])
-      step(:record_delivery, InvoiceReminder.RecordDelivery)
-
-      transition(:load_invoice, on: :ok, to: :send_email)
-      transition(:send_email, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
-    end
-  end
+  alias __MODULE__.DependencyWorkflow
+  alias __MODULE__.InvoiceReminder
 
   test "exposes a declarative workflow definition" do
     definition = InvoiceReminder.workflow_definition()
@@ -74,6 +54,23 @@ defmodule SquidMesh.WorkflowTest do
            }
   end
 
+  test "supports dependency-based step declarations with multiple entry steps" do
+    definition = DependencyWorkflow.workflow_definition()
+
+    assert definition.steps == [
+             %{name: :load_account, module: DependencyWorkflow.LoadAccount, opts: []},
+             %{name: :load_invoice, module: DependencyWorkflow.LoadInvoice, opts: []},
+             %{
+               name: :send_email,
+               module: DependencyWorkflow.SendEmail,
+               opts: [after: [:load_account, :load_invoice]]
+             }
+           ]
+
+    assert definition.entry_steps == [:load_account, :load_invoice]
+    assert definition.entry_step == :load_account
+  end
+
   test "supports introspection of definition segments" do
     assert InvoiceReminder.__workflow__(:steps) == InvoiceReminder.workflow_definition().steps
     assert InvoiceReminder.__workflow__(:payload) == InvoiceReminder.workflow_definition().payload
@@ -86,6 +83,10 @@ defmodule SquidMesh.WorkflowTest do
 
     assert InvoiceReminder.__workflow__(:retries) == InvoiceReminder.workflow_definition().retries
     assert InvoiceReminder.__workflow__(:entry_step) == :load_invoice
+  end
+
+  test "exposes dependency entry steps for introspection" do
+    assert DependencyWorkflow.__workflow__(:entry_steps) == [:load_account, :load_invoice]
   end
 
   test "fails when no steps are declared" do
@@ -228,6 +229,29 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
+  test "allows multiple entry steps when dependency execution is declared" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithMultipleDependencyRoots do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:load_account, WorkflowWithMultipleDependencyRoots.LoadAccount)
+          step(:load_invoice, WorkflowWithMultipleDependencyRoots.LoadInvoice)
+          step(:send_email, WorkflowWithMultipleDependencyRoots.SendEmail,
+            after: [:load_account, :load_invoice]
+          )
+        end
+      end
+      """)
+
+    assert module.__workflow__(:entry_steps) == [:load_account, :load_invoice]
+  end
+
   test "fails when a workflow defines no entry step" do
     assert_compile_error(
       """
@@ -248,6 +272,88 @@ defmodule SquidMesh.WorkflowTest do
       end
       """,
       "workflow must define exactly one entry step"
+    )
+  end
+
+  test "fails when a dependency references an unknown step" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithUnknownDependency do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:load_invoice, WorkflowWithUnknownDependency.LoadInvoice)
+          step(:send_email, WorkflowWithUnknownDependency.SendEmail, after: [:missing_step])
+        end
+      end
+      """,
+      "step :send_email depends on unknown step :missing_step"
+    )
+  end
+
+  test "fails when dependency declarations contain a cycle" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithDependencyCycle do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:load_invoice, WorkflowWithDependencyCycle.LoadInvoice, after: [:send_email])
+          step(:send_email, WorkflowWithDependencyCycle.SendEmail, after: [:load_invoice])
+        end
+      end
+      """,
+      "workflow dependency graph must be acyclic"
+    )
+  end
+
+  test "fails when a workflow mixes dependency execution with transitions" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithMixedProgression do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:load_invoice, WorkflowWithMixedProgression.LoadInvoice)
+          step(:send_email, WorkflowWithMixedProgression.SendEmail, after: [:load_invoice])
+
+          transition(:load_invoice, on: :ok, to: :send_email)
+        end
+      end
+      """,
+      "dependency-based workflows cannot also declare transitions"
+    )
+  end
+
+  test "fails when :after is not a list of step atoms" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidAfterShape do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:load_invoice, WorkflowWithInvalidAfterShape.LoadInvoice)
+          step(:send_email, WorkflowWithInvalidAfterShape.SendEmail, after: "load_invoice")
+        end
+      end
+      """,
+      "step :send_email defines an invalid :after dependency list"
     )
   end
 
@@ -514,5 +620,47 @@ defmodule SquidMesh.WorkflowTest do
   defp compile_module(source) do
     [{module, _bytecode}] = Code.compile_string(source, "test/support/valid_workflow.exs")
     module
+  end
+
+  defmodule InvoiceReminder do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_invoice, InvoiceReminder.LoadInvoice)
+      step(:send_email, InvoiceReminder.SendEmail, retry: [max_attempts: 3])
+      step(:record_delivery, InvoiceReminder.RecordDelivery)
+
+      transition(:load_invoice, on: :ok, to: :send_email)
+      transition(:send_email, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule DependencyWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_account, DependencyWorkflow.LoadAccount)
+      step(:load_invoice, DependencyWorkflow.LoadInvoice)
+      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+    end
   end
 end

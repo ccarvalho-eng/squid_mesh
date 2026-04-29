@@ -26,6 +26,7 @@ defmodule SquidMesh.Workflow.Definition do
           steps: [step()],
           transitions: [transition()],
           retries: [retry()],
+          entry_steps: [atom()],
           entry_step: atom()
         }
 
@@ -153,6 +154,12 @@ defmodule SquidMesh.Workflow.Definition do
   def entry_step(definition), do: definition.entry_step
 
   @doc """
+  Returns the workflow entry steps in semantic execution order.
+  """
+  @spec entry_steps(t()) :: [atom()]
+  def entry_steps(definition), do: definition.entry_steps
+
+  @doc """
   Returns the default trigger for the workflow definition.
   """
   @spec default_trigger(t()) :: atom()
@@ -198,6 +205,20 @@ defmodule SquidMesh.Workflow.Definition do
   end
 
   @doc """
+  Resolves the next step after a successful execution.
+  """
+  @spec next_step_after_success(t(), atom(), [atom() | String.t()]) ::
+          {:ok, transition_target()} | {:error, {:no_runnable_step, [atom()]}}
+  def next_step_after_success(definition, from_step, completed_steps)
+      when is_atom(from_step) and is_list(completed_steps) do
+    if dependency_mode?(definition) do
+      next_dependency_step(definition, completed_steps)
+    else
+      transition_target(definition, from_step, :ok)
+    end
+  end
+
+  @doc """
   Deserializes persisted payload keys back to declared workflow field names.
   """
   @spec deserialize_payload(t() | nil, map()) :: map()
@@ -239,6 +260,55 @@ defmodule SquidMesh.Workflow.Definition do
   def serialize_step(nil), do: nil
   def serialize_step(step) when is_atom(step), do: Atom.to_string(step)
   def serialize_step(step) when is_binary(step), do: step
+
+  @doc """
+  Returns true when the workflow uses dependency-based step progression.
+  """
+  @spec dependency_mode?(t()) :: boolean()
+  def dependency_mode?(definition) do
+    Enum.any?(definition.steps, &Keyword.has_key?(&1.opts, :after))
+  end
+
+  defp next_dependency_step(definition, completed_steps) do
+    completed_steps =
+      completed_steps
+      |> Enum.map(&serialize_step/1)
+      |> MapSet.new()
+
+    case Enum.find(definition.steps, fn step ->
+           step_name = serialize_step(step.name)
+
+           not MapSet.member?(completed_steps, step_name) and
+             dependencies_satisfied?(step, completed_steps)
+         end) do
+      %{name: step_name} ->
+        {:ok, step_name}
+
+      nil ->
+        if Enum.all?(definition.steps, fn step ->
+             MapSet.member?(completed_steps, serialize_step(step.name))
+           end) do
+          {:ok, :complete}
+        else
+          pending_steps =
+            definition.steps
+            |> Enum.map(& &1.name)
+            |> Enum.reject(fn step_name ->
+              MapSet.member?(completed_steps, serialize_step(step_name))
+            end)
+
+          {:error, {:no_runnable_step, pending_steps}}
+        end
+    end
+  end
+
+  defp dependencies_satisfied?(step, completed_steps) do
+    step.opts
+    |> Keyword.get(:after, [])
+    |> Enum.all?(fn dependency ->
+      MapSet.member?(completed_steps, serialize_step(dependency))
+    end)
+  end
 
   @doc """
   Deserializes a persisted trigger name back to the declared workflow trigger.

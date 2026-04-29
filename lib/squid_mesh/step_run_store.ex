@@ -76,6 +76,18 @@ defmodule SquidMesh.StepRunStore do
     |> repo.one()
   end
 
+  @doc """
+  Lists the completed step identifiers for one workflow run.
+  """
+  @spec completed_steps(module(), Ecto.UUID.t()) :: [String.t()]
+  def completed_steps(repo, run_id) do
+    StepRun
+    |> where([step_run], step_run.run_id == ^run_id and step_run.status == "completed")
+    |> order_by([step_run], asc: step_run.inserted_at)
+    |> select([step_run], step_run.step)
+    |> repo.all()
+  end
+
   @spec insert_step_run(module(), map()) :: {:ok, StepRun.t()} | {:error, Ecto.Changeset.t()}
   defp insert_step_run(repo, attrs) do
     %StepRun{}

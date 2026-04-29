@@ -42,6 +42,36 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert inspected_run == run
   end
 
+  test "executes a dependency-based workflow through the host boundary" do
+    attrs = %{
+      account_id: "acct_123",
+      invoice_id: "inv_456",
+      attempt_id: "attempt_789"
+    }
+
+    assert {:ok, run} = WorkflowRuns.start_dependency_recovery(attrs)
+    assert run.current_step == :load_account
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+
+    assert completed_run.status == :completed
+    assert completed_run.context.account == %{id: "acct_123", tier: "standard"}
+
+    assert completed_run.context.invoice == %{
+             id: "inv_456",
+             account_id: "acct_123",
+             attempt_id: "attempt_789"
+           }
+
+    assert completed_run.context.notification == %{
+             channel: "email",
+             account_id: "acct_123",
+             invoice_id: "inv_456",
+             account_tier: "standard"
+           }
+  end
+
   test "runs the documented smoke path" do
     assert %SquidMesh.Run{} = run = Smoke.run!()
     assert run.status == :completed

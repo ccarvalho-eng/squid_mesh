@@ -1,0 +1,26 @@
+defmodule MinimalHostApp.Workflows.DependencyRecovery do
+  @moduledoc """
+  Example dependency-based workflow with two roots and one join step.
+  """
+
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :dependency_recovery do
+      manual()
+
+      payload do
+        field(:account_id, :string)
+        field(:invoice_id, :string)
+        field(:attempt_id, :string)
+      end
+    end
+
+    step(:load_account, MinimalHostApp.Steps.LoadAccount)
+    step(:load_invoice, MinimalHostApp.Steps.LoadInvoice)
+
+    step(:prepare_notification, MinimalHostApp.Steps.PrepareNotification,
+      after: [:load_account, :load_invoice]
+    )
+  end
+end

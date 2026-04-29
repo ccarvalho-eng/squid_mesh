@@ -26,6 +26,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           | {:dispatch_failed, term()}
           | {:invalid_run, Ecto.Changeset.t()}
           | {:invalid_transition, Run.status(), Run.status()}
+          | {:no_runnable_step, [atom()]}
           | {:unknown_transition, atom(), atom()}
           | {:unknown_step, atom()}
           | {:missing_config, [atom()]}
@@ -79,7 +80,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
     with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
          {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, output),
-         {:ok, target} <- WorkflowDefinition.transition_target(definition, run.current_step, :ok) do
+         {:ok, target} <- success_target(config.repo, definition, run) do
       Observability.emit_step_completed(run, run.current_step, attempt_number, duration)
       advance_after_success(config, run, target, output, execution_opts)
     end
@@ -150,6 +151,16 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     context = Map.merge(run.context || %{}, output)
     dispatch_opts = Keyword.take(execution_opts, [:schedule_in])
     finalize_success(config, run.id, context, {:next_step, next_step, dispatch_opts})
+  end
+
+  defp success_target(repo, definition, run) do
+    if WorkflowDefinition.dependency_mode?(definition) do
+      repo
+      |> StepRunStore.completed_steps(run.id)
+      |> then(&WorkflowDefinition.next_step_after_success(definition, run.current_step, &1))
+    else
+      WorkflowDefinition.transition_target(definition, run.current_step, :ok)
+    end
   end
 
   defp finalize_success(config, run_id, context, :complete) do

@@ -207,6 +207,36 @@ defmodule Planning.Workflows.PlanLinearTask do
 end
 ```
 
+## Dependency Workflow Example: Join Two Preparation Steps
+
+```elixir
+defmodule Notifications.Workflows.PrepareReminder do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :prepare_reminder do
+      manual()
+
+      payload do
+        field(:account_id, :string)
+        field(:invoice_id, :string)
+      end
+    end
+
+    step(:load_account, Notifications.Steps.LoadAccount)
+    step(:load_invoice, Notifications.Steps.LoadInvoice)
+    step(:prepare_notification, Notifications.Steps.PrepareNotification,
+      after: [:load_account, :load_invoice]
+    )
+  end
+end
+```
+
+`after: [...]` makes a step runnable only after every named dependency
+completes successfully. Today, ready dependency roots still execute one at a
+time in deterministic declaration order; parallel dispatch is a follow-up
+runtime slice.
+
 ## Step Example
 
 ```elixir
