@@ -36,6 +36,19 @@ recover durable workflows in code.
 > [Production Readiness](docs/production_readiness.md) for the current
 > checklist and remaining bar.
 
+## What You Get
+
+- declarative workflows with manual and cron triggers
+- durable run, step, and attempt history in Postgres
+- step-level retries, delays, replay, and inspection on top of your existing `Oban`
+- built-in steps like `:log` and `:wait`, plus custom steps with `Jido.Action`
+
+## Runtime Shape
+
+- Squid Mesh owns workflow structure, payload validation, runtime state, and retry policy
+- Oban owns durable execution, queueing, delayed scheduling, and redelivery
+- your host app keeps its existing `Repo`, `Oban`, and application boundaries
+
 ## Quick Start
 
 Requirements:
@@ -136,6 +149,17 @@ end
 
 The step modules can stay small and domain-focused, while Squid Mesh handles
 durable state, scheduling through Oban, retries, and run inspection.
+
+Start the workflow through the public API and inspect the result with history:
+
+```elixir
+{:ok, run} =
+  SquidMesh.start_run(Content.Workflows.PostDailyDigest, %{
+    discord_webhook_url: webhook_url
+  })
+
+SquidMesh.inspect_run(run.id, include_history: true)
+```
 
 ## Documentation
 
