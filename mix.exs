@@ -46,6 +46,7 @@ defmodule SquidMesh.MixProject do
     [
       main: "readme",
       extras: [
+        "docs/index.md",
         "README.md",
         "docs/architecture.md",
         "docs/compatibility.md",

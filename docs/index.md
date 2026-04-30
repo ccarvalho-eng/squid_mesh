@@ -1,0 +1,39 @@
+# Documentation
+
+This index is the starting point for Squid Mesh setup, integration, and runtime
+reference material.
+
+## Start Here
+
+- [Host app integration](host_app_integration.md) for install, config, and the
+  host-app contract
+- [Workflow authoring](workflow_authoring.md) for the workflow DSL, payloads,
+  steps, transitions, and cron triggers
+- [Compatibility matrix](compatibility.md) for the supported baseline
+
+## Common Use Cases
+
+- post an RSS digest to Discord on a schedule
+- turn a Linear issue into a planning workflow for your team
+- run recovery, approval, and back-office flows inside Phoenix apps
+
+## Operations
+
+- [Operations guide](operations.md) for queue sizing, retries, waits, and cron
+  activation
+- [Observability](observability.md) for telemetry and runtime visibility
+- [Production readiness](production_readiness.md) for the current release bar
+
+## Architecture
+
+- [Architecture](architecture.md) for runtime responsibilities and execution
+  flow
+- [Tool adapters](tool_adapters.md) for integration boundaries
+- [ADR index](adr/index.md) for design decisions and historical context
+
+## Examples
+
+- [Workflow authoring](workflow_authoring.md) for manual, cron, and
+  dependency-based workflow examples
+- [Minimal host app](../examples/minimal_host_app/README.md) for a standalone
+  development harness

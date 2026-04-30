@@ -67,6 +67,36 @@ Current boundary:
 - manual triggers are runnable through the public API
 - cron triggers are activated by opting workflows into `SquidMesh.Plugins.Cron`
 
+Cron workflow example:
+
+```elixir
+defmodule Content.Workflows.PostDailyDigest do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :daily_digest do
+      cron("0 9 * * 1-5", timezone: "Etc/UTC")
+
+      payload do
+        field(:feed_url, :string, default: "https://example.com/feed.xml")
+        field(:discord_webhook_url, :string)
+        field(:posted_on, :string, default: {:today, :iso8601})
+      end
+    end
+
+    step(:fetch_feed, Content.Steps.FetchFeed)
+    step(:build_digest, Content.Steps.BuildDigest)
+    step(:post_to_discord, Content.Steps.PostToDiscord,
+      retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
+    )
+
+    transition(:fetch_feed, on: :ok, to: :build_digest)
+    transition(:build_digest, on: :ok, to: :post_to_discord)
+    transition(:post_to_discord, on: :ok, to: :complete)
+  end
+end
+```
+
 Host-app opt-in example:
 
 ```elixir
@@ -204,6 +234,26 @@ They can still express a sequential chain such as `step_2 after: [:step_1]` and
 `step_3 after: [:step_2]`, but if the workflow is only a straight ordered path,
 `transition/2` is usually the clearer fit because it states the next step
 directly.
+
+Use `transition/2` when the workflow is a single ordered path and each step
+chooses the next step by outcome. Use `after: [...]` when a step should wait
+for one or more prerequisite steps, especially when multiple root steps fan in
+to a join step.
+
+If the workflow is just a straight line, prefer `transition/2` because it makes
+the step-to-step path explicit. Use `after: [...]` when you want to model the
+workflow as a dependency graph, including joins or a mix of independent roots
+and later dependent steps.
+
+In the example above, `:load_account` and `:load_invoice` are independent root
+steps. Squid Mesh does not need a transition between them because neither one
+depends on the other. Today they run one at a time in declaration order, and
+`:prepare_notification` becomes runnable only after both have completed.
+
+`after: [...]` makes a step runnable only after every named dependency
+completes successfully. Omit the option entirely for root steps; `after: []` is
+not valid because it changes execution semantics without adding a dependency
+edge. Dependency workflows do not mix with `transition/2` in this slice.
 
 Current dependency validation requires:
 
