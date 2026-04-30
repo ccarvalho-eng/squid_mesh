@@ -108,5 +108,39 @@ in the example workflow.
 The reference workflow and step modules live in:
 
 - `lib/minimal_host_app/workflows/payment_recovery.ex`
+- `lib/minimal_host_app/workflows/dependency_recovery.ex`
 - `lib/minimal_host_app/workflows/daily_digest.ex`
 - `lib/minimal_host_app/steps/`
+
+## Dependency Workflow Example
+
+The example app also includes a dependency-based workflow with two roots and a
+join step:
+
+```elixir
+defmodule MinimalHostApp.Workflows.DependencyRecovery do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :dependency_recovery do
+      manual()
+
+      payload do
+        field(:account_id, :string)
+        field(:invoice_id, :string)
+        field(:attempt_id, :string)
+      end
+    end
+
+    step(:load_account, MinimalHostApp.Steps.LoadAccount)
+    step(:load_invoice, MinimalHostApp.Steps.LoadInvoice)
+    step(:prepare_notification, MinimalHostApp.Steps.PrepareNotification,
+      after: [:load_account, :load_invoice]
+    )
+  end
+end
+```
+
+This workflow is exercised through `MinimalHostApp.WorkflowRuns.start_dependency_recovery/1`
+and the example app test suite. Ready dependency roots still execute one at a
+time today; `after: [...]` guarantees that the join step waits for both inputs.

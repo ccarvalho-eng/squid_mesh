@@ -21,6 +21,12 @@ defmodule MinimalHostApp.WorkflowRuns do
           required(:attempt_id) => String.t()
         }
 
+  @type dependency_recovery_attrs :: %{
+          required(:account_id) => String.t(),
+          required(:invoice_id) => String.t(),
+          required(:attempt_id) => String.t()
+        }
+
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
@@ -37,6 +43,12 @@ defmodule MinimalHostApp.WorkflowRuns do
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_retry_verification(attrs) when is_map(attrs) do
     SquidMesh.start_run(MinimalHostApp.Workflows.RetryVerification, :retry_verification, attrs)
+  end
+
+  @spec start_dependency_recovery(dependency_recovery_attrs()) ::
+          {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def start_dependency_recovery(attrs) when is_map(attrs) do
+    SquidMesh.start_run(MinimalHostApp.Workflows.DependencyRecovery, :dependency_recovery, attrs)
   end
 
   @spec inspect_payment_recovery(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}

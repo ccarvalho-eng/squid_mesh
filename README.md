@@ -211,6 +211,57 @@ defmodule Planning.Workflows.PlanLinearTask do
 end
 ```
 
+## Dependency Workflow Example: Join Two Preparation Steps
+
+```elixir
+defmodule Notifications.Workflows.PrepareReminder do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :prepare_reminder do
+      manual()
+
+      payload do
+        field(:account_id, :string)
+        field(:invoice_id, :string)
+      end
+    end
+
+    step(:load_account, Notifications.Steps.LoadAccount)
+    step(:load_invoice, Notifications.Steps.LoadInvoice)
+    step(:prepare_notification, Notifications.Steps.PrepareNotification,
+      after: [:load_account, :load_invoice]
+    )
+  end
+end
+```
+
+Use `transition/2` when the workflow is a single ordered path and each step
+chooses the next step by outcome. Use `after: [...]` when a step should wait
+for one or more prerequisite steps, especially when multiple root steps fan in
+to a join step.
+
+If the workflow is just a straight line, prefer `transition/2` because it makes
+the step-to-step path explicit. Use `after: [...]` when you want to model the
+workflow as a dependency graph, including joins or a mix of independent roots
+and later dependent steps.
+
+In the example above, `:load_account` and `:load_invoice` are independent root
+steps. Squid Mesh does not need a transition between them because neither one
+depends on the other. Today they run one at a time in declaration order, and
+`:prepare_notification` becomes runnable only after both have completed.
+
+`after: [...]` makes a step runnable only after every named dependency
+completes successfully. Omit the option entirely for root steps; `after: []` is
+not valid because it changes execution semantics without adding a dependency
+edge. Dependency workflows do not mix with `transition/2` in this slice.
+
+Today, ready dependency roots still execute one at a time in phase order. The
+current dependency scheduler resolves readiness from persisted step history
+after each successful dependency step, so this slice is aimed at small and
+medium graph workflows; parallel dispatch and larger-graph optimization are
+follow-up runtime work.
+
 ## Step Example
 
 ```elixir

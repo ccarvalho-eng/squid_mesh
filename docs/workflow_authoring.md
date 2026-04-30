@@ -10,6 +10,7 @@ Workflows are Elixir modules that `use SquidMesh.Workflow` and declare:
 - one payload contract
 - one or more steps
 - transitions between steps
+- optional dependency-based `after: [...]` joins on steps that wait for other work
 - optional retry policy on the steps that own side effects
 
 ```elixir
@@ -186,6 +187,39 @@ When a step succeeds:
 That means later steps can use values produced by earlier steps without manual
 state persistence in the host application.
 
+## Dependency-Based Steps
+
+Steps can also wait on explicit dependencies instead of success transitions:
+
+```elixir
+step(:load_account, Billing.Steps.LoadAccount)
+step(:load_invoice, Billing.Steps.LoadInvoice)
+step(:prepare_notification, Billing.Steps.PrepareNotification,
+  after: [:load_account, :load_invoice]
+)
+```
+
+Choose dependency-based steps when you want to model prerequisites and joins.
+They can still express a sequential chain such as `step_2 after: [:step_1]` and
+`step_3 after: [:step_2]`, but if the workflow is only a straight ordered path,
+`transition/2` is usually the clearer fit because it states the next step
+directly.
+
+Current dependency validation requires:
+
+- every `after:` reference names a declared step
+- the dependency graph is acyclic
+- workflows may define multiple entry steps when dependency execution is used
+- `after: []` is rejected because it changes execution semantics without adding an edge
+- dependency-based workflows cannot also declare `transition/2`
+
+Current execution boundary:
+
+- a step becomes runnable only after every dependency has completed successfully
+- multiple ready root steps are executed one at a time in deterministic phase order today
+- the current scheduler resolves dependency readiness from persisted step history after each successful dependency step, so it is intended for small and medium graph workflows
+- Squid Mesh does not yet dispatch multiple ready steps in parallel
+
 ## Transitions
 
 Transitions define the path through the workflow.
@@ -199,7 +233,8 @@ Current workflow validation requires:
 
 - at least one step
 - exactly one trigger
-- exactly one workflow entry step
+- exactly one workflow entry step for transition-based workflows
+- dependency-based workflows expose `entry_steps` plus `initial_step`; the singular `entry_step` is `nil`
 - transitions that reference known steps
 
 ## Retries And Backoff
@@ -252,12 +287,13 @@ Supported today:
 
 - one trigger per workflow
 - sequential transitions
+- dependency-based joins with `after: [...]`
 - durable retries and replay
 - built-in `:wait` and `:log` steps
 
 Not implemented today:
 
-- parallel step execution
+- parallel dispatch of multiple ready steps
 - conditional branching beyond transition outcomes
 - dynamic cron registration after boot
 - custom reclaim logic for interrupted in-flight step ownership
