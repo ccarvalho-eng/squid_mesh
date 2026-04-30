@@ -43,16 +43,6 @@ defp deps do
 end
 ```
 
-If you are evaluating directly from Git instead of Hex:
-
-```elixir
-defp deps do
-  [
-    {:squid_mesh, github: "ccarvalho-eng/squid_mesh", tag: "v0.1.0-alpha.1"}
-  ]
-end
-```
-
 Then install Squid Mesh's library-owned migrations into the host app:
 
 ```sh
@@ -89,6 +79,15 @@ config :squid_mesh,
   ]
 ```
 
+The host application's `Oban` config must also include the queue Squid Mesh is
+configured to use. For the default queue name:
+
+```elixir
+config :my_app, Oban,
+  repo: MyApp.Repo,
+  queues: [squid_mesh: 10]
+```
+
 Required keys:
 
 - `:repo` - the Ecto repo Squid Mesh uses for persisted runtime state
@@ -110,8 +109,9 @@ For a new integration, the shortest path to a successful first run is:
 5. Run `mix squid_mesh.install`.
 6. Run `mix ecto.migrate`.
 7. Configure `:squid_mesh` with the host app's `Repo` and `Oban` queue.
-8. Start the host app's `Repo` and `Oban` under supervision.
-9. Start one workflow through the public API and inspect it with history enabled.
+8. Configure the host app's `Oban` queues to include `:squid_mesh`.
+9. Start the host app's `Repo` and `Oban` under supervision.
+10. Start one workflow through the public API and inspect it with history enabled.
 
 ## Existing Application Setup
 
