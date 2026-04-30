@@ -232,12 +232,25 @@ defmodule Notifications.Workflows.PrepareReminder do
 end
 ```
 
+Use `transition/2` when the workflow is a single ordered path and each step
+chooses the next step by outcome. Use `after: [...]` when a step should wait
+for one or more prerequisite steps, especially when multiple root steps fan in
+to a join step.
+
+In the example above, `:load_account` and `:load_invoice` are independent root
+steps. Squid Mesh does not need a transition between them because neither one
+depends on the other. Today they run one at a time in declaration order, and
+`:prepare_notification` becomes runnable only after both have completed.
+
 `after: [...]` makes a step runnable only after every named dependency
-completes successfully. Dependency workflows do not mix with `transition/2` in
-this slice. Today, ready dependency roots still execute one at a time in phase
-order. The current dependency scheduler resolves readiness from persisted step
-history after each successful dependency step, so this slice is aimed at small
-and medium graph workflows; parallel dispatch and larger-graph optimization are
+completes successfully. Omit the option entirely for root steps; `after: []` is
+not valid because it changes execution semantics without adding a dependency
+edge. Dependency workflows do not mix with `transition/2` in this slice.
+
+Today, ready dependency roots still execute one at a time in phase order. The
+current dependency scheduler resolves readiness from persisted step history
+after each successful dependency step, so this slice is aimed at small and
+medium graph workflows; parallel dispatch and larger-graph optimization are
 follow-up runtime work.
 
 ## Step Example
