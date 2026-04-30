@@ -25,6 +25,10 @@
 Squid Mesh lets Phoenix and OTP applications define, run, inspect, replay, and
 recover durable workflows in code.
 
+> <i>The name blends a squid’s coordinated arms with a mesh of connected
+> workflow steps, capturing the idea of orchestrating many moving parts without
+> rebuilding the coordination layer in every app.</i>
+
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for
 > evaluation, local development, and integration work, but it is not yet
@@ -93,7 +97,47 @@ mix ecto.migrate
 `priv/repo/migrations`. The host app still owns its `Oban` setup and
 `oban_jobs` migration.
 
-### 4. Go deeper
+## Example: Daily RSS To Discord
+
+This kind of workflow is where Squid Mesh gets interesting: one cron trigger,
+typed payload defaults, built-in steps, custom steps, and step-level retry on
+the side effect that actually needs it.
+
+```elixir
+defmodule Content.Workflows.PostDailyDigest do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :daily_digest do
+      cron("0 9 * * 1-5", timezone: "Etc/UTC")
+
+      payload do
+        field(:feed_url, :string, default: "https://example.com/feed.xml")
+        field(:discord_webhook_url, :string)
+        field(:posted_on, :string, default: {:today, :iso8601})
+      end
+    end
+
+    step(:fetch_feed, Content.Steps.FetchFeed)
+    step(:build_digest, Content.Steps.BuildDigest)
+    step(:announce_post, :log, message: "Posting digest to Discord", level: :info)
+
+    step(:post_to_discord, Content.Steps.PostToDiscord,
+      retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
+    )
+
+    transition(:fetch_feed, on: :ok, to: :build_digest)
+    transition(:build_digest, on: :ok, to: :announce_post)
+    transition(:announce_post, on: :ok, to: :post_to_discord)
+    transition(:post_to_discord, on: :ok, to: :complete)
+  end
+end
+```
+
+The step modules can stay small and domain-focused, while Squid Mesh handles
+durable state, scheduling through Oban, retries, and run inspection.
+
+## Documentation
 
 Use the docs index for setup, workflow authoring, operations, and architecture:
 
