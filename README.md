@@ -237,6 +237,11 @@ chooses the next step by outcome. Use `after: [...]` when a step should wait
 for one or more prerequisite steps, especially when multiple root steps fan in
 to a join step.
 
+If the workflow is just a straight line, prefer `transition/2` because it makes
+the step-to-step path explicit. Use `after: [...]` when you want to model the
+workflow as a dependency graph, including joins or a mix of independent roots
+and later dependent steps.
+
 In the example above, `:load_account` and `:load_invoice` are independent root
 steps. Squid Mesh does not need a transition between them because neither one
 depends on the other. Today they run one at a time in declaration order, and

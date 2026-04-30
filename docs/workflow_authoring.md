@@ -199,6 +199,12 @@ step(:prepare_notification, Billing.Steps.PrepareNotification,
 )
 ```
 
+Choose dependency-based steps when you want to model prerequisites and joins.
+They can still express a sequential chain such as `step_2 after: [:step_1]` and
+`step_3 after: [:step_2]`, but if the workflow is only a straight ordered path,
+`transition/2` is usually the clearer fit because it states the next step
+directly.
+
 Current dependency validation requires:
 
 - every `after:` reference names a declared step
