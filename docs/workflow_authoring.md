@@ -67,6 +67,36 @@ Current boundary:
 - manual triggers are runnable through the public API
 - cron triggers are activated by opting workflows into `SquidMesh.Plugins.Cron`
 
+Cron workflow example:
+
+```elixir
+defmodule Content.Workflows.PostDailyDigest do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :daily_digest do
+      cron("0 9 * * 1-5", timezone: "Etc/UTC")
+
+      payload do
+        field(:feed_url, :string, default: "https://example.com/feed.xml")
+        field(:discord_webhook_url, :string)
+        field(:posted_on, :string, default: {:today, :iso8601})
+      end
+    end
+
+    step(:fetch_feed, Content.Steps.FetchFeed)
+    step(:build_digest, Content.Steps.BuildDigest)
+    step(:post_to_discord, Content.Steps.PostToDiscord,
+      retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
+    )
+
+    transition(:fetch_feed, on: :ok, to: :build_digest)
+    transition(:build_digest, on: :ok, to: :post_to_discord)
+    transition(:post_to_discord, on: :ok, to: :complete)
+  end
+end
+```
+
 Host-app opt-in example:
 
 ```elixir

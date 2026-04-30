@@ -11,6 +11,12 @@ reference material.
   steps, transitions, and cron triggers
 - [Compatibility matrix](compatibility.md) for the supported baseline
 
+## Common Use Cases
+
+- post an RSS digest to Discord on a schedule
+- turn a Linear issue into a planning workflow for your team
+- run recovery, approval, and back-office flows inside Phoenix apps
+
 ## Operations
 
 - [Operations guide](operations.md) for queue sizing, retries, waits, and cron
@@ -27,5 +33,7 @@ reference material.
 
 ## Examples
 
+- [Workflow authoring](workflow_authoring.md) for manual, cron, and
+  dependency-based workflow examples
 - [Minimal host app](../examples/minimal_host_app/README.md) for a standalone
   development harness
