@@ -42,11 +42,17 @@ defmodule SquidMesh.Workflow.Validation do
   def entry_steps!(definition, env) do
     case entry_steps(definition) do
       [] ->
+        description =
+          if dependency_mode?(definition.steps) do
+            "workflow validation failed:\n- dependency-based workflow must define at least one root step"
+          else
+            "workflow validation failed:\n- workflow must define exactly one entry step"
+          end
+
         raise CompileError,
           file: env.file,
           line: env.line,
-          description:
-            "workflow validation failed:\n- workflow must define exactly one entry step"
+          description: description
 
       [entry_step] ->
         [entry_step]
@@ -65,8 +71,10 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   @doc """
-  Returns the single workflow entry step or raises when the workflow does not
-  define exactly one entry step.
+  Returns the single workflow entry step for transition-based workflows.
+
+  Dependency-based workflows return `nil` because they may declare multiple root
+  steps instead of one singular entry step.
   """
   @spec entry_step!(map(), Macro.Env.t()) :: atom() | nil
   def entry_step!(definition, env) do

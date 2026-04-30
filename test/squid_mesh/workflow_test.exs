@@ -298,6 +298,22 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
+  test "entry_steps!/2 raises a dependency-specific error when no root steps exist" do
+    definition = %{
+      steps: [
+        %{name: :load_account, opts: [after: [:send_email]]},
+        %{name: :send_email, opts: [after: [:load_account]]}
+      ],
+      transitions: []
+    }
+
+    assert_raise CompileError,
+                 ~r/dependency-based workflow must define at least one root step/,
+                 fn ->
+                   SquidMesh.Workflow.Validation.entry_steps!(definition, __ENV__)
+                 end
+  end
+
   test "fails when dependency declarations contain a cycle" do
     assert_compile_error(
       """

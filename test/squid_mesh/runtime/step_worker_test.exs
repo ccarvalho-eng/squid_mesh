@@ -450,7 +450,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                "workflow step completed but no runnable next step was found"
 
       assert failed_run.last_error.failed_step == :load_invoice
-      assert failed_run.last_error.pending_steps == ["send_email"]
+      assert failed_run.last_error.pending_steps == [:send_email]
     end
 
     test "marks the run failed if dependency resolution raises after the step succeeds" do

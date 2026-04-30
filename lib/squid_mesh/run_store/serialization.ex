@@ -107,6 +107,7 @@ defmodule SquidMesh.RunStore.Serialization do
     |> deserialize_map()
     |> maybe_update_error_step(:next_step, definition)
     |> maybe_update_error_step(:failed_step, definition)
+    |> maybe_update_error_steps(:pending_steps, definition)
   end
 
   defp to_public_step_runs(%RunRecord{step_runs: %Ecto.Association.NotLoaded{}}, _definition),
@@ -182,6 +183,16 @@ defmodule SquidMesh.RunStore.Serialization do
     case Map.fetch(error, key) do
       {:ok, step} -> Map.put(error, key, deserialize_error_step(definition, step))
       :error -> error
+    end
+  end
+
+  defp maybe_update_error_steps(error, key, definition) do
+    case Map.fetch(error, key) do
+      {:ok, steps} when is_list(steps) ->
+        Map.put(error, key, Enum.map(steps, &deserialize_error_step(definition, &1)))
+
+      _other ->
+        error
     end
   end
 
