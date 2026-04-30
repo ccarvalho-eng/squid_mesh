@@ -235,6 +235,26 @@ They can still express a sequential chain such as `step_2 after: [:step_1]` and
 `transition/2` is usually the clearer fit because it states the next step
 directly.
 
+Use `transition/2` when the workflow is a single ordered path and each step
+chooses the next step by outcome. Use `after: [...]` when a step should wait
+for one or more prerequisite steps, especially when multiple root steps fan in
+to a join step.
+
+If the workflow is just a straight line, prefer `transition/2` because it makes
+the step-to-step path explicit. Use `after: [...]` when you want to model the
+workflow as a dependency graph, including joins or a mix of independent roots
+and later dependent steps.
+
+In the example above, `:load_account` and `:load_invoice` are independent root
+steps. Squid Mesh does not need a transition between them because neither one
+depends on the other. Today they run one at a time in declaration order, and
+`:prepare_notification` becomes runnable only after both have completed.
+
+`after: [...]` makes a step runnable only after every named dependency
+completes successfully. Omit the option entirely for root steps; `after: []` is
+not valid because it changes execution semantics without adding a dependency
+edge. Dependency workflows do not mix with `transition/2` in this slice.
+
 Current dependency validation requires:
 
 - every `after:` reference names a declared step
