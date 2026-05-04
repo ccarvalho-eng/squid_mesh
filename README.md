@@ -63,7 +63,7 @@ Requirements:
 ```elixir
 defp deps do
   [
-    {:squid_mesh, "~> 0.1.0-alpha.1"}
+    {:squid_mesh, "~> 0.1.0-alpha.2"}
   ]
 end
 ```
@@ -75,7 +75,7 @@ explicitly as well:
 defp deps do
   [
     {:jido, "~> 2.0"},
-    {:squid_mesh, "~> 0.1.0-alpha.1"}
+    {:squid_mesh, "~> 0.1.0-alpha.2"}
   ]
 end
 ```
