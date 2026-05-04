@@ -149,6 +149,7 @@ defmodule SquidMesh.Workflow.Validation do
     |> validate_payload_defaults(payload_fields)
     |> require_steps(step_names)
     |> validate_built_in_steps(definition.steps)
+    |> validate_step_mappings(definition.steps)
     |> validate_unique_step_names(step_names)
     |> validate_dependency_graph(definition.steps, step_names)
     |> validate_transitions(definition.transitions, step_names)
@@ -298,6 +299,44 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp validate_built_in_step(errors, _step), do: errors
+
+  defp validate_step_mappings(errors, steps) do
+    Enum.reduce(steps, errors, fn %{name: name, opts: opts}, acc ->
+      acc
+      |> validate_step_input_mapping(name, opts)
+      |> validate_step_output_mapping(name, opts)
+    end)
+  end
+
+  defp validate_step_input_mapping(errors, name, opts) do
+    case Keyword.get(opts, :input) do
+      nil ->
+        errors
+
+      input_mapping when is_list(input_mapping) ->
+        if input_mapping != [] and Enum.all?(input_mapping, &is_atom/1) do
+          errors
+        else
+          ["step #{inspect(name)} defines an invalid :input mapping" | errors]
+        end
+
+      _other ->
+        ["step #{inspect(name)} defines an invalid :input mapping" | errors]
+    end
+  end
+
+  defp validate_step_output_mapping(errors, name, opts) do
+    case Keyword.get(opts, :output) do
+      nil ->
+        errors
+
+      output_mapping when is_atom(output_mapping) ->
+        errors
+
+      _other ->
+        ["step #{inspect(name)} defines an invalid :output mapping" | errors]
+    end
+  end
 
   defp validate_wait_step(errors, %{name: name, opts: opts}) do
     duration = Keyword.get(opts, :duration)

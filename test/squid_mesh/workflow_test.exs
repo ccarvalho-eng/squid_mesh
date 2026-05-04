@@ -72,6 +72,41 @@ defmodule SquidMesh.WorkflowTest do
     assert definition.entry_step == nil
   end
 
+  test "supports explicit step input and output mapping options" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithStepMappings do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+
+            payload do
+              field(:account_id, :string)
+              field(:invoice_id, :string)
+            end
+          end
+
+          step(:load_account, WorkflowWithStepMappings.LoadAccount,
+            input: [:account_id],
+            output: :account
+          )
+
+          transition(:load_account, on: :ok, to: :complete)
+        end
+      end
+      """)
+
+    assert module.workflow_definition().steps == [
+             %{
+               name: :load_account,
+               module: Module.concat(module, LoadAccount),
+               opts: [input: [:account_id], output: :account]
+             }
+           ]
+  end
+
   test "supports introspection of definition segments" do
     assert InvoiceReminder.__workflow__(:steps) == InvoiceReminder.workflow_definition().steps
     assert InvoiceReminder.__workflow__(:payload) == InvoiceReminder.workflow_definition().payload
@@ -219,6 +254,44 @@ defmodule SquidMesh.WorkflowTest do
       end
       """,
       "retry for :send_email defines an invalid :backoff option"
+    )
+  end
+
+  test "fails when step input mapping is not a non-empty atom list" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidStepInput do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:send_email, WorkflowWithInvalidStepInput.SendEmail, input: "account_id")
+        end
+      end
+      """,
+      "step :send_email defines an invalid :input mapping"
+    )
+  end
+
+  test "fails when step output mapping is not an atom" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidStepOutput do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:send_email, WorkflowWithInvalidStepOutput.SendEmail, output: [:delivery])
+        end
+      end
+      """,
+      "step :send_email defines an invalid :output mapping"
     )
   end
 

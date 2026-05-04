@@ -60,8 +60,10 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       ) do
     duration = System.monotonic_time() - started_at
 
-    with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
-         {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, output) do
+    with {:ok, mapped_output} <-
+           WorkflowDefinition.apply_output_mapping(definition, step_name, output),
+         {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
+         {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, mapped_output) do
       Observability.emit_step_completed(run, step_name, attempt_number, duration)
 
       case success_resolution(config.repo, definition, run, step_name) do
@@ -73,7 +75,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
               latest_run,
               step_name,
               target,
-              output,
+              mapped_output,
               execution_opts
             )
 
@@ -87,7 +89,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
             config.repo,
             run.id,
             fn current_run ->
-              %{context: merged_context(current_run, output)}
+              %{context: merged_context(current_run, mapped_output)}
             end,
             :update
           )
@@ -98,7 +100,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
             config.repo,
             run,
             step_name,
-            merged_context(latest_run, output),
+            merged_context(latest_run, mapped_output),
             reason
           )
       end

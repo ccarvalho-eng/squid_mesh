@@ -87,10 +87,12 @@ defmodule SquidMesh.Runtime.Dispatcher do
   defp maybe_schedule_pending_step(_config, _run, _step, false), do: :ok
 
   defp maybe_schedule_pending_step(config, run, step, true) do
-    case StepRunStore.schedule_step(config.repo, run.id, step, scheduled_step_input(config, run)) do
-      {:ok, _step_run, :schedule} -> :ok
-      {:ok, step_run, :skip} -> {:skip, step_run}
-      {:error, reason} -> {:error, reason}
+    with {:ok, input} <- scheduled_step_input(config, run, step) do
+      case StepRunStore.schedule_step(config.repo, run.id, step, input) do
+        {:ok, _step_run, :schedule} -> :ok
+        {:ok, step_run, :skip} -> {:skip, step_run}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
@@ -119,15 +121,22 @@ defmodule SquidMesh.Runtime.Dispatcher do
 
   defp maybe_put_schedule_in(opts, _schedule_in), do: opts
 
-  defp scheduled_step_input(%Config{repo: repo}, %Run{workflow: workflow} = run)
+  defp scheduled_step_input(%Config{repo: repo}, %Run{workflow: workflow} = run, step_name)
        when is_atom(workflow) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         true <- WorkflowDefinition.dependency_mode?(definition) do
-      StepInput.build_dependency_step_input(repo, run)
-    else
-      _other -> StepInput.build_step_input(run)
+         {:ok, input_mapping} <- WorkflowDefinition.step_input_mapping(definition, step_name) do
+      {:ok, build_scheduled_step_input(definition, repo, run, input_mapping)}
     end
   end
 
-  defp scheduled_step_input(_config, %Run{} = run), do: StepInput.build_step_input(run)
+  defp scheduled_step_input(_config, %Run{} = run, _step_name),
+    do: {:ok, StepInput.build_step_input(run)}
+
+  defp build_scheduled_step_input(definition, repo, run, input_mapping) do
+    if WorkflowDefinition.dependency_mode?(definition) do
+      StepInput.build_dependency_step_input(repo, run, input_mapping)
+    else
+      StepInput.build_step_input(run, input_mapping)
+    end
+  end
 end

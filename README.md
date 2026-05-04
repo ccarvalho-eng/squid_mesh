@@ -131,12 +131,16 @@ defmodule Content.Workflows.PostDailyDigest do
       end
     end
 
-    step(:fetch_feed, Content.Steps.FetchFeed)
-    step(:build_digest, Content.Steps.BuildDigest)
+    step(:fetch_feed, Content.Steps.FetchFeed, output: :feed)
+    step(:build_digest, Content.Steps.BuildDigest,
+      input: [:feed, :posted_on],
+      output: :digest
+    )
     step(:announce_post, :log, message: "Posting digest to Discord", level: :info)
     step(:record_failed_delivery, Content.Steps.RecordFailedDelivery)
 
     step(:post_to_discord, Content.Steps.PostToDiscord,
+      input: [:digest, :discord_webhook_url],
       retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
     )
 
@@ -153,6 +157,10 @@ end
 The step modules can stay small and domain-focused, while Squid Mesh handles
 durable state, scheduling through Oban, retries, failure routing after retry
 exhaustion, and run inspection.
+
+When a step needs a narrower contract than the whole payload plus accumulated
+context, use `input: [...]` to select keys and `output: :key` to namespace the
+returned map for downstream steps.
 
 Start the workflow through the public API and inspect the result with history:
 

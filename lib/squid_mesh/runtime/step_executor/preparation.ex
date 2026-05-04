@@ -26,8 +26,10 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
     case resolve_execution_step(config.repo, definition, run, expected_step) do
       {:ok, execution_step} ->
         with {:ok, step} <- WorkflowDefinition.step(definition, execution_step),
+             {:ok, input_mapping} <-
+               WorkflowDefinition.step_input_mapping(definition, execution_step),
              {:ok, running_run} <- ensure_running(config.repo, run, definition, execution_step),
-             candidate_input = StepInput.build_step_input(running_run),
+             candidate_input = StepInput.build_step_input(running_run, input_mapping),
              {:ok, step_run, execution_mode} <-
                StepRunStore.begin_step(
                  config.repo,
