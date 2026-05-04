@@ -7,7 +7,7 @@ defmodule SquidMesh.Workflow.Validation do
   """
 
   @terminal_transitions [:complete]
-  @supported_transition_outcomes [:ok]
+  @supported_transition_outcomes [:ok, :error]
   @allowed_trigger_types [:manual, :cron]
   @built_in_step_kinds [:wait, :log]
   @log_levels [:debug, :info, :warning, :error]
@@ -349,11 +349,15 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp validate_transitions(errors, transitions, step_names) do
-    Enum.reduce(transitions, errors, fn transition, acc ->
-      acc
-      |> validate_transition_from(transition, step_names)
-      |> validate_transition_outcome(transition)
-      |> validate_transition_to(transition, step_names)
+    errors
+    |> validate_duplicate_transitions(transitions)
+    |> then(fn acc ->
+      Enum.reduce(transitions, acc, fn transition, reduce_acc ->
+        reduce_acc
+        |> validate_transition_from(transition, step_names)
+        |> validate_transition_outcome(transition)
+        |> validate_transition_to(transition, step_names)
+      end)
     end)
   end
 
@@ -390,6 +394,21 @@ defmodule SquidMesh.Workflow.Validation do
     else
       ["transition targets unknown step: #{inspect(to)}" | errors]
     end
+  end
+
+  defp validate_duplicate_transitions(errors, transitions) do
+    transitions
+    |> Enum.group_by(fn %{from: from, on: outcome} -> {from, outcome} end)
+    |> Enum.reduce(errors, fn
+      {{_from, _outcome}, [_single_transition]}, acc ->
+        acc
+
+      {{from, outcome}, [_first, _second | _rest]}, acc ->
+        [
+          "duplicate transition declared from #{inspect(from)} on outcome #{inspect(outcome)}"
+          | acc
+        ]
+    end)
   end
 
   defp validate_retries(errors, retries, step_names) do

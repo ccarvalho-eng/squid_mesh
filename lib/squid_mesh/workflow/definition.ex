@@ -8,6 +8,7 @@ defmodule SquidMesh.Workflow.Definition do
   """
 
   @type built_in_step_kind :: :wait | :log
+  @type transition_outcome :: :ok | :error
   @type payload_field :: %{name: atom(), type: atom(), opts: keyword()}
   @type trigger_type :: :manual | :cron
   @type trigger :: %{
@@ -17,7 +18,7 @@ defmodule SquidMesh.Workflow.Definition do
           payload: [payload_field()]
         }
   @type step :: %{name: atom(), module: module() | built_in_step_kind(), opts: keyword()}
-  @type transition :: %{from: atom(), on: atom(), to: atom()}
+  @type transition :: %{from: atom(), on: transition_outcome(), to: atom()}
   @type retry :: %{step: atom(), opts: keyword()}
 
   @type t :: %{
@@ -201,7 +202,7 @@ defmodule SquidMesh.Workflow.Definition do
   @doc """
   Resolves the transition target for a step outcome.
   """
-  @spec transition_target(t(), atom(), atom()) ::
+  @spec transition_target(t(), atom(), transition_outcome()) ::
           {:ok, transition_target()} | {:error, {:unknown_transition, atom(), atom()}}
   def transition_target(definition, from_step, outcome)
       when is_atom(from_step) and is_atom(outcome) do
