@@ -217,6 +217,13 @@ When a step succeeds:
 That means later steps can use values produced by earlier steps without manual
 state persistence in the host application.
 
+Current boundary:
+
+- run context is still a flat merged map
+- dependency-based workflows with parallel branches should emit disjoint top-level keys
+- if multiple parallel branches write the same key, the result is not a stable workflow contract today
+- explicit step input and output mapping belongs in a later slice
+
 ## Dependency-Based Steps
 
 Steps can also wait on explicit dependencies instead of success transitions:
@@ -247,7 +254,7 @@ and later dependent steps.
 
 In the example above, `:load_account` and `:load_invoice` are independent root
 steps. Squid Mesh does not need a transition between them because neither one
-depends on the other. Today they run one at a time in declaration order, and
+depends on the other. They may be enqueued independently, and
 `:prepare_notification` becomes runnable only after both have completed.
 
 `after: [...]` makes a step runnable only after every named dependency
@@ -266,9 +273,9 @@ Current dependency validation requires:
 Current execution boundary:
 
 - a step becomes runnable only after every dependency has completed successfully
-- multiple ready root steps are executed one at a time in deterministic phase order today
+- multiple ready root steps can be enqueued independently while later phases still respect deterministic dependency order
 - the current scheduler resolves dependency readiness from persisted step history after each successful dependency step, so it is intended for small and medium graph workflows
-- Squid Mesh does not yet dispatch multiple ready steps in parallel
+- downstream work is only enqueued from a locked run-progression boundary, so a sibling terminal failure prevents later dispatch
 
 ## Transitions
 

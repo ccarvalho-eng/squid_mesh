@@ -6,6 +6,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.BackoffWorkflow
   alias __MODULE__.BuiltInWorkflow
   alias __MODULE__.CancellationCompletionWorkflow
+  alias __MODULE__.ConcurrentDependencyFailureWorkflow
   alias __MODULE__.ConcurrentDependencyWorkflow
   alias __MODULE__.DependencyFailureWorkflow
   alias __MODULE__.DependencyWorkflow
@@ -339,6 +340,79 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert completed_run.context.account == %{id: "acct_123", tier: "pro"}
       assert completed_run.context.invoice == %{id: "inv_456", status: "open"}
       assert completed_run.context.delivery.invoice_id == "inv_456"
+    end
+
+    test "does not dispatch dependency join work after a sibling terminally fails the run" do
+      :persistent_term.put({ConcurrentDependencyFailureWorkflow, :test_pid}, self())
+
+      on_exit(fn ->
+        :persistent_term.erase({ConcurrentDependencyFailureWorkflow, :test_pid})
+      end)
+
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} =
+               SquidMesh.start_run(ConcurrentDependencyFailureWorkflow, input, repo: Repo)
+
+      account_task =
+        Task.async(fn ->
+          StepWorker.perform(%Job{
+            args: %{"run_id" => run.id, "step" => "load_account"}
+          })
+        end)
+
+      invoice_task =
+        Task.async(fn ->
+          StepWorker.perform(%Job{
+            args: %{"run_id" => run.id, "step" => "load_invoice"}
+          })
+        end)
+
+      assert_receive {:concurrent_root_started, :load_account, account_pid}
+      assert_receive {:concurrent_root_started, :load_invoice, invoice_pid}
+
+      send(invoice_pid, :continue)
+
+      assert :ok = Task.await(invoice_task)
+
+      assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :load_invoice
+
+      send(account_pid, :continue)
+
+      assert :ok = Task.await(account_task)
+
+      assert {:ok, persisted_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert persisted_run.status == :failed
+      assert persisted_run.current_step == :load_invoice
+      refute Map.has_key?(persisted_run.context, :account)
+      refute Map.has_key?(persisted_run.context, :delivery)
+
+      assert 0 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' = 'send_email'", job.args)
+                 ),
+                 :count
+               )
+
+      step_runs =
+        Repo.all(
+          from(step_run in StepRun,
+            where: step_run.run_id == ^run.id,
+            order_by: [asc: step_run.inserted_at]
+          )
+        )
+
+      assert Enum.map(step_runs, &{&1.step, &1.status}) == [
+               {"load_account", "completed"},
+               {"load_invoice", "failed"}
+             ]
     end
 
     test "persists failed step execution and marks the run failed when no retry is declared" do
@@ -1082,6 +1156,89 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     defp notify_test(step_name) do
       case :persistent_term.get({ConcurrentDependencyWorkflow, :test_pid}, nil) do
+        pid when is_pid(pid) -> send(pid, {:concurrent_root_started, step_name, self()})
+        _other -> :ok
+      end
+    end
+
+    defp await_continue do
+      receive do
+        :continue -> :ok
+      after
+        1_000 -> raise "timed out waiting for concurrent root release"
+      end
+    end
+  end
+
+  defmodule ConcurrentDependencyFailureWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_account, ConcurrentDependencyFailureWorkflow.LoadAccount)
+      step(:load_invoice, ConcurrentDependencyFailureWorkflow.LoadInvoice)
+      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+    end
+  end
+
+  defmodule ConcurrentDependencyFailureWorkflow.LoadAccount do
+    use Jido.Action,
+      name: "load_account",
+      description: "Completes after the test releases the successful root",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      notify_test(:load_account)
+      await_continue()
+      {:ok, %{account: %{id: account_id, tier: "pro"}}}
+    end
+
+    defp notify_test(step_name) do
+      case :persistent_term.get({ConcurrentDependencyFailureWorkflow, :test_pid}, nil) do
+        pid when is_pid(pid) -> send(pid, {:concurrent_root_started, step_name, self()})
+        _other -> :ok
+      end
+    end
+
+    defp await_continue do
+      receive do
+        :continue -> :ok
+      after
+        1_000 -> raise "timed out waiting for concurrent root release"
+      end
+    end
+  end
+
+  defmodule ConcurrentDependencyFailureWorkflow.LoadInvoice do
+    use Jido.Action,
+      name: "load_invoice",
+      description: "Fails after the test releases the failing root",
+      schema: [
+        invoice_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{invoice_id: invoice_id}, _context) do
+      notify_test(:load_invoice)
+      await_continue()
+
+      {:error,
+       %{message: "invoice unavailable", code: "invoice_unavailable", invoice_id: invoice_id}}
+    end
+
+    defp notify_test(step_name) do
+      case :persistent_term.get({ConcurrentDependencyFailureWorkflow, :test_pid}, nil) do
         pid when is_pid(pid) -> send(pid, {:concurrent_root_started, step_name, self()})
         _other -> :ok
       end

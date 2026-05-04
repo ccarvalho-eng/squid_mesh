@@ -100,10 +100,15 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           :ok
 
         {:retrying, _latest_run} ->
-          RunStore.update_run_with(config.repo, run.id, fn current_run ->
-            %{context: merged_context(current_run, output)}
-          end)
-          |> normalize_run_transition_result()
+          RunStore.progress_run_with(
+            config.repo,
+            run.id,
+            fn current_run ->
+              %{context: merged_context(current_run, output)}
+            end,
+            :update
+          )
+          |> normalize_progress_result()
 
         {:error, latest_run, reason} ->
           mark_failed_after_success_resolution_error(
@@ -228,10 +233,13 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          output,
          _execution_opts
        ) do
-    RunStore.update_run_with(config.repo, run.id, fn current_run ->
-      success_attrs(definition, current_run, output, nil)
-    end)
-    |> normalize_run_transition_result()
+    RunStore.progress_run_with(
+      config.repo,
+      run.id,
+      fn current_run -> success_attrs(definition, current_run, output, nil) end,
+      :update
+    )
+    |> normalize_progress_result()
   end
 
   defp advance_after_success(
@@ -289,24 +297,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   defp finalize_progress(config, run_id, attrs_fun, :complete) do
     attrs_fun = normalize_attrs_fun(attrs_fun)
 
-    with {:ok, latest_run} <- RunStore.get_run(config.repo, run_id) do
-      case latest_run.status do
-        status when status in [:failed, :completed, :cancelled] ->
-          :ok
-
-        :cancelling ->
-          RunStore.transition_run_with(config.repo, run_id, :cancelled, fn current_run ->
-            current_run
-            |> attrs_fun.()
-            |> cancellation_attrs()
-          end)
-          |> normalize_run_transition_result()
-
-        _other_status ->
-          RunStore.transition_run_with(config.repo, run_id, :completed, attrs_fun)
-          |> normalize_run_transition_result()
-      end
-    end
+    RunStore.progress_run_with(config.repo, run_id, attrs_fun, {:transition, :completed})
+    |> normalize_progress_result()
   end
 
   defp finalize_progress(
@@ -317,40 +309,25 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
        ) do
     attrs_fun = normalize_attrs_fun(attrs_fun)
 
-    with {:ok, latest_run} <- RunStore.get_run(config.repo, run_id) do
-      case latest_run.status do
-        status when status in [:failed, :completed, :cancelled] ->
-          :ok
+    case RunStore.progress_run_with(
+           config.repo,
+           run_id,
+           attrs_fun,
+           {:dispatch,
+            fn updated_run ->
+              Dispatcher.dispatch_steps(
+                config,
+                updated_run,
+                next_steps,
+                Keyword.put(dispatch_opts, :schedule_pending, true)
+              )
+            end}
+         ) do
+      {:ok, _result} ->
+        :ok
 
-        :cancelling ->
-          RunStore.transition_run_with(config.repo, run_id, :cancelled, fn current_run ->
-            current_run
-            |> attrs_fun.()
-            |> cancellation_attrs()
-          end)
-          |> normalize_run_transition_result()
-
-        _other_status ->
-          case RunStore.update_and_dispatch_run_with(
-                 config.repo,
-                 run_id,
-                 attrs_fun,
-                 fn updated_run ->
-                   Dispatcher.dispatch_steps(
-                     config,
-                     updated_run,
-                     next_steps,
-                     Keyword.put(dispatch_opts, :schedule_pending, true)
-                   )
-                 end
-               ) do
-            {:ok, _updated_run} ->
-              :ok
-
-            {:error, reason} ->
-              dispatch_error_handler.(reason)
-          end
-      end
+      {:error, reason} ->
+        dispatch_error_handler.(reason)
     end
   end
 
@@ -362,33 +339,18 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
        ) do
     attrs_fun = normalize_attrs_fun(attrs_fun)
 
-    with {:ok, latest_run} <- RunStore.get_run(config.repo, run_id) do
-      case latest_run.status do
-        status when status in [:failed, :completed, :cancelled] ->
-          :ok
+    case RunStore.progress_run_with(
+           config.repo,
+           run_id,
+           attrs_fun,
+           {:dispatch,
+            fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end}
+         ) do
+      {:ok, _result} ->
+        :ok
 
-        :cancelling ->
-          RunStore.transition_run_with(config.repo, run_id, :cancelled, fn current_run ->
-            current_run
-            |> attrs_fun.()
-            |> cancellation_attrs()
-          end)
-          |> normalize_run_transition_result()
-
-        _other_status ->
-          case RunStore.update_and_dispatch_run_with(
-                 config.repo,
-                 run_id,
-                 attrs_fun,
-                 fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end
-               ) do
-            {:ok, _updated_run} ->
-              :ok
-
-            {:error, reason} ->
-              dispatch_error_handler.(reason)
-          end
-      end
+      {:error, reason} ->
+        dispatch_error_handler.(reason)
     end
   end
 
@@ -450,15 +412,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     )
   end
 
-  defp normalize_run_transition_result({:ok, _run}), do: :ok
-  defp normalize_run_transition_result({:error, reason}), do: {:error, reason}
-
-  defp cancellation_attrs(attrs) do
-    attrs
-    |> Map.take([:context])
-    |> Map.put(:current_step, nil)
-    |> Map.put(:last_error, nil)
-  end
+  defp normalize_progress_result({:ok, _result}), do: :ok
+  defp normalize_progress_result({:error, reason}), do: {:error, reason}
 
   defp normalize_error(%{__struct__: module} = error) do
     details =

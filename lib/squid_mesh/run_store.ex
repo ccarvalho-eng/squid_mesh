@@ -41,6 +41,8 @@ defmodule SquidMesh.RunStore do
   @type get_option :: {:include_history, boolean()}
   @type dispatch_fun :: (Run.t() -> {:ok, term()} | {:error, term()})
   @type attrs_fun :: (Run.t() -> transition_attrs())
+  @type progress_operation :: :update | {:transition, Run.status()} | {:dispatch, dispatch_fun()}
+  @type progress_result :: Run.t() | :noop
 
   @doc """
   Creates a new run for a workflow using the workflow's default trigger.
@@ -326,6 +328,62 @@ defmodule SquidMesh.RunStore do
   end
 
   @doc false
+  @spec progress_run_with(module(), Ecto.UUID.t(), attrs_fun(), progress_operation()) ::
+          {:ok, progress_result()} | {:error, update_error() | transition_error() | term()}
+  def progress_run_with(repo, run_id, attrs_fun, operation)
+      when is_function(attrs_fun, 1) do
+    case repo.transaction(fn ->
+           case get_run_record_for_update(repo, run_id) do
+             %RunRecord{} = run ->
+               current_run = Serialization.to_public_run(run)
+
+               case current_run.status do
+                 status when status in [:failed, :completed, :cancelled] ->
+                   :noop
+
+                 :cancelling ->
+                   attrs =
+                     current_run
+                     |> attrs_fun.()
+                     |> cancellation_progress_attrs()
+
+                   with {:ok, _next_status} <- StateMachine.transition(:cancelling, :cancelled),
+                        {:ok, updated_run} <-
+                          Persistence.update_run_record(
+                            repo,
+                            run,
+                            Persistence.transition_changeset_attrs(:cancelled, attrs)
+                          ) do
+                     {updated_run, :cancelling, :cancelled}
+                   else
+                     {:error, reason} -> repo.rollback(reason)
+                   end
+
+                 from_status ->
+                   attrs = attrs_fun.(current_run)
+                   execute_progress_operation(repo, run, from_status, attrs, operation)
+               end
+
+             nil ->
+               repo.rollback(:not_found)
+           end
+         end) do
+      {:ok, :noop} ->
+        {:ok, :noop}
+
+      {:ok, {run, from_status, to_status}} ->
+        Observability.emit_run_transition(run, from_status, to_status)
+        {:ok, run}
+
+      {:ok, %Run{} = run} ->
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
   @spec update_and_dispatch_run(module(), Ecto.UUID.t(), transition_attrs(), dispatch_fun()) ::
           {:ok, Run.t()} | {:error, update_error() | term()}
   def update_and_dispatch_run(repo, run_id, attrs, dispatch_fun)
@@ -480,6 +538,67 @@ defmodule SquidMesh.RunStore do
       _ ->
         query
     end
+  end
+
+  @spec execute_progress_operation(
+          module(),
+          RunRecord.t(),
+          Run.status(),
+          transition_attrs(),
+          progress_operation()
+        ) :: Run.t() | {Run.t(), Run.status(), Run.status()} | no_return()
+  defp execute_progress_operation(repo, run, _from_status, attrs, :update) do
+    case Persistence.update_run_record(
+           repo,
+           run,
+           Persistence.serialize_transition_attrs(
+             Map.take(attrs, [:context, :current_step, :last_error])
+           )
+         ) do
+      {:ok, updated_run} ->
+        updated_run
+
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp execute_progress_operation(repo, run, from_status, attrs, {:transition, to_status}) do
+    with {:ok, _next_status} <- StateMachine.transition(from_status, to_status),
+         {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             run,
+             Persistence.transition_changeset_attrs(to_status, attrs)
+           ) do
+      {updated_run, from_status, to_status}
+    else
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp execute_progress_operation(repo, run, _from_status, attrs, {:dispatch, dispatch_fun}) do
+    with {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             run,
+             Persistence.serialize_transition_attrs(
+               Map.take(attrs, [:context, :current_step, :last_error])
+             )
+           ),
+         {:ok, _result} <- dispatch_fun.(updated_run) do
+      updated_run
+    else
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  @spec cancellation_progress_attrs(transition_attrs()) :: transition_attrs()
+  defp cancellation_progress_attrs(attrs) do
+    attrs
+    |> Map.take([:context])
+    |> Map.put(:current_step, nil)
+    |> Map.put(:last_error, nil)
   end
 
   @spec get_run_record_for_update(module(), Ecto.UUID.t()) :: RunRecord.t() | nil
