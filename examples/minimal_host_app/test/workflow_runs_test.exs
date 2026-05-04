@@ -54,6 +54,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
     assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+    assert {:ok, history_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
 
     assert completed_run.status == :completed
     assert completed_run.context.account == %{id: "acct_123", tier: "standard"}
@@ -70,6 +71,12 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              invoice_id: "inv_456",
              account_tier: "standard"
            }
+
+    assert Enum.map(history_run.steps, &{&1.step, &1.status, &1.depends_on}) == [
+             {:load_account, :completed, []},
+             {:load_invoice, :completed, []},
+             {:prepare_notification, :completed, [:load_account, :load_invoice]}
+           ]
   end
 
   test "runs the documented smoke path" do

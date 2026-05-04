@@ -13,6 +13,7 @@ defmodule SquidMesh.RunStore.Serialization do
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
+  alias SquidMesh.RunStepState
   alias SquidMesh.StepAttempt
   alias SquidMesh.StepRun
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
@@ -24,6 +25,7 @@ defmodule SquidMesh.RunStore.Serialization do
   @spec to_public_run(RunRecord.t()) :: Run.t()
   def to_public_run(run) do
     {workflow, definition} = deserialize_workflow(run.workflow)
+    step_runs = to_public_step_runs(run, definition)
 
     %Run{
       id: run.id,
@@ -34,7 +36,8 @@ defmodule SquidMesh.RunStore.Serialization do
       context: deserialize_map(run.context || %{}),
       current_step: deserialize_step(definition, run.current_step),
       last_error: deserialize_run_error(definition, run.last_error),
-      step_runs: to_public_step_runs(run, definition),
+      steps: to_public_steps(definition, step_runs),
+      step_runs: step_runs,
       replayed_from_run_id: run.replayed_from_run_id,
       inserted_at: run.inserted_at,
       updated_at: run.updated_at
@@ -130,6 +133,60 @@ defmodule SquidMesh.RunStore.Serialization do
       inserted_at: step_run.inserted_at,
       updated_at: step_run.updated_at
     }
+  end
+
+  defp to_public_steps(_definition, nil), do: nil
+
+  defp to_public_steps(nil, step_runs) when is_list(step_runs) do
+    Enum.map(step_runs, &to_public_step_state(&1, []))
+  end
+
+  defp to_public_steps(definition, step_runs) when is_list(step_runs) do
+    step_runs_by_step = Map.new(step_runs, &{&1.step, &1})
+    declared_steps = WorkflowDefinition.inspect_steps(definition, step_statuses(step_runs))
+    declared_step_names = MapSet.new(Enum.map(declared_steps, & &1.step))
+
+    declared_states =
+      Enum.map(declared_steps, fn %{step: step, depends_on: depends_on, status: status} ->
+        case Map.fetch(step_runs_by_step, step) do
+          {:ok, step_run} -> to_public_step_state(step_run, depends_on)
+          :error -> to_waiting_step_state(step, depends_on, status)
+        end
+      end)
+
+    extra_states =
+      step_runs
+      |> Enum.reject(&MapSet.member?(declared_step_names, &1.step))
+      |> Enum.map(&to_public_step_state(&1, []))
+
+    declared_states ++ extra_states
+  end
+
+  defp to_public_step_state(step_run, depends_on) do
+    %RunStepState{
+      step: step_run.step,
+      status: step_run.status,
+      depends_on: depends_on,
+      input: step_run.input,
+      output: step_run.output,
+      last_error: step_run.last_error,
+      attempts: step_run.attempts,
+      inserted_at: step_run.inserted_at,
+      updated_at: step_run.updated_at
+    }
+  end
+
+  defp to_waiting_step_state(step, depends_on, status) do
+    %RunStepState{
+      step: step,
+      status: status,
+      depends_on: depends_on,
+      attempts: []
+    }
+  end
+
+  defp step_statuses(step_runs) do
+    Map.new(step_runs, &{&1.step, &1.status})
   end
 
   defp to_public_attempts(%StepRunRecord{attempts: %Ecto.Association.NotLoaded{}}), do: []

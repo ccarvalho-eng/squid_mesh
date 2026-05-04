@@ -20,6 +20,7 @@ defmodule SquidMesh.Run do
     :context,
     :current_step,
     :last_error,
+    :steps,
     :step_runs,
     :replayed_from_run_id,
     :inserted_at,

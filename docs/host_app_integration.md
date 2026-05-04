@@ -284,5 +284,11 @@ For real host apps, `inspect_run/2` is most useful with history enabled:
 SquidMesh.inspect_run(run_id, include_history: true)
 ```
 
-That returns the top-level run plus persisted step runs and attempt history for
-debugging, replay decisions, and operator visibility.
+That returns the top-level run plus:
+
+- `steps`: logical per-step state in workflow order, including dependency edges
+- `step_runs`: persisted execution history
+- `attempts`: persisted retry history for each step run
+
+This split lets host apps render both a graph-oriented status view and the raw
+execution timeline from one inspection call.
