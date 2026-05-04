@@ -92,6 +92,16 @@ defmodule SquidMesh.WorkflowTest do
     assert DependencyWorkflow.__workflow__(:entry_step) == nil
   end
 
+  test "waits when the current dependency phase already has a failed sibling" do
+    definition = DependencyWorkflow.workflow_definition()
+
+    assert {:wait, [:load_invoice]} =
+             SquidMesh.Workflow.Definition.dependency_progress(definition, %{
+               load_account: :completed,
+               load_invoice: :failed
+             })
+  end
+
   test "fails when no steps are declared" do
     assert_compile_error(
       """

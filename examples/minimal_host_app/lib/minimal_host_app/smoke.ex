@@ -53,9 +53,11 @@ defmodule MinimalHostApp.Smoke do
   def run_all! do
     payment_recovery = run!()
     dependency_recovery = run_dependency_recovery!()
+    existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
-         {:ok, cron_run} <- await_daily_digest_run(@poll_attempts) do
+         {:ok, cron_run} <-
+           await_daily_digest_run(existing_daily_digest_run_ids, @poll_attempts) do
       unless cron_run.status == :completed and cron_run.trigger == :daily_digest do
         raise "unexpected cron smoke result"
       end
@@ -163,25 +165,42 @@ defmodule MinimalHostApp.Smoke do
     Enum.EmptyError -> {:error, :missing_daily_digest_run}
   end
 
-  @spec await_daily_digest_run(non_neg_integer()) ::
+  @spec await_daily_digest_run(MapSet.t(Ecto.UUID.t()), non_neg_integer()) ::
           {:ok, SquidMesh.Run.t()} | {:error, term()}
-  defp await_daily_digest_run(0), do: {:error, :missing_daily_digest_run}
+  defp await_daily_digest_run(_existing_run_ids, 0), do: {:error, :missing_daily_digest_run}
 
-  defp await_daily_digest_run(attempts_remaining) when attempts_remaining > 0 do
+  defp await_daily_digest_run(existing_run_ids, attempts_remaining) when attempts_remaining > 0 do
     :ok = wait_for_execution()
 
     case WorkflowRuns.list_daily_digest_runs() do
       {:ok, []} ->
         Process.sleep(50)
-        await_daily_digest_run(attempts_remaining - 1)
+        await_daily_digest_run(existing_run_ids, attempts_remaining - 1)
 
       {:ok, runs} ->
-        with {:ok, run} <- latest_daily_digest_run(runs) do
+        new_runs =
+          Enum.reject(runs, fn run -> MapSet.member?(existing_run_ids, run.id) end)
+
+        with {:ok, run} <- latest_daily_digest_run(new_runs) do
           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts)
+        else
+          {:error, :missing_daily_digest_run} ->
+            Process.sleep(50)
+            await_daily_digest_run(existing_run_ids, attempts_remaining - 1)
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp daily_digest_run_ids do
+    case WorkflowRuns.list_daily_digest_runs() do
+      {:ok, runs} -> MapSet.new(runs, & &1.id)
+      {:error, _reason} -> MapSet.new()
     end
   end
 

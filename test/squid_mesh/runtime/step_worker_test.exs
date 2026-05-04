@@ -6,6 +6,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.BackoffWorkflow
   alias __MODULE__.BuiltInWorkflow
   alias __MODULE__.CancellationCompletionWorkflow
+  alias __MODULE__.ConcurrentDependencyWorkflow
   alias __MODULE__.DependencyFailureWorkflow
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.ErrorRoutingWorkflow
@@ -154,6 +155,40 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              ]
     end
 
+    test "skips stale dependency jobs for steps that were never scheduled" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(DependencyWorkflow, input, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "send_email"}
+               })
+
+      assert {:ok, pending_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert pending_run.status == :pending
+      assert pending_run.current_step == nil
+      assert pending_run.context == %{}
+
+      assert nil ==
+               Repo.one(
+                 from(step_run in StepRun,
+                   where: step_run.run_id == ^run.id and step_run.step == "send_email"
+                 )
+               )
+
+      assert 2 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id)
+                 ),
+                 :count
+               )
+    end
+
     test "does not run a dependency join step when one prerequisite fails" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
@@ -258,6 +293,52 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
       assert completed_run.status == :completed
       assert completed_run.context.invoice.account_present? == false
+    end
+
+    test "allows parallel root workers to start from a pending dependency run" do
+      :persistent_term.put({ConcurrentDependencyWorkflow, :test_pid}, self())
+
+      on_exit(fn ->
+        :persistent_term.erase({ConcurrentDependencyWorkflow, :test_pid})
+      end)
+
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(ConcurrentDependencyWorkflow, input, repo: Repo)
+
+      account_task =
+        Task.async(fn ->
+          StepWorker.perform(%Job{
+            args: %{"run_id" => run.id, "step" => "load_account"}
+          })
+        end)
+
+      invoice_task =
+        Task.async(fn ->
+          StepWorker.perform(%Job{
+            args: %{"run_id" => run.id, "step" => "load_invoice"}
+          })
+        end)
+
+      assert_receive {:concurrent_root_started, :load_account, account_pid}
+      assert_receive {:concurrent_root_started, :load_invoice, invoice_pid}
+
+      send(account_pid, :continue)
+      send(invoice_pid, :continue)
+
+      assert :ok = Task.await(account_task)
+      assert :ok = Task.await(invoice_task)
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert completed_run.status == :completed
+      assert completed_run.context.account == %{id: "acct_123", tier: "pro"}
+      assert completed_run.context.invoice == %{id: "inv_456", status: "open"}
+      assert completed_run.context.delivery.invoice_id == "inv_456"
     end
 
     test "persists failed step execution and marks the run failed when no retry is declared" do
@@ -931,6 +1012,87 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
            account_present?: Map.has_key?(input, :account)
          }
        }}
+    end
+  end
+
+  defmodule ConcurrentDependencyWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_account, ConcurrentDependencyWorkflow.LoadAccount)
+      step(:load_invoice, ConcurrentDependencyWorkflow.LoadInvoice)
+      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+    end
+  end
+
+  defmodule ConcurrentDependencyWorkflow.LoadAccount do
+    use Jido.Action,
+      name: "load_account",
+      description: "Blocks until the test releases the account root",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      notify_test(:load_account)
+      await_continue()
+      {:ok, %{account: %{id: account_id, tier: "pro"}}}
+    end
+
+    defp notify_test(step_name) do
+      case :persistent_term.get({ConcurrentDependencyWorkflow, :test_pid}, nil) do
+        pid when is_pid(pid) -> send(pid, {:concurrent_root_started, step_name, self()})
+        _other -> :ok
+      end
+    end
+
+    defp await_continue do
+      receive do
+        :continue -> :ok
+      after
+        1_000 -> raise "timed out waiting for concurrent root release"
+      end
+    end
+  end
+
+  defmodule ConcurrentDependencyWorkflow.LoadInvoice do
+    use Jido.Action,
+      name: "load_invoice",
+      description: "Blocks until the test releases the invoice root",
+      schema: [
+        invoice_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{invoice_id: invoice_id}, _context) do
+      notify_test(:load_invoice)
+      await_continue()
+      {:ok, %{invoice: %{id: invoice_id, status: "open"}}}
+    end
+
+    defp notify_test(step_name) do
+      case :persistent_term.get({ConcurrentDependencyWorkflow, :test_pid}, nil) do
+        pid when is_pid(pid) -> send(pid, {:concurrent_root_started, step_name, self()})
+        _other -> :ok
+      end
+    end
+
+    defp await_continue do
+      receive do
+        :continue -> :ok
+      after
+        1_000 -> raise "timed out waiting for concurrent root release"
+      end
     end
   end
 

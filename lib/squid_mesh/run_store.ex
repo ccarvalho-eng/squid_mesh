@@ -40,6 +40,7 @@ defmodule SquidMesh.RunStore do
   @type update_error :: get_error() | {:invalid_run, Ecto.Changeset.t()}
   @type get_option :: {:include_history, boolean()}
   @type dispatch_fun :: (Run.t() -> {:ok, term()} | {:error, term()})
+  @type attrs_fun :: (Run.t() -> transition_attrs())
 
   @doc """
   Creates a new run for a workflow using the workflow's default trigger.
@@ -186,7 +187,7 @@ defmodule SquidMesh.RunStore do
           {:ok, Run.t()} | {:error, transition_error()}
   def transition_run(repo, run_id, to_status, attrs \\ %{}) when is_map(attrs) do
     repo.transaction(fn ->
-      case repo.get(RunRecord, run_id) do
+      case get_run_record_for_update(repo, run_id) do
         %RunRecord{} = run ->
           from_status = Serialization.deserialize_status(run.status)
 
@@ -224,7 +225,7 @@ defmodule SquidMesh.RunStore do
   def transition_and_dispatch_run(repo, run_id, to_status, attrs, dispatch_fun)
       when is_map(attrs) and is_function(dispatch_fun, 1) do
     case repo.transaction(fn ->
-           case repo.get(RunRecord, run_id) do
+           case get_run_record_for_update(repo, run_id) do
              %RunRecord{} = run ->
                from_status = Serialization.deserialize_status(run.status)
 
@@ -276,8 +277,36 @@ defmodule SquidMesh.RunStore do
           {:ok, Run.t()} | {:error, update_error()}
   def update_run(repo, run_id, attrs) when is_map(attrs) do
     repo.transaction(fn ->
-      case repo.get(RunRecord, run_id) do
+      case get_run_record_for_update(repo, run_id) do
         %RunRecord{} = run ->
+          run
+          |> RunRecord.changeset(
+            Persistence.serialize_transition_attrs(
+              Map.take(attrs, [:context, :current_step, :last_error])
+            )
+          )
+          |> repo.update()
+          |> case do
+            {:ok, updated_run} -> Serialization.to_public_run(updated_run)
+            {:error, changeset} -> repo.rollback({:invalid_run, changeset})
+          end
+
+        nil ->
+          repo.rollback(:not_found)
+      end
+    end)
+  end
+
+  @doc false
+  @spec update_run_with(module(), Ecto.UUID.t(), attrs_fun()) ::
+          {:ok, Run.t()} | {:error, update_error()}
+  def update_run_with(repo, run_id, attrs_fun) when is_function(attrs_fun, 1) do
+    repo.transaction(fn ->
+      case get_run_record_for_update(repo, run_id) do
+        %RunRecord{} = run ->
+          current_run = Serialization.to_public_run(run)
+          attrs = attrs_fun.(current_run)
+
           run
           |> RunRecord.changeset(
             Persistence.serialize_transition_attrs(
@@ -302,7 +331,7 @@ defmodule SquidMesh.RunStore do
   def update_and_dispatch_run(repo, run_id, attrs, dispatch_fun)
       when is_map(attrs) and is_function(dispatch_fun, 1) do
     case repo.transaction(fn ->
-           case repo.get(RunRecord, run_id) do
+           case get_run_record_for_update(repo, run_id) do
              %RunRecord{} = run ->
                with {:ok, updated_run} <-
                       Persistence.update_run_record(
@@ -325,6 +354,76 @@ defmodule SquidMesh.RunStore do
       {:ok, run} -> {:ok, run}
       {:error, _reason} = error -> error
     end
+  end
+
+  @doc false
+  @spec update_and_dispatch_run_with(module(), Ecto.UUID.t(), attrs_fun(), dispatch_fun()) ::
+          {:ok, Run.t()} | {:error, update_error() | term()}
+  def update_and_dispatch_run_with(repo, run_id, attrs_fun, dispatch_fun)
+      when is_function(attrs_fun, 1) and is_function(dispatch_fun, 1) do
+    case repo.transaction(fn ->
+           case get_run_record_for_update(repo, run_id) do
+             %RunRecord{} = run ->
+               current_run = Serialization.to_public_run(run)
+               attrs = attrs_fun.(current_run)
+
+               with {:ok, updated_run} <-
+                      Persistence.update_run_record(
+                        repo,
+                        run,
+                        Persistence.serialize_transition_attrs(
+                          Map.take(attrs, [:context, :current_step, :last_error])
+                        )
+                      ),
+                    {:ok, _result} <- dispatch_fun.(updated_run) do
+                 updated_run
+               else
+                 {:error, reason} -> repo.rollback(reason)
+               end
+
+             nil ->
+               repo.rollback(:not_found)
+           end
+         end) do
+      {:ok, run} -> {:ok, run}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc false
+  @spec transition_run_with(module(), Ecto.UUID.t(), Run.status(), attrs_fun()) ::
+          {:ok, Run.t()} | {:error, transition_error()}
+  def transition_run_with(repo, run_id, to_status, attrs_fun)
+      when is_function(attrs_fun, 1) do
+    repo.transaction(fn ->
+      case get_run_record_for_update(repo, run_id) do
+        %RunRecord{} = run ->
+          from_status = Serialization.deserialize_status(run.status)
+          current_run = Serialization.to_public_run(run)
+
+          with {:ok, _next_status} <- StateMachine.transition(from_status, to_status) do
+            attrs = attrs_fun.(current_run)
+
+            run
+            |> RunRecord.changeset(Persistence.transition_changeset_attrs(to_status, attrs))
+            |> repo.update()
+            |> case do
+              {:ok, updated_run} ->
+                public_run = Serialization.to_public_run(updated_run)
+                Observability.emit_run_transition(public_run, from_status, to_status)
+                public_run
+
+              {:error, changeset} ->
+                repo.rollback({:invalid_run, changeset})
+            end
+          else
+            {:error, reason} -> repo.rollback(reason)
+          end
+
+        nil ->
+          repo.rollback(:not_found)
+      end
+    end)
   end
 
   @doc """
@@ -381,5 +480,13 @@ defmodule SquidMesh.RunStore do
       _ ->
         query
     end
+  end
+
+  @spec get_run_record_for_update(module(), Ecto.UUID.t()) :: RunRecord.t() | nil
+  defp get_run_record_for_update(repo, run_id) do
+    RunRecord
+    |> where([run], run.id == ^run_id)
+    |> lock("FOR UPDATE")
+    |> repo.one()
   end
 end

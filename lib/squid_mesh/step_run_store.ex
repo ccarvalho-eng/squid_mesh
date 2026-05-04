@@ -57,26 +57,30 @@ defmodule SquidMesh.StepRunStore do
     serialized_step = serialize_step(step)
 
     attrs = %{
+      id: Ecto.UUID.generate(),
       run_id: run_id,
       step: serialized_step,
       status: "pending",
       input: input,
       output: nil,
-      last_error: nil
+      last_error: nil,
+      inserted_at: DateTime.utc_now(),
+      updated_at: DateTime.utc_now()
     }
 
-    case insert_step_run(repo, attrs) do
-      {:ok, step_run} ->
-        {:ok, step_run, :schedule}
+    case repo.insert_all(
+           StepRun,
+           [attrs],
+           on_conflict: :nothing,
+           conflict_target: [:run_id, :step]
+         ) do
+      {1, _rows} ->
+        {:ok, get_step_run(repo, run_id, serialized_step), :schedule}
 
-      {:error, %Ecto.Changeset{} = changeset} ->
-        if duplicate_step_claim?(changeset) do
-          case get_step_run(repo, run_id, serialized_step) do
-            %StepRun{} = step_run -> {:ok, step_run, :skip}
-            nil -> {:error, changeset}
-          end
-        else
-          {:error, changeset}
+      {0, _rows} ->
+        case get_step_run(repo, run_id, serialized_step) do
+          %StepRun{} = step_run -> {:ok, step_run, :skip}
+          nil -> {:error, Ecto.Changeset.change(%StepRun{}, attrs)}
         end
     end
   end
@@ -121,6 +125,19 @@ defmodule SquidMesh.StepRunStore do
     |> order_by([step_run], asc: step_run.inserted_at)
     |> select([step_run], step_run.step)
     |> repo.all()
+  end
+
+  @doc """
+  Lists the completed step outputs for one workflow run in completion order.
+  """
+  @spec completed_outputs(module(), Ecto.UUID.t()) :: [step_output()]
+  def completed_outputs(repo, run_id) do
+    StepRun
+    |> where([step_run], step_run.run_id == ^run_id and step_run.status == "completed")
+    |> order_by([step_run], asc: step_run.inserted_at)
+    |> select([step_run], step_run.output)
+    |> repo.all()
+    |> Enum.map(&Kernel.||(&1, %{}))
   end
 
   @doc """

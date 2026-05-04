@@ -287,7 +287,11 @@ defmodule SquidMesh.Workflow.Definition do
             {:dispatch, ready_steps}
 
           Enum.any?(phase_steps, fn step_name ->
-            Map.get(normalized_statuses, serialize_step(step_name)) in ["pending", "running"]
+            Map.get(normalized_statuses, serialize_step(step_name)) in [
+              "pending",
+              "running",
+              "failed"
+            ]
           end) ->
             {:wait, phase_steps}
 

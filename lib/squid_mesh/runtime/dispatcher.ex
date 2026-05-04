@@ -87,7 +87,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
   defp maybe_schedule_pending_step(_config, _run, _step, false), do: :ok
 
   defp maybe_schedule_pending_step(config, run, step, true) do
-    case StepRunStore.schedule_step(config.repo, run.id, step, StepInput.build_step_input(run)) do
+    case StepRunStore.schedule_step(config.repo, run.id, step, scheduled_step_input(config, run)) do
       {:ok, _step_run, :schedule} -> :ok
       {:ok, step_run, :skip} -> {:skip, step_run}
       {:error, reason} -> {:error, reason}
@@ -118,4 +118,16 @@ defmodule SquidMesh.Runtime.Dispatcher do
   end
 
   defp maybe_put_schedule_in(opts, _schedule_in), do: opts
+
+  defp scheduled_step_input(%Config{repo: repo}, %Run{workflow: workflow} = run)
+       when is_atom(workflow) do
+    with {:ok, definition} <- WorkflowDefinition.load(workflow),
+         true <- WorkflowDefinition.dependency_mode?(definition) do
+      StepInput.build_dependency_step_input(repo, run)
+    else
+      _other -> StepInput.build_step_input(run)
+    end
+  end
+
+  defp scheduled_step_input(_config, %Run{} = run), do: StepInput.build_step_input(run)
 end
