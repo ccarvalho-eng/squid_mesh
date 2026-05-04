@@ -12,6 +12,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
   @type prepare_result ::
           {:execute, PreparedStep.t()}
           | {:skip, PreparedStep.t()}
+          | :skip
           | {:error, term()}
 
   @spec prepare(Config.t(), WorkflowDefinition.t(), Run.t(), atom() | nil) :: prepare_result()

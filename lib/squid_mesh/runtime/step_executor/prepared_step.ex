@@ -13,7 +13,7 @@ defmodule SquidMesh.Runtime.StepExecutor.PreparedStep do
           definition: WorkflowDefinition.t(),
           run: Run.t(),
           step_name: atom(),
-          step: map(),
+          step: WorkflowDefinition.step(),
           step_run: SquidMesh.Persistence.StepRun.t(),
           input: map()
         }

@@ -280,7 +280,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         dispatch_error = %{
           message: "failed to dispatch workflow step",
           next_step: next_step,
-          cause: normalize_dispatch_cause(reason)
+          dispatch_reason: normalize_dispatch_cause(reason)
         }
 
         mark_failed_after_dispatch_error(
