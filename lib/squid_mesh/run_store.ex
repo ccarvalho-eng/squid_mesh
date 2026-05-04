@@ -41,7 +41,11 @@ defmodule SquidMesh.RunStore do
   @type get_option :: {:include_history, boolean()}
   @type dispatch_fun :: (Run.t() -> {:ok, term()} | {:error, term()})
   @type attrs_fun :: (Run.t() -> transition_attrs())
-  @type progress_operation :: :update | {:transition, Run.status()} | {:dispatch, dispatch_fun()}
+  @type progress_operation ::
+          :update
+          | {:transition, Run.status()}
+          | {:dispatch, dispatch_fun()}
+          | {:transition_or_dispatch, Run.status(), dispatch_fun()}
   @type progress_result :: Run.t() | :noop
 
   @doc """
@@ -590,6 +594,43 @@ defmodule SquidMesh.RunStore do
       updated_run
     else
       {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp execute_progress_operation(
+         repo,
+         run,
+         from_status,
+         attrs,
+         {:transition_or_dispatch, to_status, dispatch_fun}
+       ) do
+    if from_status == to_status do
+      with {:ok, updated_run} <-
+             Persistence.update_run_record(
+               repo,
+               run,
+               Persistence.serialize_transition_attrs(
+                 Map.take(attrs, [:context, :current_step, :last_error])
+               )
+             ),
+           {:ok, _result} <- dispatch_fun.(updated_run) do
+        updated_run
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
+    else
+      with {:ok, _next_status} <- StateMachine.transition(from_status, to_status),
+           {:ok, updated_run} <-
+             Persistence.update_run_record(
+               repo,
+               run,
+               Persistence.transition_changeset_attrs(to_status, attrs)
+             ),
+           {:ok, _result} <- dispatch_fun.(updated_run) do
+        {updated_run, from_status, to_status}
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
     end
   end
 

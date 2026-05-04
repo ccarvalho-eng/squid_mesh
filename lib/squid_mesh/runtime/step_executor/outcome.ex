@@ -147,17 +147,21 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
           dispatch_opts = retry_dispatch_opts(delay_ms)
 
-          case RunStore.transition_and_dispatch_run(
+          case RunStore.progress_run_with(
                  config.repo,
                  run.id,
-                 :retrying,
-                 %{
-                   current_step: step_name,
-                   last_error: error
-                 },
-                 fn retried_run -> Dispatcher.dispatch_run(config, retried_run, dispatch_opts) end
+                 fn _current_run ->
+                   %{
+                     current_step: step_name,
+                     last_error: error
+                   }
+                 end,
+                 {:transition_or_dispatch, :retrying,
+                  fn retried_run ->
+                    Dispatcher.dispatch_run(config, retried_run, dispatch_opts)
+                  end}
                ) do
-            {:ok, _retried_run} ->
+            {:ok, _result} ->
               :ok
 
             {:error, reason} ->
@@ -358,12 +362,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     if WorkflowDefinition.dependency_mode?(definition) do
       Logger.error("workflow step failed")
 
-      case RunStore.transition_run(config.repo, run.id, :failed, %{
-             current_step: step_name,
-             last_error: error
-           }) do
-        {:ok, _failed_run} -> :ok
-        {:error, reason} -> {:error, reason}
+      case RunStore.progress_run_with(
+             config.repo,
+             run.id,
+             fn _current_run ->
+               %{
+                 current_step: step_name,
+                 last_error: error
+               }
+             end,
+             {:transition, :failed}
+           ) do
+        {:ok, _result} ->
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
       end
     else
       case WorkflowDefinition.transition_target(definition, step_name, :error) do
@@ -374,12 +388,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         {:error, {:unknown_transition, _from_step, :error}} ->
           Logger.error("workflow step failed")
 
-          case RunStore.transition_run(config.repo, run.id, :failed, %{
-                 current_step: step_name,
-                 last_error: error
-               }) do
-            {:ok, _failed_run} -> :ok
-            {:error, reason} -> {:error, reason}
+          case RunStore.progress_run_with(
+                 config.repo,
+                 run.id,
+                 fn _current_run ->
+                   %{
+                     current_step: step_name,
+                     last_error: error
+                   }
+                 end,
+                 {:transition, :failed}
+               ) do
+            {:ok, _result} ->
+              :ok
+
+            {:error, reason} ->
+              {:error, reason}
           end
 
         {:error, reason} ->

@@ -8,6 +8,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.CancellationCompletionWorkflow
   alias __MODULE__.ConcurrentDependencyFailureWorkflow
   alias __MODULE__.ConcurrentDependencyWorkflow
+  alias __MODULE__.ConcurrentRetryWorkflow
   alias __MODULE__.DependencyFailureWorkflow
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.ErrorRoutingWorkflow
@@ -411,6 +412,71 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       assert Enum.map(step_runs, &{&1.step, &1.status}) == [
                {"load_account", "completed"},
+               {"load_invoice", "failed"}
+             ]
+    end
+
+    test "keeps the run retrying when parallel dependency roots fail with retries" do
+      :persistent_term.put({ConcurrentRetryWorkflow, :test_pid}, self())
+
+      on_exit(fn ->
+        :persistent_term.erase({ConcurrentRetryWorkflow, :test_pid})
+      end)
+
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(ConcurrentRetryWorkflow, input, repo: Repo)
+
+      account_task =
+        Task.async(fn ->
+          StepWorker.perform(%Job{
+            args: %{"run_id" => run.id, "step" => "load_account"}
+          })
+        end)
+
+      invoice_task =
+        Task.async(fn ->
+          StepWorker.perform(%Job{
+            args: %{"run_id" => run.id, "step" => "load_invoice"}
+          })
+        end)
+
+      assert_receive {:concurrent_root_started, :load_account, account_pid}
+      assert_receive {:concurrent_root_started, :load_invoice, invoice_pid}
+
+      send(account_pid, :continue)
+      send(invoice_pid, :continue)
+
+      assert :ok = Task.await(account_task)
+      assert :ok = Task.await(invoice_task)
+
+      assert {:ok, retrying_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert retrying_run.status == :retrying
+      assert retrying_run.current_step in [:load_account, :load_invoice]
+      assert retrying_run.last_error.code == "gateway_timeout"
+
+      assert 4 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' in ('load_account', 'load_invoice')", job.args)
+                 ),
+                 :count
+               )
+
+      step_runs =
+        Repo.all(
+          from(step_run in StepRun,
+            where: step_run.run_id == ^run.id,
+            order_by: [asc: step_run.inserted_at]
+          )
+        )
+
+      assert Enum.sort(Enum.map(step_runs, &{&1.step, &1.status})) == [
+               {"load_account", "failed"},
                {"load_invoice", "failed"}
              ]
     end
@@ -1239,6 +1305,89 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
     defp notify_test(step_name) do
       case :persistent_term.get({ConcurrentDependencyFailureWorkflow, :test_pid}, nil) do
+        pid when is_pid(pid) -> send(pid, {:concurrent_root_started, step_name, self()})
+        _other -> :ok
+      end
+    end
+
+    defp await_continue do
+      receive do
+        :continue -> :ok
+      after
+        1_000 -> raise "timed out waiting for concurrent root release"
+      end
+    end
+  end
+
+  defmodule ConcurrentRetryWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_account, ConcurrentRetryWorkflow.LoadAccount, retry: [max_attempts: 2])
+      step(:load_invoice, ConcurrentRetryWorkflow.LoadInvoice, retry: [max_attempts: 2])
+      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+    end
+  end
+
+  defmodule ConcurrentRetryWorkflow.LoadAccount do
+    use Jido.Action,
+      name: "load_account",
+      description: "Fails after the test releases the retryable account root",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      notify_test(:load_account)
+      await_continue()
+
+      {:error, %{message: "gateway timeout", code: "gateway_timeout", account_id: account_id}}
+    end
+
+    defp notify_test(step_name) do
+      case :persistent_term.get({ConcurrentRetryWorkflow, :test_pid}, nil) do
+        pid when is_pid(pid) -> send(pid, {:concurrent_root_started, step_name, self()})
+        _other -> :ok
+      end
+    end
+
+    defp await_continue do
+      receive do
+        :continue -> :ok
+      after
+        1_000 -> raise "timed out waiting for concurrent root release"
+      end
+    end
+  end
+
+  defmodule ConcurrentRetryWorkflow.LoadInvoice do
+    use Jido.Action,
+      name: "load_invoice",
+      description: "Fails after the test releases the retryable invoice root",
+      schema: [
+        invoice_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{invoice_id: invoice_id}, _context) do
+      notify_test(:load_invoice)
+      await_continue()
+
+      {:error, %{message: "gateway timeout", code: "gateway_timeout", invoice_id: invoice_id}}
+    end
+
+    defp notify_test(step_name) do
+      case :persistent_term.get({ConcurrentRetryWorkflow, :test_pid}, nil) do
         pid when is_pid(pid) -> send(pid, {:concurrent_root_started, step_name, self()})
         _other -> :ok
       end
