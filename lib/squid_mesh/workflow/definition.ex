@@ -20,6 +20,12 @@ defmodule SquidMesh.Workflow.Definition do
   @type step :: %{name: atom(), module: module() | built_in_step_kind(), opts: keyword()}
   @type transition :: %{from: atom(), on: transition_outcome(), to: atom()}
   @type retry :: %{step: atom(), opts: keyword()}
+  @type dependency_step_status :: :pending | :running | :completed | :failed
+  @type dependency_progress ::
+          :complete
+          | {:dispatch, [atom()]}
+          | {:wait, [atom()]}
+          | {:error, {:no_runnable_step, [atom()]}}
 
   @type t :: %{
           triggers: [trigger()],
@@ -223,6 +229,75 @@ defmodule SquidMesh.Workflow.Definition do
       next_dependency_step(definition, completed_steps)
     else
       transition_target(definition, from_step, :ok)
+    end
+  end
+
+  @doc """
+  Resolves dependency-mode progress from persisted per-step state.
+
+  Ready steps are scheduled breadth-first by dependency phase so newly unlocked
+  descendants do not bypass incomplete root or sibling steps.
+  """
+  @spec dependency_progress(
+          t(),
+          %{optional(atom() | String.t()) => dependency_step_status() | String.t()}
+        ) :: dependency_progress()
+  def dependency_progress(definition, step_statuses) when is_map(step_statuses) do
+    normalized_statuses =
+      Map.new(step_statuses, fn {step, status} ->
+        {serialize_step(step), serialize_dependency_status(status)}
+      end)
+
+    completed_steps =
+      normalized_statuses
+      |> Enum.filter(fn {_step, status} -> status == "completed" end)
+      |> Enum.map(fn {step, _status} -> step end)
+      |> MapSet.new()
+
+    remaining_steps =
+      definition.steps
+      |> Enum.map(& &1.name)
+      |> Enum.reject(fn step_name ->
+        Map.get(normalized_statuses, serialize_step(step_name)) == "completed"
+      end)
+
+    case remaining_steps do
+      [] ->
+        :complete
+
+      _steps ->
+        phases = dependency_phases(definition)
+        current_phase = remaining_steps |> Enum.map(&Map.fetch!(phases, &1)) |> Enum.min()
+
+        phase_steps =
+          definition
+          |> dependency_step_order()
+          |> Enum.filter(fn step_name ->
+            step_name in remaining_steps and Map.fetch!(phases, step_name) == current_phase
+          end)
+
+        ready_steps =
+          Enum.filter(phase_steps, fn step_name ->
+            is_nil(Map.get(normalized_statuses, serialize_step(step_name))) and
+              dependencies_satisfied?(definition, step_name, completed_steps)
+          end)
+
+        cond do
+          ready_steps != [] ->
+            {:dispatch, ready_steps}
+
+          Enum.any?(phase_steps, fn step_name ->
+            Map.get(normalized_statuses, serialize_step(step_name)) in [
+              "pending",
+              "running",
+              "failed"
+            ]
+          end) ->
+            {:wait, phase_steps}
+
+          true ->
+            {:error, {:no_runnable_step, phase_steps}}
+        end
     end
   end
 
@@ -433,6 +508,9 @@ defmodule SquidMesh.Workflow.Definition do
   defp input_matches_type?(value, :list), do: is_list(value)
   defp input_matches_type?(value, :atom), do: is_atom(value)
   defp input_matches_type?(_value, _unknown_type), do: true
+
+  defp serialize_dependency_status(status) when is_atom(status), do: Atom.to_string(status)
+  defp serialize_dependency_status(status) when is_binary(status), do: status
 
   defp deserialize_workflow_name(workflow_name) do
     try do

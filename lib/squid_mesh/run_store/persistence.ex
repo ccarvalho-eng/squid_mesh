@@ -26,7 +26,7 @@ defmodule SquidMesh.RunStore.Persistence do
       status: "pending",
       input: resolved_payload,
       context: %{},
-      current_step: WorkflowDefinition.serialize_step(WorkflowDefinition.initial_step(definition))
+      current_step: initial_current_step(definition)
     }
   end
 
@@ -38,8 +38,7 @@ defmodule SquidMesh.RunStore.Persistence do
       status: "pending",
       input: source_run.input || %{},
       context: %{},
-      current_step:
-        WorkflowDefinition.serialize_step(WorkflowDefinition.initial_step(definition)),
+      current_step: initial_current_step(definition),
       replayed_from_run_id: source_run.id
     }
   end
@@ -110,4 +109,12 @@ defmodule SquidMesh.RunStore.Persistence do
   def cancellation_target_status(:running), do: {:ok, :cancelling}
   def cancellation_target_status(:retrying), do: {:ok, :cancelling}
   def cancellation_target_status(state), do: {:error, {:invalid_transition, state, :cancelling}}
+
+  defp initial_current_step(definition) do
+    if WorkflowDefinition.dependency_mode?(definition) do
+      nil
+    else
+      WorkflowDefinition.serialize_step(WorkflowDefinition.initial_step(definition))
+    end
+  end
 end

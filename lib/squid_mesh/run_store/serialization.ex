@@ -147,6 +147,7 @@ defmodule SquidMesh.RunStore.Serialization do
     end)
   end
 
+  defp deserialize_step_status("pending"), do: :pending
   defp deserialize_step_status("running"), do: :running
   defp deserialize_step_status("completed"), do: :completed
   defp deserialize_step_status("failed"), do: :failed

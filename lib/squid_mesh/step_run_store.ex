@@ -14,7 +14,9 @@ defmodule SquidMesh.StepRunStore do
   @type step_input :: map()
   @type step_output :: map()
   @type step_error :: map()
+  @type step_status :: :pending | :running | :completed | :failed
   @type begin_result :: {:ok, StepRun.t(), :execute | :skip} | {:error, Ecto.Changeset.t()}
+  @type schedule_result :: {:ok, StepRun.t(), :schedule | :skip} | {:error, Ecto.Changeset.t()}
 
   @doc """
   Marks a step as ready for execution if it has not already completed or been
@@ -42,6 +44,43 @@ defmodule SquidMesh.StepRunStore do
           claim_existing_step(repo, run_id, serialized_step, attrs)
         else
           {:error, changeset}
+        end
+    end
+  end
+
+  @doc """
+  Persists that a step has been scheduled but not yet claimed by a worker.
+  """
+  @spec schedule_step(module(), Ecto.UUID.t(), step_identifier(), step_input()) ::
+          schedule_result()
+  def schedule_step(repo, run_id, step, input) when is_map(input) do
+    serialized_step = serialize_step(step)
+
+    attrs = %{
+      id: Ecto.UUID.generate(),
+      run_id: run_id,
+      step: serialized_step,
+      status: "pending",
+      input: input,
+      output: nil,
+      last_error: nil,
+      inserted_at: DateTime.utc_now(),
+      updated_at: DateTime.utc_now()
+    }
+
+    case repo.insert_all(
+           StepRun,
+           [attrs],
+           on_conflict: :nothing,
+           conflict_target: [:run_id, :step]
+         ) do
+      {1, _rows} ->
+        {:ok, get_step_run(repo, run_id, serialized_step), :schedule}
+
+      {0, _rows} ->
+        case get_step_run(repo, run_id, serialized_step) do
+          %StepRun{} = step_run -> {:ok, step_run, :skip}
+          nil -> {:error, Ecto.Changeset.change(%StepRun{}, attrs)}
         end
     end
   end
@@ -88,6 +127,31 @@ defmodule SquidMesh.StepRunStore do
     |> repo.all()
   end
 
+  @doc """
+  Lists the completed step outputs for one workflow run in completion order.
+  """
+  @spec completed_outputs(module(), Ecto.UUID.t()) :: [step_output()]
+  def completed_outputs(repo, run_id) do
+    StepRun
+    |> where([step_run], step_run.run_id == ^run_id and step_run.status == "completed")
+    |> order_by([step_run], asc: step_run.inserted_at)
+    |> select([step_run], step_run.output)
+    |> repo.all()
+    |> Enum.map(&Kernel.||(&1, %{}))
+  end
+
+  @doc """
+  Lists the persisted step status for each declared step in a workflow run.
+  """
+  @spec step_statuses(module(), Ecto.UUID.t()) :: %{optional(String.t()) => step_status()}
+  def step_statuses(repo, run_id) do
+    StepRun
+    |> where([step_run], step_run.run_id == ^run_id)
+    |> select([step_run], {step_run.step, step_run.status})
+    |> repo.all()
+    |> Map.new(fn {step, status} -> {step, deserialize_status(status)} end)
+  end
+
   @spec insert_step_run(module(), map()) :: {:ok, StepRun.t()} | {:error, Ecto.Changeset.t()}
   defp insert_step_run(repo, attrs) do
     %StepRun{}
@@ -97,32 +161,61 @@ defmodule SquidMesh.StepRunStore do
 
   @spec claim_existing_step(module(), Ecto.UUID.t(), String.t(), map()) :: begin_result()
   defp claim_existing_step(repo, run_id, step, attrs) do
-    case transition_failed_step_to_running(repo, run_id, step, attrs) do
+    case transition_pending_step_to_running(repo, run_id, step, attrs) do
       {:ok, %StepRun{} = step_run} ->
         {:ok, step_run, :execute}
 
       :not_updated ->
-        case get_step_run(repo, run_id, step) do
-          %StepRun{status: status} = step_run when status in ["running", "completed"] ->
-            {:ok, step_run, :skip}
+        case transition_failed_step_to_running(repo, run_id, step, attrs) do
+          {:ok, %StepRun{} = step_run} ->
+            {:ok, step_run, :execute}
 
-          %StepRun{} = step_run ->
-            {:ok, step_run, :skip}
+          :not_updated ->
+            case get_step_run(repo, run_id, step) do
+              %StepRun{} = step_run ->
+                {:ok, step_run, :skip}
 
-          nil ->
-            insert_step_run(repo, attrs)
-            |> case do
-              {:ok, step_run} -> {:ok, step_run, :execute}
-              {:error, changeset} -> {:error, changeset}
+              nil ->
+                insert_step_run(repo, attrs)
+                |> case do
+                  {:ok, step_run} -> {:ok, step_run, :execute}
+                  {:error, changeset} -> {:error, changeset}
+                end
             end
         end
+    end
+  end
+
+  @spec transition_pending_step_to_running(module(), Ecto.UUID.t(), String.t(), map()) ::
+          {:ok, StepRun.t()} | :not_updated
+  defp transition_pending_step_to_running(repo, run_id, step, attrs) do
+    updates =
+      attrs
+      |> Map.take([:status, :output, :last_error])
+      |> Map.put(:status, "running")
+      |> Map.put(:updated_at, now_utc())
+
+    {count, _rows} =
+      StepRun
+      |> where(
+        [step_run],
+        step_run.run_id == ^run_id and step_run.step == ^step and step_run.status == "pending"
+      )
+      |> repo.update_all(set: Map.to_list(updates))
+
+    case count do
+      1 -> {:ok, get_step_run(repo, run_id, step)}
+      _ -> :not_updated
     end
   end
 
   @spec transition_failed_step_to_running(module(), Ecto.UUID.t(), String.t(), map()) ::
           {:ok, StepRun.t()} | :not_updated
   defp transition_failed_step_to_running(repo, run_id, step, attrs) do
-    updates = Map.take(attrs, [:status, :input, :output, :last_error])
+    updates =
+      attrs
+      |> Map.take([:status, :input, :output, :last_error])
+      |> Map.put(:updated_at, now_utc())
 
     {count, _rows} =
       StepRun
@@ -163,7 +256,17 @@ defmodule SquidMesh.StepRunStore do
     end
   end
 
+  @spec deserialize_status(String.t()) :: step_status()
+  defp deserialize_status("pending"), do: :pending
+  defp deserialize_status("running"), do: :running
+  defp deserialize_status("completed"), do: :completed
+  defp deserialize_status("failed"), do: :failed
+
   @spec serialize_step(step_identifier()) :: String.t()
   defp serialize_step(step) when is_atom(step), do: Atom.to_string(step)
   defp serialize_step(step) when is_binary(step), do: step
+
+  defp now_utc do
+    DateTime.utc_now() |> DateTime.truncate(:microsecond)
+  end
 end

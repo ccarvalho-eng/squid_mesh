@@ -48,6 +48,8 @@ Ecto.Migrator.with_repo(MinimalHostApp.Repo, fn repo ->
   )
 end)
 
+{:ok, _apps} = Application.ensure_all_started(:bypass)
+
 {:ok, _pid} =
   {Oban, Application.fetch_env!(:minimal_host_app, Oban)}
   |> Supervisor.child_spec(id: :minimal_host_app_test_oban)

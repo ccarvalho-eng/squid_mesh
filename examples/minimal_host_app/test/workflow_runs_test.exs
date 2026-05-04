@@ -50,7 +50,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     }
 
     assert {:ok, run} = WorkflowRuns.start_dependency_recovery(attrs)
-    assert run.current_step == :load_account
+    assert run.current_step == nil
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
     assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
@@ -73,10 +73,15 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   end
 
   test "runs the documented smoke path" do
-    assert %SquidMesh.Run{} = run = Smoke.run!()
-    assert run.status == :completed
-    assert run.context.notification.channel == "email"
-    assert run.context.gateway_check.status == "retry_required"
+    assert %{payment_recovery: payment_recovery, dependency_recovery: dependency_recovery} =
+             Smoke.run_all!()
+
+    assert payment_recovery.status == :completed
+    assert payment_recovery.context.notification.channel == "email"
+    assert payment_recovery.context.gateway_check.status == "retry_required"
+
+    assert dependency_recovery.status == :completed
+    assert dependency_recovery.context.notification.channel == "email"
   end
 
   test "runs the cancellation smoke path" do

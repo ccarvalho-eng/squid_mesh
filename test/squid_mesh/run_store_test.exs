@@ -175,4 +175,76 @@ defmodule SquidMesh.RunStoreTest do
       assert {:error, :not_found} = RunStore.replay_run(Repo, Ecto.UUID.generate())
     end
   end
+
+  describe "progress_run_with/4" do
+    test "does not update or dispatch terminal runs" do
+      assert {:ok, run} =
+               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, failed_run} =
+               RunStore.transition_run(Repo, run.id, :failed, %{
+                 current_step: :load_invoice,
+                 context: %{attempt: 1},
+                 last_error: %{message: "timeout"}
+               })
+
+      assert {:ok, :noop} =
+               RunStore.progress_run_with(
+                 Repo,
+                 failed_run.id,
+                 fn _current_run ->
+                   %{
+                     context: %{attempt: 2},
+                     current_step: nil,
+                     last_error: nil
+                   }
+                 end,
+                 {:dispatch,
+                  fn _updated_run ->
+                    send(self(), :dispatched)
+                    {:ok, :sent}
+                  end}
+               )
+
+      refute_received :dispatched
+      assert {:ok, persisted_run} = RunStore.get_run(Repo, failed_run.id)
+      assert persisted_run == failed_run
+    end
+
+    test "finalizes cancelling runs without dispatching more work" do
+      assert {:ok, run} =
+               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, running_run} =
+               RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :load_invoice
+               })
+
+      assert {:ok, cancelling_run} = RunStore.cancel_run(Repo, running_run.id)
+
+      assert {:ok, cancelled_run} =
+               RunStore.progress_run_with(
+                 Repo,
+                 cancelling_run.id,
+                 fn current_run ->
+                   %{
+                     context: Map.put(current_run.context, :delivered, true),
+                     current_step: :load_invoice,
+                     last_error: %{message: "ignored"}
+                   }
+                 end,
+                 {:dispatch,
+                  fn _updated_run ->
+                    send(self(), :dispatched)
+                    {:ok, :sent}
+                  end}
+               )
+
+      refute_received :dispatched
+      assert cancelled_run.status == :cancelled
+      assert cancelled_run.current_step == nil
+      assert cancelled_run.last_error == nil
+      assert cancelled_run.context == %{delivered: true}
+    end
+  end
 end

@@ -6,6 +6,7 @@ defmodule MinimalHostApp.Smoke do
   alias MinimalHostApp.Cron
   alias MinimalHostApp.RuntimeHarness
   alias MinimalHostApp.WorkflowRuns
+  alias SquidMesh.Workers.CronTriggerWorker
 
   @poll_attempts 20
 
@@ -44,23 +45,54 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
-  @spec run_all!() :: %{payment_recovery: SquidMesh.Run.t(), daily_digest: SquidMesh.Run.t()}
+  @spec run_all!() :: %{
+          payment_recovery: SquidMesh.Run.t(),
+          dependency_recovery: SquidMesh.Run.t(),
+          daily_digest: SquidMesh.Run.t()
+        }
   def run_all! do
     payment_recovery = run!()
+    dependency_recovery = run_dependency_recovery!()
+    existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
-         {:ok, [cron_run]} <- WorkflowRuns.list_daily_digest_runs() do
+         {:ok, cron_run} <-
+           await_daily_digest_run(existing_daily_digest_run_ids, @poll_attempts) do
       unless cron_run.status == :completed and cron_run.trigger == :daily_digest do
         raise "unexpected cron smoke result"
       end
 
       %{
         payment_recovery: payment_recovery,
+        dependency_recovery: dependency_recovery,
         daily_digest: cron_run
       }
     else
       {:error, reason} ->
         raise "cron smoke test failed: #{inspect(reason)}"
+    end
+  end
+
+  @spec run_dependency_recovery!() :: SquidMesh.Run.t()
+  def run_dependency_recovery! do
+    attrs = %{
+      account_id: "acct_dependency_demo",
+      invoice_id: "inv_dependency_demo",
+      attempt_id: "attempt_dependency_demo"
+    }
+
+    with {:ok, run} <- WorkflowRuns.start_dependency_recovery(attrs),
+         :ok <- RuntimeHarness.wait_for_execution(),
+         {:ok, inspected_run} <-
+           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts) do
+      unless inspected_run.id == run.id and inspected_run.status == :completed do
+        raise "unexpected dependency recovery smoke result"
+      end
+
+      inspected_run
+    else
+      {:error, reason} ->
+        raise "dependency recovery smoke test failed: #{inspect(reason)}"
     end
   end
 
@@ -84,8 +116,26 @@ defmodule MinimalHostApp.Smoke do
 
   @spec run_cron_digest() :: :ok
   defp run_cron_digest do
-    Cron.evaluate!()
-    wait_for_execution()
+    if manual_oban_testing?() do
+      # Manual Oban testing disables plugins, so start the real plugin to
+      # validate its configuration and then invoke the cron worker explicitly.
+      Cron.ensure_started!()
+
+      %Oban.Job{
+        args: %{
+          "workflow" => "Elixir.MinimalHostApp.Workflows.DailyDigest",
+          "trigger" => "daily_digest"
+        }
+      }
+      |> CronTriggerWorker.perform()
+      |> case do
+        :ok -> wait_for_execution()
+        {:error, reason} -> raise "manual cron smoke trigger failed: #{inspect(reason)}"
+      end
+    else
+      Cron.evaluate!()
+      wait_for_execution()
+    end
   end
 
   @spec run_cancellation_smoke() :: {:ok, SquidMesh.Run.t()} | {:error, term()}
@@ -107,4 +157,61 @@ defmodule MinimalHostApp.Smoke do
   @spec ensure_cancelling(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_cancellation_status}
   defp ensure_cancelling(%SquidMesh.Run{status: :cancelling}), do: :ok
   defp ensure_cancelling(%SquidMesh.Run{}), do: {:error, :unexpected_cancellation_status}
+
+  @spec latest_daily_digest_run([SquidMesh.Run.t()]) ::
+          {:ok, SquidMesh.Run.t()} | {:error, :missing_daily_digest_run}
+  defp latest_daily_digest_run(runs) when is_list(runs) do
+    case Enum.max_by(runs, & &1.inserted_at) do
+      %SquidMesh.Run{} = run -> {:ok, run}
+      _other -> {:error, :missing_daily_digest_run}
+    end
+  rescue
+    Enum.EmptyError -> {:error, :missing_daily_digest_run}
+  end
+
+  @spec await_daily_digest_run(MapSet.t(Ecto.UUID.t()), non_neg_integer()) ::
+          {:ok, SquidMesh.Run.t()} | {:error, term()}
+  defp await_daily_digest_run(_existing_run_ids, 0), do: {:error, :missing_daily_digest_run}
+
+  defp await_daily_digest_run(existing_run_ids, attempts_remaining) when attempts_remaining > 0 do
+    :ok = wait_for_execution()
+
+    case WorkflowRuns.list_daily_digest_runs() do
+      {:ok, []} ->
+        Process.sleep(50)
+        await_daily_digest_run(existing_run_ids, attempts_remaining - 1)
+
+      {:ok, runs} ->
+        new_runs =
+          Enum.reject(runs, fn run -> MapSet.member?(existing_run_ids, run.id) end)
+
+        with {:ok, run} <- latest_daily_digest_run(new_runs) do
+          RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts)
+        else
+          {:error, :missing_daily_digest_run} ->
+            Process.sleep(50)
+            await_daily_digest_run(existing_run_ids, attempts_remaining - 1)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp daily_digest_run_ids do
+    case WorkflowRuns.list_daily_digest_runs() do
+      {:ok, runs} -> MapSet.new(runs, & &1.id)
+      {:error, _reason} -> MapSet.new()
+    end
+  end
+
+  defp manual_oban_testing? do
+    case Application.fetch_env(:minimal_host_app, Oban) do
+      {:ok, config} -> Keyword.get(config, :testing) == :manual
+      :error -> false
+    end
+  end
 end
