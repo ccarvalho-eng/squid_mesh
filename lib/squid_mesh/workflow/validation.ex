@@ -403,15 +403,11 @@ defmodule SquidMesh.Workflow.Validation do
       {{_from, _outcome}, [_single_transition]}, acc ->
         acc
 
-      {{from, outcome}, duplicate_transitions}, acc ->
-        if length(duplicate_transitions) > 1 do
-          [
-            "duplicate transition declared from #{inspect(from)} on outcome #{inspect(outcome)}"
-            | acc
-          ]
-        else
-          acc
-        end
+      {{from, outcome}, [_first, _second | _rest]}, acc ->
+        [
+          "duplicate transition declared from #{inspect(from)} on outcome #{inspect(outcome)}"
+          | acc
+        ]
     end)
   end
 

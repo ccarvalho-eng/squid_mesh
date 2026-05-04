@@ -202,7 +202,7 @@ defmodule SquidMesh.Workflow.Definition do
   @doc """
   Resolves the transition target for a step outcome.
   """
-  @spec transition_target(t(), atom(), atom()) ::
+  @spec transition_target(t(), atom(), transition_outcome()) ::
           {:ok, transition_target()} | {:error, {:unknown_transition, atom(), atom()}}
   def transition_target(definition, from_step, outcome)
       when is_atom(from_step) and is_atom(outcome) do
