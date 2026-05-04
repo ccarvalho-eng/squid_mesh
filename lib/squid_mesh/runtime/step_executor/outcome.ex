@@ -16,6 +16,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.RetryPolicy
+  alias SquidMesh.Runtime.StepExecutor.Progression
+  alias SquidMesh.Runtime.StepExecutor.Progression.Complete
+  alias SquidMesh.Runtime.StepExecutor.Progression.DispatchRun
+  alias SquidMesh.Runtime.StepExecutor.Progression.DispatchSteps
+  alias SquidMesh.Runtime.StepExecutor.Progression.Update
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
@@ -31,48 +36,23 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           | {:unknown_step, atom()}
           | {:missing_config, [atom()]}
 
-  @spec execute_step(atom(), WorkflowDefinition.step(), map(), Run.t()) ::
-          {:ok, map(), keyword()} | {:error, term()}
-  def execute_step(_step_name, %{module: built_in_kind, opts: opts}, input, run)
-      when built_in_kind in [:wait, :log] do
-    SquidMesh.Runtime.BuiltInStep.execute(built_in_kind, opts, input, run)
-  end
-
-  def execute_step(step_name, %{module: action}, input, run) do
-    context = %{
-      run_id: run.id,
-      workflow: run.workflow,
-      step: step_name,
-      state: run.context || %{}
-    }
-
-    # Squid Mesh owns durable workflow-step retries through persisted attempts,
-    # Oban scheduling, and the workflow DSL. Jido retries stay disabled here so
-    # one workflow attempt maps to one action execution.
-    case Jido.Exec.run(action, input, context, max_retries: 0) do
-      {:ok, output} when is_map(output) -> {:ok, output, []}
-      {:ok, output, _extras} when is_map(output) -> {:ok, output, []}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @spec persist_execution_result(
+  @spec apply_execution_result(
           {:ok, map(), keyword()} | {:error, term()},
-          atom(),
           Config.t(),
           WorkflowDefinition.t(),
           Run.t(),
+          atom(),
           Ecto.UUID.t(),
           Ecto.UUID.t(),
           pos_integer(),
           integer()
         ) :: :ok | {:error, execution_error() | term()}
-  def persist_execution_result(
+  def apply_execution_result(
         {:ok, output, execution_opts},
-        step_name,
-        config,
+        %Config{} = config,
         definition,
-        run,
+        %Run{} = run,
+        step_name,
         step_run_id,
         attempt_id,
         attempt_number,
@@ -86,15 +66,18 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
       case success_resolution(config.repo, definition, run, step_name) do
         {:ok, latest_run, target} ->
-          advance_after_success(
-            config,
-            definition,
-            latest_run,
-            step_name,
-            target,
-            output,
-            execution_opts
-          )
+          progression =
+            success_progression(
+              config,
+              definition,
+              latest_run,
+              step_name,
+              target,
+              output,
+              execution_opts
+            )
+
+          apply_progression(config, latest_run.id, progression)
 
         :already_terminal ->
           :ok
@@ -122,12 +105,12 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  def persist_execution_result(
+  def apply_execution_result(
         {:error, reason},
-        step_name,
-        config,
+        %Config{} = config,
         definition,
-        run,
+        %Run{} = run,
+        step_name,
         step_run_id,
         attempt_id,
         attempt_number,
@@ -174,30 +157,60 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  defp advance_after_success(
-         config,
+  @spec persist_execution_result(
+          {:ok, map(), keyword()} | {:error, term()},
+          atom(),
+          Config.t(),
+          WorkflowDefinition.t(),
+          Run.t(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          pos_integer(),
+          integer()
+        ) :: :ok | {:error, execution_error() | term()}
+  def persist_execution_result(
+        result,
+        step_name,
+        config,
+        definition,
+        run,
+        step_run_id,
+        attempt_id,
+        attempt_number,
+        started_at
+      ) do
+    apply_execution_result(
+      result,
+      config,
+      definition,
+      run,
+      step_name,
+      step_run_id,
+      attempt_id,
+      attempt_number,
+      started_at
+    )
+  end
+
+  defp success_progression(
+         _config,
          _definition,
-         run,
+         _run,
          _step_name,
          :complete,
          output,
          _execution_opts
        ) do
-    finalize_progress(
-      config,
-      run.id,
-      fn current_run ->
-        %{
-          context: merged_context(current_run, output),
-          current_step: nil,
-          last_error: nil
-        }
-      end,
-      :complete
-    )
+    Progression.complete(fn current_run ->
+      %{
+        context: merged_context(current_run, output),
+        current_step: nil,
+        last_error: nil
+      }
+    end)
   end
 
-  defp advance_after_success(
+  defp success_progression(
          config,
          definition,
          run,
@@ -209,47 +222,40 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
        when is_list(next_steps) do
     dispatch_opts = Keyword.take(execution_opts, [:schedule_in])
 
-    finalize_progress(
-      config,
-      run.id,
+    Progression.dispatch_steps(
       fn current_run -> success_attrs(definition, current_run, output, nil) end,
-      {:dispatch_steps, next_steps, dispatch_opts,
-       fn reason ->
-         dispatch_error = %{
-           message: "failed to dispatch workflow step",
-           next_steps: next_steps,
-           dispatch_reason: normalize_dispatch_cause(reason)
-         }
+      next_steps,
+      dispatch_opts,
+      fn reason ->
+        dispatch_error = %{
+          message: "failed to dispatch workflow step",
+          next_steps: next_steps,
+          dispatch_reason: normalize_dispatch_cause(reason)
+        }
 
-         mark_failed_after_dispatch_error(
-           config.repo,
-           run.id,
-           fn current_run -> success_attrs(definition, current_run, output, nil) end,
-           dispatch_error
-         )
-       end}
+        mark_failed_after_dispatch_error(
+          config.repo,
+          run.id,
+          fn current_run -> success_attrs(definition, current_run, output, nil) end,
+          dispatch_error
+        )
+      end
     )
   end
 
-  defp advance_after_success(
-         config,
+  defp success_progression(
+         _config,
          definition,
-         run,
+         _run,
          _step_name,
          {:wait, _phase_steps},
          output,
          _execution_opts
        ) do
-    RunStore.progress_run_with(
-      config.repo,
-      run.id,
-      fn current_run -> success_attrs(definition, current_run, output, nil) end,
-      :update
-    )
-    |> normalize_progress_result()
+    Progression.update(fn current_run -> success_attrs(definition, current_run, output, nil) end)
   end
 
-  defp advance_after_success(
+  defp success_progression(
          config,
          definition,
          run,
@@ -261,25 +267,23 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
        when is_atom(next_step) do
     dispatch_opts = Keyword.take(execution_opts, [:schedule_in])
 
-    finalize_progress(
-      config,
-      run.id,
+    Progression.dispatch_run(
       fn current_run -> success_attrs(definition, current_run, output, next_step) end,
-      {:next_step, next_step, dispatch_opts,
-       fn reason ->
-         dispatch_error = %{
-           message: "failed to dispatch workflow step",
-           next_step: next_step,
-           cause: normalize_dispatch_cause(reason)
-         }
+      dispatch_opts,
+      fn reason ->
+        dispatch_error = %{
+          message: "failed to dispatch workflow step",
+          next_step: next_step,
+          cause: normalize_dispatch_cause(reason)
+        }
 
-         mark_failed_after_dispatch_error(
-           config.repo,
-           run.id,
-           fn current_run -> success_attrs(definition, current_run, output, next_step) end,
-           dispatch_error
-         )
-       end}
+        mark_failed_after_dispatch_error(
+          config.repo,
+          run.id,
+          fn current_run -> success_attrs(definition, current_run, output, next_step) end,
+          dispatch_error
+        )
+      end
     )
   end
 
@@ -304,21 +308,26 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  defp finalize_progress(config, run_id, attrs_fun, :complete) do
-    attrs_fun = normalize_attrs_fun(attrs_fun)
-
+  defp apply_progression(%Config{} = config, run_id, %Complete{attrs_fun: attrs_fun}) do
     RunStore.progress_run_with(config.repo, run_id, attrs_fun, {:transition, :completed})
     |> normalize_progress_result()
   end
 
-  defp finalize_progress(
-         config,
-         run_id,
-         attrs_fun,
-         {:dispatch_steps, next_steps, dispatch_opts, dispatch_error_handler}
-       ) do
-    attrs_fun = normalize_attrs_fun(attrs_fun)
+  defp apply_progression(%Config{} = config, run_id, %Update{attrs_fun: attrs_fun}) do
+    RunStore.progress_run_with(config.repo, run_id, attrs_fun, :update)
+    |> normalize_progress_result()
+  end
 
+  defp apply_progression(
+         %Config{} = config,
+         run_id,
+         %DispatchSteps{
+           attrs_fun: attrs_fun,
+           steps: steps,
+           dispatch_opts: dispatch_opts,
+           dispatch_error_handler: dispatch_error_handler
+         }
+       ) do
     case RunStore.progress_run_with(
            config.repo,
            run_id,
@@ -328,27 +337,25 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
               Dispatcher.dispatch_steps(
                 config,
                 updated_run,
-                next_steps,
+                steps,
                 Keyword.put(dispatch_opts, :schedule_pending, true)
               )
             end}
          ) do
-      {:ok, _result} ->
-        :ok
-
-      {:error, reason} ->
-        dispatch_error_handler.(reason)
+      {:ok, _result} -> :ok
+      {:error, reason} -> dispatch_error_handler.(reason)
     end
   end
 
-  defp finalize_progress(
-         config,
+  defp apply_progression(
+         %Config{} = config,
          run_id,
-         attrs_fun,
-         {:next_step, _next_step, dispatch_opts, dispatch_error_handler}
+         %DispatchRun{
+           attrs_fun: attrs_fun,
+           dispatch_opts: dispatch_opts,
+           dispatch_error_handler: dispatch_error_handler
+         }
        ) do
-    attrs_fun = normalize_attrs_fun(attrs_fun)
-
     case RunStore.progress_run_with(
            config.repo,
            run_id,
@@ -356,11 +363,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            {:dispatch,
             fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end}
          ) do
-      {:ok, _result} ->
-        :ok
-
-      {:error, reason} ->
-        dispatch_error_handler.(reason)
+      {:ok, _result} -> :ok
+      {:error, reason} -> dispatch_error_handler.(reason)
     end
   end
 
@@ -419,26 +423,32 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   defp advance_after_failure(config, run, :complete) do
-    finalize_progress(config, run.id, %{current_step: nil, last_error: nil}, :complete)
+    config
+    |> apply_progression(
+      run.id,
+      Progression.complete(fn _run -> %{current_step: nil, last_error: nil} end)
+    )
   end
 
   defp advance_after_failure(config, run, next_step) when is_atom(next_step) do
     attrs = %{current_step: next_step, last_error: nil}
 
-    finalize_progress(
-      config,
+    config
+    |> apply_progression(
       run.id,
-      attrs,
-      {:next_step, next_step, [],
-       fn reason ->
-         dispatch_error = %{
-           message: "failed to dispatch workflow step",
-           next_step: next_step,
-           dispatch_reason: normalize_dispatch_cause(reason)
-         }
+      Progression.dispatch_run(
+        normalize_attrs_fun(attrs),
+        [],
+        fn reason ->
+          dispatch_error = %{
+            message: "failed to dispatch workflow step",
+            next_step: next_step,
+            dispatch_reason: normalize_dispatch_cause(reason)
+          }
 
-         mark_failed_after_dispatch_error(config.repo, run.id, attrs, dispatch_error)
-       end}
+          mark_failed_after_dispatch_error(config.repo, run.id, attrs, dispatch_error)
+        end
+      )
     )
   end
 
