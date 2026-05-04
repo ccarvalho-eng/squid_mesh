@@ -84,9 +84,18 @@ defmodule MinimalHostApp.Smoke do
     with {:ok, run} <- WorkflowRuns.start_dependency_recovery(attrs),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts) do
+           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts),
+         {:ok, history_run} <- WorkflowRuns.inspect_run(run.id, include_history: true) do
       unless inspected_run.id == run.id and inspected_run.status == :completed do
         raise "unexpected dependency recovery smoke result"
+      end
+
+      unless Enum.map(history_run.steps, &{&1.step, &1.status, &1.depends_on}) == [
+               {:load_account, :completed, []},
+               {:load_invoice, :completed, []},
+               {:prepare_notification, :completed, [:load_account, :load_invoice]}
+             ] do
+        raise "unexpected dependency inspection history"
       end
 
       inspected_run

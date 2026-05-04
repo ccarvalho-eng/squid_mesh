@@ -23,11 +23,17 @@ defmodule SquidMesh.Workflow.Definition do
   @type transition :: %{from: atom(), on: transition_outcome(), to: atom()}
   @type retry :: %{step: atom(), opts: keyword()}
   @type dependency_step_status :: :pending | :running | :completed | :failed
+  @type inspect_step_status :: dependency_step_status() | :waiting
   @type dependency_progress ::
           :complete
           | {:dispatch, [atom()]}
           | {:wait, [atom()]}
           | {:error, {:no_runnable_step, [atom()]}}
+  @type inspect_step :: %{
+          step: atom(),
+          depends_on: [atom()],
+          status: inspect_step_status()
+        }
 
   @type t :: %{
           triggers: [trigger()],
@@ -330,6 +336,36 @@ defmodule SquidMesh.Workflow.Definition do
   end
 
   @doc """
+  Builds the public per-step inspection view from declared steps and persisted
+  step statuses.
+  """
+  @spec inspect_steps(
+          t(),
+          %{optional(atom() | String.t()) => dependency_step_status() | inspect_step_status()}
+        ) :: [inspect_step()]
+  def inspect_steps(definition, step_statuses \\ %{}) when is_map(step_statuses) do
+    normalized_statuses =
+      Map.new(step_statuses, fn {step, status} ->
+        {serialize_step(step), serialize_inspect_step_status(status)}
+      end)
+
+    dependencies = dependency_map(definition)
+
+    definition
+    |> inspect_step_order()
+    |> Enum.map(fn step_name ->
+      %{
+        step: step_name,
+        depends_on: Map.get(dependencies, step_name, []),
+        status:
+          normalized_statuses
+          |> Map.get(serialize_step(step_name), "waiting")
+          |> deserialize_inspect_step_status()
+      }
+    end)
+  end
+
+  @doc """
   Deserializes persisted payload keys back to declared workflow field names.
   """
   @spec deserialize_payload(t() | nil, map()) :: map()
@@ -441,6 +477,14 @@ defmodule SquidMesh.Workflow.Definition do
     end)
   end
 
+  defp inspect_step_order(definition) do
+    if dependency_mode?(definition) do
+      dependency_step_order(definition)
+    else
+      Enum.map(definition.steps, & &1.name)
+    end
+  end
+
   defp dependency_phases(definition) do
     dependencies = dependency_map(definition)
     step_names = definition.steps |> Enum.map(& &1.name)
@@ -539,6 +583,14 @@ defmodule SquidMesh.Workflow.Definition do
 
   defp serialize_dependency_status(status) when is_atom(status), do: Atom.to_string(status)
   defp serialize_dependency_status(status) when is_binary(status), do: status
+  defp serialize_inspect_step_status(status) when is_atom(status), do: Atom.to_string(status)
+  defp serialize_inspect_step_status(status) when is_binary(status), do: status
+
+  defp deserialize_inspect_step_status("pending"), do: :pending
+  defp deserialize_inspect_step_status("running"), do: :running
+  defp deserialize_inspect_step_status("completed"), do: :completed
+  defp deserialize_inspect_step_status("failed"), do: :failed
+  defp deserialize_inspect_step_status("waiting"), do: :waiting
 
   defp deserialize_workflow_name(workflow_name) do
     try do

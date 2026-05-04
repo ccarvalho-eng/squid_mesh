@@ -440,6 +440,11 @@ defmodule SquidMeshTest do
       assert {:ok, inspected_run} =
                SquidMesh.inspect_run(created_run.id, include_history: true, repo: Repo)
 
+      assert Enum.map(inspected_run.steps, &{&1.step, &1.status, &1.depends_on}) == [
+               {:load_invoice, :completed, []},
+               {:send_email, :completed, []}
+             ]
+
       assert [%PublicStepRun{}, %PublicStepRun{}] = inspected_run.step_runs
 
       assert Enum.map(inspected_run.step_runs, &{&1.step, &1.status}) == [

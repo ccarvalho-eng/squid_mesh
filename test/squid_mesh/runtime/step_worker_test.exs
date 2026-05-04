@@ -158,6 +158,39 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              ]
     end
 
+    test "includes graph-aware step inspection for dependency runs with history enabled" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(DependencyWorkflow, input, repo: Repo)
+
+      assert {:ok, pending_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert Enum.map(pending_run.steps, &{&1.step, &1.status, &1.depends_on}) == [
+               {:load_account, :pending, []},
+               {:load_invoice, :pending, []},
+               {:send_email, :waiting, [:load_account, :load_invoice]}
+             ]
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_account"}
+               })
+
+      assert {:ok, running_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert Enum.map(running_run.steps, &{&1.step, &1.status, &1.depends_on}) == [
+               {:load_account, :completed, []},
+               {:load_invoice, :pending, []},
+               {:send_email, :waiting, [:load_account, :load_invoice]}
+             ]
+
+      completed_account_step = Enum.find(running_run.steps, &(&1.step == :load_account))
+      assert completed_account_step.output == %{account: %{id: "acct_123", tier: "pro"}}
+      assert Enum.map(completed_account_step.attempts, & &1.attempt_number) == [1]
+    end
+
     test "skips stale dependency jobs for steps that were never scheduled" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
@@ -320,6 +353,17 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              }
 
       assert Enum.map(completed_run.step_runs, &{&1.step, &1.input, &1.output}) == [
+               {:load_account, %{account_id: "acct_123"}, %{account: %{id: "acct_123"}}},
+               {:record_delivery, %{account: %{id: "acct_123"}, invoice_id: "inv_456"},
+                %{delivery: %{account_id: "acct_123", invoice_id: "inv_456"}}}
+             ]
+
+      assert Enum.map(completed_run.steps, &{&1.step, &1.status, &1.depends_on}) == [
+               {:load_account, :completed, []},
+               {:record_delivery, :completed, []}
+             ]
+
+      assert Enum.map(completed_run.steps, &{&1.step, &1.input, &1.output}) == [
                {:load_account, %{account_id: "acct_123"}, %{account: %{id: "acct_123"}}},
                {:record_delivery, %{account: %{id: "acct_123"}, invoice_id: "inv_456"},
                 %{delivery: %{account_id: "acct_123", invoice_id: "inv_456"}}}
