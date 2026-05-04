@@ -745,6 +745,54 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              end) == [{1, :completed}]
     end
 
+    test "preserves sibling dependency context when join dispatch fails after parallel success" do
+      :persistent_term.put({ConcurrentDependencyWorkflow, :test_pid}, self())
+
+      on_exit(fn ->
+        :persistent_term.erase({ConcurrentDependencyWorkflow, :test_pid})
+      end)
+
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(ConcurrentDependencyWorkflow, input, repo: Repo)
+
+      account_task =
+        Task.async(fn ->
+          StepExecutor.execute(run.id, :load_account, repo: Repo, execution: [name: MissingOban])
+        end)
+
+      invoice_task =
+        Task.async(fn ->
+          StepExecutor.execute(run.id, :load_invoice, repo: Repo, execution: [name: MissingOban])
+        end)
+
+      assert_receive {:concurrent_root_started, :load_account, account_pid}
+      assert_receive {:concurrent_root_started, :load_invoice, invoice_pid}
+
+      send(invoice_pid, :continue)
+
+      assert :ok = Task.await(invoice_task)
+
+      assert {:ok, invoice_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert invoice_run.status == :running
+      assert invoice_run.context.invoice == %{id: "inv_456", status: "open"}
+      refute Map.has_key?(invoice_run.context, :account)
+
+      send(account_pid, :continue)
+
+      assert :ok = Task.await(account_task)
+
+      assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_run.status == :failed
+      assert failed_run.current_step == nil
+      assert failed_run.context.account == %{id: "acct_123", tier: "pro"}
+      assert failed_run.context.invoice == %{id: "inv_456", status: "open"}
+      refute Map.has_key?(failed_run.context, :delivery)
+      assert failed_run.last_error.message == "failed to dispatch workflow step"
+      assert failed_run.last_error.next_steps == ["send_email"]
+    end
+
     test "marks the run failed if dependency resolution cannot find a runnable next step" do
       config = Config.load!(repo: Repo)
       input = %{account_id: "acct_123", invoice_id: "inv_456"}

@@ -117,6 +117,10 @@ defmodule MinimalHostApp.Smoke do
   @spec run_cron_digest() :: :ok
   defp run_cron_digest do
     if manual_oban_testing?() do
+      # Manual Oban testing disables plugins, so start the real plugin to
+      # validate its configuration and then invoke the cron worker explicitly.
+      Cron.ensure_started!()
+
       %Oban.Job{
         args: %{
           "workflow" => "Elixir.MinimalHostApp.Workflows.DailyDigest",

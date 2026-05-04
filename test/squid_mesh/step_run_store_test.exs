@@ -54,6 +54,8 @@ defmodule SquidMesh.StepRunStoreTest do
 
     assert scheduled_step_run.status == "pending"
 
+    Process.sleep(1)
+
     assert {:ok, duplicate_schedule, :skip} =
              StepRunStore.schedule_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
 
@@ -65,6 +67,7 @@ defmodule SquidMesh.StepRunStoreTest do
 
     assert claimed_step_run.id == scheduled_step_run.id
     assert claimed_step_run.status == "running"
+    assert DateTime.compare(claimed_step_run.updated_at, scheduled_step_run.updated_at) == :gt
 
     assert {:ok, duplicate_claim, :skip} =
              StepRunStore.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})

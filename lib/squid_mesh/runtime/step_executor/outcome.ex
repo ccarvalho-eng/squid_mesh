@@ -215,15 +215,18 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       fn current_run -> success_attrs(definition, current_run, output, nil) end,
       {:dispatch_steps, next_steps, dispatch_opts,
        fn reason ->
-         attrs = success_attrs(definition, run, output, nil)
-
          dispatch_error = %{
            message: "failed to dispatch workflow step",
            next_steps: next_steps,
            dispatch_reason: normalize_dispatch_cause(reason)
          }
 
-         mark_failed_after_dispatch_error(config.repo, run.id, attrs, dispatch_error)
+         mark_failed_after_dispatch_error(
+           config.repo,
+           run.id,
+           fn current_run -> success_attrs(definition, current_run, output, nil) end,
+           dispatch_error
+         )
        end}
     )
   end
@@ -264,15 +267,18 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       fn current_run -> success_attrs(definition, current_run, output, next_step) end,
       {:next_step, next_step, dispatch_opts,
        fn reason ->
-         attrs = success_attrs(definition, run, output, next_step)
-
          dispatch_error = %{
            message: "failed to dispatch workflow step",
            next_step: next_step,
            cause: normalize_dispatch_cause(reason)
          }
 
-         mark_failed_after_dispatch_error(config.repo, run.id, attrs, dispatch_error)
+         mark_failed_after_dispatch_error(
+           config.repo,
+           run.id,
+           fn current_run -> success_attrs(definition, current_run, output, next_step) end,
+           dispatch_error
+         )
        end}
     )
   end
@@ -513,16 +519,35 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  defp mark_failed_after_dispatch_error(repo, run_id, attrs, dispatch_error) do
-    case RunStore.transition_run(
+  defp mark_failed_after_dispatch_error(repo, run_id, attrs_or_fun, dispatch_error)
+       when is_function(attrs_or_fun, 1) do
+    case RunStore.progress_run_with(
            repo,
            run_id,
-           :failed,
-           attrs
-           |> Map.take([:context, :current_step])
-           |> Map.put(:last_error, dispatch_error)
+           fn current_run ->
+             attrs_or_fun.(current_run)
+             |> Map.take([:context, :current_step])
+             |> Map.put(:last_error, dispatch_error)
+           end,
+           {:transition, :failed}
          ) do
-      {:ok, _failed_run} -> :ok
+      {:ok, _result} -> :ok
+      {:error, transition_reason} -> {:error, transition_reason}
+    end
+  end
+
+  defp mark_failed_after_dispatch_error(repo, run_id, attrs, dispatch_error) when is_map(attrs) do
+    case RunStore.progress_run_with(
+           repo,
+           run_id,
+           fn _current_run ->
+             attrs
+             |> Map.take([:context, :current_step])
+             |> Map.put(:last_error, dispatch_error)
+           end,
+           {:transition, :failed}
+         ) do
+      {:ok, _result} -> :ok
       {:error, transition_reason} -> {:error, transition_reason}
     end
   end

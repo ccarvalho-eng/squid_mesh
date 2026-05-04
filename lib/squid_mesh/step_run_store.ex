@@ -193,6 +193,7 @@ defmodule SquidMesh.StepRunStore do
       attrs
       |> Map.take([:status, :output, :last_error])
       |> Map.put(:status, "running")
+      |> Map.put(:updated_at, now_utc())
 
     {count, _rows} =
       StepRun
@@ -211,7 +212,10 @@ defmodule SquidMesh.StepRunStore do
   @spec transition_failed_step_to_running(module(), Ecto.UUID.t(), String.t(), map()) ::
           {:ok, StepRun.t()} | :not_updated
   defp transition_failed_step_to_running(repo, run_id, step, attrs) do
-    updates = Map.take(attrs, [:status, :input, :output, :last_error])
+    updates =
+      attrs
+      |> Map.take([:status, :input, :output, :last_error])
+      |> Map.put(:updated_at, now_utc())
 
     {count, _rows} =
       StepRun
@@ -261,4 +265,8 @@ defmodule SquidMesh.StepRunStore do
   @spec serialize_step(step_identifier()) :: String.t()
   defp serialize_step(step) when is_atom(step), do: Atom.to_string(step)
   defp serialize_step(step) when is_binary(step), do: step
+
+  defp now_utc do
+    DateTime.utc_now() |> DateTime.truncate(:microsecond)
+  end
 end
