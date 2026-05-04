@@ -11,6 +11,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.ErrorRoutingWorkflow
   alias __MODULE__.ExhaustedRetryWorkflow
   alias __MODULE__.FailingWorkflow
+  alias __MODULE__.InputIsolationWorkflow
   alias __MODULE__.MissingOban
   alias __MODULE__.OrderedDependencyWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
@@ -74,8 +75,18 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, run} = SquidMesh.start_run(DependencyWorkflow, input, repo: Repo)
+      assert run.current_step == nil
 
-      assert run.current_step == :load_account
+      assert 2 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id)
+                 ),
+                 :count
+               )
 
       assert :ok =
                StepWorker.perform(%Job{
@@ -84,9 +95,33 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       assert {:ok, running_run} = SquidMesh.inspect_run(run.id, repo: Repo)
       assert running_run.status == :running
-      assert running_run.current_step == :load_invoice
+      assert running_run.current_step == nil
       assert running_run.context.account == %{id: "acct_123", tier: "pro"}
       refute Map.has_key?(running_run.context, :delivery)
+
+      assert 1 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' = 'load_invoice'", job.args)
+                 ),
+                 :count
+               )
+
+      assert 0 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' = 'send_email'", job.args)
+                 ),
+                 :count
+               )
 
       assert %{success: 3, failure: 0} =
                Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
@@ -153,7 +188,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, run} = SquidMesh.start_run(OrderedDependencyWorkflow, input, repo: Repo)
-      assert run.current_step == :load_account
+      assert run.current_step == nil
 
       assert :ok =
                StepWorker.perform(%Job{
@@ -161,8 +196,32 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                })
 
       assert {:ok, running_run} = SquidMesh.inspect_run(run.id, repo: Repo)
-      assert running_run.current_step == :load_invoice
+      assert running_run.current_step == nil
       refute Map.has_key?(running_run.context, :account_message)
+
+      assert 1 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' = 'load_invoice'", job.args)
+                 ),
+                 :count
+               )
+
+      assert 0 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' = 'prepare_account_message'", job.args)
+                 ),
+                 :count
+               )
 
       assert %{success: 4, failure: 0} =
                Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
@@ -174,6 +233,31 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                account_id: "acct_123",
                status: "prepared"
              }
+    end
+
+    test "executes already scheduled dependency steps with their persisted input snapshot" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(InputIsolationWorkflow, input, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_account"}
+               })
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_invoice"}
+               })
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert completed_run.status == :completed
+      assert completed_run.context.invoice.account_present? == false
     end
 
     test "persists failed step execution and marks the run failed when no retry is declared" do
@@ -480,6 +564,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert :ok =
                Outcome.persist_execution_result(
                  {:ok, %{invoice: %{id: "inv_456", status: "open"}}, []},
+                 :load_invoice,
                  config,
                  invalid_definition,
                  prepared_run,
@@ -544,6 +629,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert :ok =
                Outcome.persist_execution_result(
                  {:ok, %{invoice: %{id: "inv_456", status: "open"}}, []},
+                 :load_invoice,
                  config,
                  invalid_definition,
                  prepared_run,
@@ -800,6 +886,49 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
            account_id: account_message.account_id,
            invoice_id: invoice.id,
            channel: "email"
+         }
+       }}
+    end
+  end
+
+  defmodule InputIsolationWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_account, DependencyWorkflow.LoadAccount)
+      step(:load_invoice, InputIsolationWorkflow.LoadInvoice)
+
+      step(:complete_run, :log,
+        message: "dependency roots completed",
+        after: [:load_account, :load_invoice]
+      )
+    end
+  end
+
+  defmodule InputIsolationWorkflow.LoadInvoice do
+    use Jido.Action,
+      name: "load_invoice",
+      description: "Checks whether sibling context leaked into a scheduled root step",
+      schema: [
+        invoice_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{invoice_id: invoice_id} = input, _context) do
+      {:ok,
+       %{
+         invoice: %{
+           id: invoice_id,
+           account_present?: Map.has_key?(input, :account)
          }
        }}
     end

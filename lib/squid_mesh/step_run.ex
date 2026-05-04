@@ -6,7 +6,7 @@ defmodule SquidMesh.StepRun do
   replay decisions without exposing internal persistence records directly.
   """
 
-  @type status :: :running | :completed | :failed
+  @type status :: :pending | :running | :completed | :failed
 
   @type t :: %__MODULE__{}
 

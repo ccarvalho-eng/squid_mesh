@@ -37,4 +37,39 @@ defmodule SquidMesh.StepRunStoreTest do
              _other -> false
            end) == 3
   end
+
+  test "claims a scheduled step and skips duplicate schedules" do
+    {:ok, run} =
+      %RunRecord{}
+      |> RunRecord.changeset(%{
+        workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
+        trigger: "manual",
+        status: "running",
+        input: %{}
+      })
+      |> Repo.insert()
+
+    assert {:ok, scheduled_step_run, :schedule} =
+             StepRunStore.schedule_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+
+    assert scheduled_step_run.status == "pending"
+
+    assert {:ok, duplicate_schedule, :skip} =
+             StepRunStore.schedule_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+
+    assert duplicate_schedule.id == scheduled_step_run.id
+    assert duplicate_schedule.status == "pending"
+
+    assert {:ok, claimed_step_run, :execute} =
+             StepRunStore.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+
+    assert claimed_step_run.id == scheduled_step_run.id
+    assert claimed_step_run.status == "running"
+
+    assert {:ok, duplicate_claim, :skip} =
+             StepRunStore.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+
+    assert duplicate_claim.id == scheduled_step_run.id
+    assert duplicate_claim.status == "running"
+  end
 end

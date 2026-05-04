@@ -10,6 +10,6 @@ defmodule Mix.Tasks.Example.Smoke do
   @impl Mix.Task
   def run(_args) do
     Mix.Task.run("app.start")
-    MinimalHostApp.Smoke.run!()
+    MinimalHostApp.Smoke.run_all!()
   end
 end

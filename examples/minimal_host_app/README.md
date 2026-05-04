@@ -43,8 +43,8 @@ MIX_ENV=test mix example.smoke
 ```
 
 This command creates the test database if needed, runs migrations, starts the
-repo and Oban, starts a local HTTP gateway stub, then runs the workflow to
-completion.
+repo and Oban, starts a local HTTP gateway stub, then runs the example smoke
+path to completion.
 
 Run the development-like path after `mix setup`:
 
@@ -56,7 +56,9 @@ The smoke task:
 
 - starts a manual payment recovery workflow through
   `MinimalHostApp.WorkflowRuns.start_payment_recovery/1`
-- waits for execution and inspects the completed payment recovery run
+- starts the dependency-based recovery workflow through
+  `MinimalHostApp.WorkflowRuns.start_dependency_recovery/1`
+- waits for execution and inspects both completed manual runs
 - activates the example cron workflow through the host app's Oban-backed cron plugin
 - verifies the cron-triggered run completes as well
 

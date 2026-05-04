@@ -1,4 +1,4 @@
-defmodule SquidMesh.Runtime.StepExecutor.Input do
+defmodule SquidMesh.Runtime.StepInput do
   @moduledoc """
   Step-execution input normalization for the runtime.
 
