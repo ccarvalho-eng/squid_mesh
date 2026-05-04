@@ -29,7 +29,6 @@ reference material.
 - [Architecture](architecture.md) for runtime responsibilities and execution
   flow
 - [Tool adapters](tool_adapters.md) for integration boundaries
-- [ADR index](adr/index.md) for design decisions and historical context
 
 ## Examples
 
