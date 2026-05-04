@@ -735,6 +735,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert failed_run.context.invoice == %{id: "inv_456", status: "open"}
       assert failed_run.last_error.message == "failed to dispatch workflow step"
       assert failed_run.last_error.next_step == :send_email
+      assert failed_run.last_error.cause.message =~ "No Oban instance named"
 
       assert [%SquidMesh.StepRun{} = step_run] = failed_run.step_runs
       assert step_run.step == :load_invoice

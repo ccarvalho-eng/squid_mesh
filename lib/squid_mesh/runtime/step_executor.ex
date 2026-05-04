@@ -96,7 +96,16 @@ defmodule SquidMesh.Runtime.StepExecutor do
 
         prepared
         |> Execution.execute()
-        |> Outcome.apply_execution_result(prepared, attempt.id, attempt_number, started_at)
+        |> Outcome.apply_execution_result(
+          prepared.config,
+          prepared.definition,
+          prepared.run,
+          prepared.step_name,
+          prepared.step_run.id,
+          attempt.id,
+          attempt_number,
+          started_at
+        )
       end)
     end
   end

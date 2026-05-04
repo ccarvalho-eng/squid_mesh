@@ -11,13 +11,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
-  alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.RetryPolicy
-  alias SquidMesh.Runtime.StepExecutor.PreparedStep
   alias SquidMesh.Runtime.StepExecutor.Progression
   alias SquidMesh.Runtime.StepExecutor.Progression.Complete
   alias SquidMesh.Runtime.StepExecutor.Progression.DispatchRun
@@ -40,20 +38,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   @spec apply_execution_result(
           {:ok, map(), keyword()} | {:error, term()},
-          PreparedStep.t(),
+          Config.t(),
+          WorkflowDefinition.t(),
+          Run.t(),
+          atom(),
+          Ecto.UUID.t(),
           Ecto.UUID.t(),
           pos_integer(),
           integer()
         ) :: :ok | {:error, execution_error() | term()}
   def apply_execution_result(
         {:ok, output, execution_opts},
-        %PreparedStep{
-          config: config,
-          definition: definition,
-          run: run,
-          step_name: step_name,
-          step_run: %StepRunRecord{id: step_run_id}
-        },
+        %Config{} = config,
+        definition,
+        %Run{} = run,
+        step_name,
+        step_run_id,
         attempt_id,
         attempt_number,
         started_at
@@ -107,13 +107,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   def apply_execution_result(
         {:error, reason},
-        %PreparedStep{
-          config: config,
-          definition: definition,
-          run: run,
-          step_name: step_name,
-          step_run: %StepRunRecord{id: step_run_id}
-        },
+        %Config{} = config,
+        definition,
+        %Run{} = run,
+        step_name,
+        step_run_id,
         attempt_id,
         attempt_number,
         started_at
@@ -183,15 +181,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       ) do
     apply_execution_result(
       result,
-      %PreparedStep{
-        config: config,
-        definition: definition,
-        run: run,
-        step_name: step_name,
-        step: %{},
-        step_run: %StepRunRecord{id: step_run_id},
-        input: %{}
-      },
+      config,
+      definition,
+      run,
+      step_name,
+      step_run_id,
       attempt_id,
       attempt_number,
       started_at
@@ -280,7 +274,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         dispatch_error = %{
           message: "failed to dispatch workflow step",
           next_step: next_step,
-          dispatch_reason: normalize_dispatch_cause(reason)
+          cause: normalize_dispatch_cause(reason)
         }
 
         mark_failed_after_dispatch_error(
