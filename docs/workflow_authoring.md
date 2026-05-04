@@ -276,6 +276,7 @@ Transitions define the path through the workflow.
 
 ```elixir
 transition(:check_gateway_status, on: :ok, to: :notify_customer)
+transition(:check_gateway_status, on: :error, to: :notify_operator)
 transition(:notify_customer, on: :ok, to: :complete)
 ```
 
@@ -285,7 +286,9 @@ Current workflow validation requires:
 - exactly one trigger
 - exactly one workflow entry step for transition-based workflows
 - dependency-based workflows expose `entry_steps` plus `initial_step`; the singular `entry_step` is `nil`
-- transitions that reference known steps
+- transitions only use supported outcomes: `:ok` and `:error`
+- transitions reference known steps
+- each `{from, on}` pair is declared at most once
 
 ## Retries And Backoff
 
@@ -303,7 +306,8 @@ Supported retry options today:
 - `backoff: [type: :exponential, min: ..., max: ...]`
 
 Squid Mesh resolves workflow retry policy and uses Oban to schedule the next
-step attempt.
+step attempt. If a step also declares an `on: :error` transition, Squid Mesh
+takes that route only after retries are exhausted.
 
 ## Starting Runs
 
@@ -336,7 +340,7 @@ The current workflow contract is intentionally smaller than a full graph engine.
 Supported today:
 
 - one trigger per workflow
-- sequential transitions
+- sequential transitions with explicit `:ok` and `:error` outcomes
 - dependency-based joins with `after: [...]`
 - durable retries and replay
 - built-in `:wait` and `:log` steps

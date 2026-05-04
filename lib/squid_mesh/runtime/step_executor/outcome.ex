@@ -96,7 +96,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   def persist_execution_result(
         {:error, reason},
         config,
-        _definition,
+        definition,
         run,
         step_run_id,
         attempt_id,
@@ -135,15 +135,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           end
 
         _no_retry ->
-          Logger.error("workflow step failed")
-
-          case RunStore.transition_run(config.repo, run.id, :failed, %{
-                 current_step: run.current_step,
-                 last_error: error
-               }) do
-            {:ok, _failed_run} -> :ok
-            {:error, reason} -> {:error, reason}
-          end
+          handle_terminal_or_routed_failure(config, definition, run, error)
       end
     end
   end
@@ -239,6 +231,91 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
+  defp handle_terminal_or_routed_failure(config, definition, run, error) do
+    case WorkflowDefinition.transition_target(definition, run.current_step, :error) do
+      {:ok, target} ->
+        Logger.warning("workflow step failed; routing to error transition")
+        advance_after_failure(config, run, target)
+
+      {:error, {:unknown_transition, _from_step, :error}} ->
+        Logger.error("workflow step failed")
+
+        case RunStore.transition_run(config.repo, run.id, :failed, %{
+               current_step: run.current_step,
+               last_error: error
+             }) do
+          {:ok, _failed_run} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp advance_after_failure(config, run, :complete) do
+    finalize_failure(config, run.id, :complete)
+  end
+
+  defp advance_after_failure(config, run, next_step) when is_atom(next_step) do
+    finalize_failure(config, run.id, {:next_step, next_step})
+  end
+
+  defp finalize_failure(config, run_id, :complete) do
+    with {:ok, latest_run} <- RunStore.get_run(config.repo, run_id) do
+      case latest_run.status do
+        :cancelling ->
+          RunStore.transition_run(config.repo, run_id, :cancelled, %{
+            current_step: nil,
+            last_error: nil
+          })
+          |> normalize_run_transition_result()
+
+        _other_status ->
+          RunStore.transition_run(config.repo, run_id, :completed, %{
+            current_step: nil,
+            last_error: nil
+          })
+          |> normalize_run_transition_result()
+      end
+    end
+  end
+
+  defp finalize_failure(config, run_id, {:next_step, next_step}) do
+    with {:ok, latest_run} <- RunStore.get_run(config.repo, run_id) do
+      case latest_run.status do
+        :cancelling ->
+          RunStore.transition_run(config.repo, run_id, :cancelled, %{
+            current_step: nil,
+            last_error: nil
+          })
+          |> normalize_run_transition_result()
+
+        _other_status ->
+          case RunStore.update_and_dispatch_run(
+                 config.repo,
+                 run_id,
+                 %{
+                   current_step: next_step,
+                   last_error: nil
+                 },
+                 fn updated_run -> Dispatcher.dispatch_run(config, updated_run, []) end
+               ) do
+            {:ok, _updated_run} ->
+              :ok
+
+            {:error, reason} ->
+              mark_failed_after_error_branch_dispatch_error(
+                config.repo,
+                run_id,
+                next_step,
+                reason
+              )
+          end
+      end
+    end
+  end
+
   defp normalize_run_transition_result({:ok, _run}), do: :ok
   defp normalize_run_transition_result({:error, reason}), do: {:error, reason}
 
@@ -325,6 +402,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
     case RunStore.transition_run(repo, run.id, :failed, %{
            current_step: run.current_step,
+           last_error: dispatch_error
+         }) do
+      {:ok, _failed_run} -> :ok
+      {:error, transition_reason} -> {:error, transition_reason}
+    end
+  end
+
+  defp mark_failed_after_error_branch_dispatch_error(repo, run_id, next_step, reason) do
+    dispatch_error = %{
+      message: "failed to dispatch workflow step",
+      next_step: next_step,
+      dispatch_reason: normalize_dispatch_cause(reason)
+    }
+
+    case RunStore.transition_run(repo, run_id, :failed, %{
+           current_step: next_step,
            last_error: dispatch_error
          }) do
       {:ok, _failed_run} -> :ok

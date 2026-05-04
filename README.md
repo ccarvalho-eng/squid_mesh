@@ -113,8 +113,8 @@ mix ecto.migrate
 ## Example: Daily RSS To Discord
 
 This kind of workflow is where Squid Mesh gets interesting: one cron trigger,
-typed payload defaults, built-in steps, custom steps, and step-level retry on
-the side effect that actually needs it.
+typed payload defaults, built-in steps, custom steps, explicit failure routing,
+and step-level retry on the side effect that actually needs it.
 
 ```elixir
 defmodule Content.Workflows.PostDailyDigest do
@@ -134,6 +134,7 @@ defmodule Content.Workflows.PostDailyDigest do
     step(:fetch_feed, Content.Steps.FetchFeed)
     step(:build_digest, Content.Steps.BuildDigest)
     step(:announce_post, :log, message: "Posting digest to Discord", level: :info)
+    step(:record_failed_delivery, Content.Steps.RecordFailedDelivery)
 
     step(:post_to_discord, Content.Steps.PostToDiscord,
       retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
@@ -143,12 +144,15 @@ defmodule Content.Workflows.PostDailyDigest do
     transition(:build_digest, on: :ok, to: :announce_post)
     transition(:announce_post, on: :ok, to: :post_to_discord)
     transition(:post_to_discord, on: :ok, to: :complete)
+    transition(:post_to_discord, on: :error, to: :record_failed_delivery)
+    transition(:record_failed_delivery, on: :ok, to: :complete)
   end
 end
 ```
 
 The step modules can stay small and domain-focused, while Squid Mesh handles
-durable state, scheduling through Oban, retries, and run inspection.
+durable state, scheduling through Oban, retries, failure routing after retry
+exhaustion, and run inspection.
 
 Start the workflow through the public API and inspect the result with history:
 

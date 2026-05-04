@@ -8,6 +8,7 @@ defmodule SquidMesh.Workflow.Definition do
   """
 
   @type built_in_step_kind :: :wait | :log
+  @type transition_outcome :: :ok | :error
   @type payload_field :: %{name: atom(), type: atom(), opts: keyword()}
   @type trigger_type :: :manual | :cron
   @type trigger :: %{
@@ -17,7 +18,7 @@ defmodule SquidMesh.Workflow.Definition do
           payload: [payload_field()]
         }
   @type step :: %{name: atom(), module: module() | built_in_step_kind(), opts: keyword()}
-  @type transition :: %{from: atom(), on: atom(), to: atom()}
+  @type transition :: %{from: atom(), on: transition_outcome(), to: atom()}
   @type retry :: %{step: atom(), opts: keyword()}
 
   @type t :: %{

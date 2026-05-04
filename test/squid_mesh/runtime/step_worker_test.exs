@@ -8,6 +8,8 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.CancellationCompletionWorkflow
   alias __MODULE__.DependencyFailureWorkflow
   alias __MODULE__.DependencyWorkflow
+  alias __MODULE__.ErrorRoutingWorkflow
+  alias __MODULE__.ExhaustedRetryWorkflow
   alias __MODULE__.FailingWorkflow
   alias __MODULE__.MissingOban
   alias __MODULE__.OrderedDependencyWorkflow
@@ -197,6 +199,52 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert step_run.status == "failed"
       assert step_run.last_error == %{"message" => "gateway timeout", "code" => "gateway_timeout"}
       assert AttemptStore.attempt_count(Repo, step_run.id) == 1
+    end
+
+    test "continues to the :error transition when a step fails without retry" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ErrorRoutingWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.current_step == nil
+      assert completed_run.last_error == nil
+      assert completed_run.context == %{recovery: %{account_id: "acct_123", status: "queued"}}
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.status}) == [
+               {:check_gateway, :failed},
+               {:queue_recovery, :completed}
+             ]
+    end
+
+    test "continues to the :error transition only after retries are exhausted" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ExhaustedRetryWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert %{success: 3, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.current_step == nil
+      assert completed_run.last_error == nil
+      assert completed_run.context == %{recovery: %{account_id: "acct_123", status: "queued"}}
+
+      assert [failed_step_run, recovery_step_run] = completed_run.step_runs
+      assert {failed_step_run.step, failed_step_run.status} == {:check_gateway, :failed}
+      assert {recovery_step_run.step, recovery_step_run.status} == {:queue_recovery, :completed}
+
+      assert Enum.map(failed_step_run.attempts, &{&1.attempt_number, &1.status}) == [
+               {1, :failed},
+               {2, :failed}
+             ]
     end
 
     test "executes built-in wait and log steps declaratively" do
@@ -896,6 +944,102 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     @impl true
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+    end
+  end
+
+  defmodule ErrorRoutingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:check_gateway, ErrorRoutingWorkflow.CheckGateway)
+      step(:queue_recovery, ErrorRoutingWorkflow.QueueRecovery)
+
+      transition(:check_gateway, on: :error, to: :queue_recovery)
+      transition(:queue_recovery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule ErrorRoutingWorkflow.CheckGateway do
+    use Jido.Action,
+      name: "check_gateway",
+      description: "Fails and routes to recovery",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(_params, _context) do
+      {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+    end
+  end
+
+  defmodule ErrorRoutingWorkflow.QueueRecovery do
+    use Jido.Action,
+      name: "queue_recovery",
+      description: "Queues a recovery action after failure routing",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{recovery: %{account_id: account_id, status: "queued"}}}
+    end
+  end
+
+  defmodule ExhaustedRetryWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:check_gateway, ExhaustedRetryWorkflow.CheckGateway, retry: [max_attempts: 2])
+      step(:queue_recovery, ExhaustedRetryWorkflow.QueueRecovery)
+
+      transition(:check_gateway, on: :error, to: :queue_recovery)
+      transition(:queue_recovery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule ExhaustedRetryWorkflow.CheckGateway do
+    use Jido.Action,
+      name: "check_gateway",
+      description: "Fails until retries are exhausted and error routing can continue",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(_params, _context) do
+      {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+    end
+  end
+
+  defmodule ExhaustedRetryWorkflow.QueueRecovery do
+    use Jido.Action,
+      name: "queue_recovery",
+      description: "Queues recovery after retries are exhausted",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{recovery: %{account_id: account_id, status: "queued"}}}
     end
   end
 

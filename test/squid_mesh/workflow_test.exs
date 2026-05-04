@@ -644,11 +644,61 @@ defmodule SquidMesh.WorkflowTest do
           end
 
           step(:load_invoice, WorkflowWithUnsupportedTransitionOutcome.LoadInvoice)
-          transition(:load_invoice, on: :error, to: :complete)
+          transition(:load_invoice, on: :unexpected, to: :complete)
         end
       end
       """,
-      "transition from :load_invoice defines unsupported outcome :error"
+      "transition from :load_invoice defines unsupported outcome :unexpected"
+    )
+  end
+
+  test "supports transitions declared on :error outcomes" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithErrorTransition do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:check_gateway, WorkflowWithErrorTransition.CheckGateway)
+          step(:notify_operator, WorkflowWithErrorTransition.NotifyOperator)
+
+          transition(:check_gateway, on: :error, to: :notify_operator)
+          transition(:notify_operator, on: :ok, to: :complete)
+        end
+      end
+      """)
+
+    assert module.workflow_definition().transitions == [
+             %{from: :check_gateway, on: :error, to: :notify_operator},
+             %{from: :notify_operator, on: :ok, to: :complete}
+           ]
+  end
+
+  test "fails when duplicate transitions are declared for the same outcome" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithDuplicateTransitions do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:check_gateway, WorkflowWithDuplicateTransitions.CheckGateway)
+          step(:notify_operator, WorkflowWithDuplicateTransitions.NotifyOperator)
+          step(:record_failure, WorkflowWithDuplicateTransitions.RecordFailure)
+
+          transition(:check_gateway, on: :error, to: :notify_operator)
+          transition(:check_gateway, on: :error, to: :record_failure)
+        end
+      end
+      """,
+      "duplicate transition declared from :check_gateway on outcome :error"
     )
   end
 
