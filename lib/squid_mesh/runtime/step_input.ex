@@ -10,6 +10,7 @@ defmodule SquidMesh.Runtime.StepInput do
   alias SquidMesh.StepRunStore
 
   @type expected_step :: atom() | String.t() | nil
+  @type input_mapping :: [atom()] | nil
 
   @spec deserialize_expected_step(expected_step()) ::
           {:ok, atom() | nil} | {:error, {:invalid_step, String.t()}}
@@ -24,19 +25,21 @@ defmodule SquidMesh.Runtime.StepInput do
     end
   end
 
-  @spec build_step_input(Run.t()) :: map()
-  def build_step_input(%Run{payload: payload, context: context}) do
+  @spec build_step_input(Run.t(), input_mapping()) :: map()
+  def build_step_input(%Run{payload: payload, context: context}, input_mapping \\ nil) do
     payload
     |> Kernel.||(%{})
     |> Map.merge(context || %{})
     |> normalize_map_keys()
+    |> apply_input_mapping(input_mapping)
   end
 
-  @spec build_dependency_step_input(module(), Run.t()) :: map()
-  def build_dependency_step_input(repo, %Run{id: run_id} = run) do
+  @spec build_dependency_step_input(module(), Run.t(), input_mapping()) :: map()
+  def build_dependency_step_input(repo, %Run{id: run_id} = run, input_mapping \\ nil) do
     run
     |> build_step_input()
     |> merge_completed_outputs(StepRunStore.completed_outputs(repo, run_id))
+    |> apply_input_mapping(input_mapping)
   end
 
   @spec normalize_map_keys(map()) :: map()
@@ -57,6 +60,11 @@ defmodule SquidMesh.Runtime.StepInput do
   defp merge_completed_outputs(input, outputs) do
     Enum.reduce(outputs, input, fn output, acc -> Map.merge(acc, normalize_map_keys(output)) end)
   end
+
+  defp apply_input_mapping(input, nil), do: input
+
+  defp apply_input_mapping(input, input_mapping) when is_list(input_mapping),
+    do: Map.take(input, input_mapping)
 
   defp to_existing_atom(key) do
     try do

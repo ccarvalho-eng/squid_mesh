@@ -9,6 +9,8 @@ defmodule SquidMesh.Workflow.Definition do
 
   @type built_in_step_kind :: :wait | :log
   @type transition_outcome :: :ok | :error
+  @type step_input_mapping :: [atom()]
+  @type step_output_mapping :: atom()
   @type payload_field :: %{name: atom(), type: atom(), opts: keyword()}
   @type trigger_type :: :manual | :cron
   @type trigger :: %{
@@ -202,6 +204,32 @@ defmodule SquidMesh.Workflow.Definition do
     case Enum.find(definition.steps, &(&1.name == step_name)) do
       %{} = step -> {:ok, step}
       nil -> {:error, {:unknown_step, step_name}}
+    end
+  end
+
+  @doc """
+  Returns the explicit input mapping for one declared step, if any.
+  """
+  @spec step_input_mapping(t(), atom()) ::
+          {:ok, step_input_mapping() | nil} | {:error, {:unknown_step, atom()}}
+  def step_input_mapping(definition, step_name) when is_atom(step_name) do
+    with {:ok, step} <- step(definition, step_name) do
+      {:ok, Keyword.get(step.opts, :input)}
+    end
+  end
+
+  @doc """
+  Applies the declared output mapping for one step result.
+  """
+  @spec apply_output_mapping(t(), atom(), map()) ::
+          {:ok, map()} | {:error, {:unknown_step, atom()}}
+  def apply_output_mapping(definition, step_name, output)
+      when is_atom(step_name) and is_map(output) do
+    with {:ok, step} <- step(definition, step_name) do
+      case Keyword.get(step.opts, :output) do
+        nil -> {:ok, output}
+        output_key when is_atom(output_key) -> {:ok, %{output_key => output}}
+      end
     end
   end
 

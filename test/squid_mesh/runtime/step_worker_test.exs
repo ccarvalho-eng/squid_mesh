@@ -12,6 +12,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.DependencyFailureWorkflow
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.ErrorRoutingWorkflow
+  alias __MODULE__.ExplicitMappingWorkflow
   alias __MODULE__.ExhaustedRetryWorkflow
   alias __MODULE__.FailingWorkflow
   alias __MODULE__.InputIsolationWorkflow
@@ -264,6 +265,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
 
       assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+
       assert completed_run.status == :completed
 
       assert completed_run.context.account_message == %{
@@ -293,8 +295,35 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert success >= 1
 
       assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+
       assert completed_run.status == :completed
       assert completed_run.context.invoice.account_present? == false
+    end
+
+    test "supports explicit step input selection and output namespacing" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(ExplicitMappingWorkflow, input, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.account == %{id: "acct_123"}
+
+      assert completed_run.context.delivery == %{
+               account_id: "acct_123",
+               invoice_id: "inv_456"
+             }
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.input, &1.output}) == [
+               {:load_account, %{account_id: "acct_123"}, %{account: %{id: "acct_123"}}},
+               {:record_delivery, %{account: %{id: "acct_123"}, invoice_id: "inv_456"},
+                %{delivery: %{account_id: "acct_123", invoice_id: "inv_456"}}}
+             ]
     end
 
     test "allows parallel root workers to start from a pending dependency run" do
@@ -1484,6 +1513,63 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       transition(:load_invoice, on: :ok, to: :send_email)
       transition(:send_email, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule ExplicitMappingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+          field(:invoice_id, :string)
+        end
+      end
+
+      step(:load_account, ExplicitMappingWorkflow.LoadAccount,
+        input: [:account_id],
+        output: :account
+      )
+
+      step(:record_delivery, ExplicitMappingWorkflow.RecordDelivery,
+        input: [:account, :invoice_id],
+        output: :delivery
+      )
+
+      transition(:load_account, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule ExplicitMappingWorkflow.LoadAccount do
+    use Jido.Action,
+      name: "load_account",
+      description: "Loads one account from an explicit input mapping",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{id: account_id}}
+    end
+  end
+
+  defmodule ExplicitMappingWorkflow.RecordDelivery do
+    use Jido.Action,
+      name: "record_delivery",
+      description: "Builds delivery output from explicitly mapped inputs",
+      schema: [
+        account: [type: :map, required: true],
+        invoice_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account: account, invoice_id: invoice_id}, _context) do
+      {:ok, %{account_id: account.id, invoice_id: invoice_id}}
     end
   end
 

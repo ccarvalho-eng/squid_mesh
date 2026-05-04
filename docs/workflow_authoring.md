@@ -217,12 +217,28 @@ When a step succeeds:
 That means later steps can use values produced by earlier steps without manual
 state persistence in the host application.
 
+If you want a step to consume only a subset of the available data, declare an
+explicit input mapping:
+
+```elixir
+step(:load_account, Billing.Steps.LoadAccount, input: [:account_id], output: :account)
+step(:send_email, Billing.Steps.SendEmail, input: [:account, :invoice_id], output: :delivery)
+```
+
+In that example:
+
+- `:load_account` receives only `%{account_id: ...}`
+- its returned map is stored under `:account`
+- `:send_email` receives only `%{account: ..., invoice_id: ...}`
+- its returned map is stored under `:delivery`
+
 Current boundary:
 
 - run context is still a flat merged map
-- dependency-based workflows with parallel branches should emit disjoint top-level keys
+- explicit `input: [...]` lets a step declare which keys it consumes
+- explicit `output: :key` lets a step namespace its returned map under one top-level key
+- dependency-based workflows with parallel branches should still emit disjoint top-level keys unless they intentionally namespace outputs
 - if multiple parallel branches write the same key, the result is not a stable workflow contract today
-- explicit step input and output mapping belongs in a later slice
 
 ## Dependency-Based Steps
 
