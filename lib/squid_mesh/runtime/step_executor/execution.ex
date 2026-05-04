@@ -1,5 +1,11 @@
 defmodule SquidMesh.Runtime.StepExecutor.Execution do
-  @moduledoc false
+  @moduledoc """
+  Executes a prepared workflow step without mutating durable run state.
+
+  This phase is intentionally narrow: it runs built-in steps or Jido actions
+  using a previously prepared input snapshot and returns an execution result for
+  the apply phase to persist.
+  """
 
   alias SquidMesh.Run
   alias SquidMesh.Runtime.StepExecutor.PreparedStep

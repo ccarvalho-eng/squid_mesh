@@ -1,5 +1,11 @@
 defmodule SquidMesh.Runtime.StepExecutor.Progression do
-  @moduledoc false
+  @moduledoc """
+  Explicit apply-phase intents for runtime progression.
+
+  `Outcome` builds one of these progression values after a step finishes, and
+  the apply phase translates that intent into the locked run-store update or
+  dispatch operation needed to advance the workflow.
+  """
 
   alias SquidMesh.RunStore
 

@@ -1,5 +1,11 @@
 defmodule SquidMesh.Runtime.StepExecutor.Preparation do
-  @moduledoc false
+  @moduledoc """
+  Prepares a runnable workflow step for execution.
+
+  This phase resolves which step a worker is allowed to execute, ensures the
+  run is in the correct lifecycle state, claims durable step-run state, and
+  builds the normalized input that execution will consume.
+  """
 
   alias SquidMesh.Config
   alias SquidMesh.Run
