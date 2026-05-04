@@ -11,11 +11,13 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
+  alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.RetryPolicy
+  alias SquidMesh.Runtime.StepExecutor.PreparedStep
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
@@ -31,49 +33,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           | {:unknown_step, atom()}
           | {:missing_config, [atom()]}
 
-  @spec execute_step(atom(), WorkflowDefinition.step(), map(), Run.t()) ::
-          {:ok, map(), keyword()} | {:error, term()}
-  def execute_step(_step_name, %{module: built_in_kind, opts: opts}, input, run)
-      when built_in_kind in [:wait, :log] do
-    SquidMesh.Runtime.BuiltInStep.execute(built_in_kind, opts, input, run)
-  end
-
-  def execute_step(step_name, %{module: action}, input, run) do
-    context = %{
-      run_id: run.id,
-      workflow: run.workflow,
-      step: step_name,
-      state: run.context || %{}
-    }
-
-    # Squid Mesh owns durable workflow-step retries through persisted attempts,
-    # Oban scheduling, and the workflow DSL. Jido retries stay disabled here so
-    # one workflow attempt maps to one action execution.
-    case Jido.Exec.run(action, input, context, max_retries: 0) do
-      {:ok, output} when is_map(output) -> {:ok, output, []}
-      {:ok, output, _extras} when is_map(output) -> {:ok, output, []}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @spec persist_execution_result(
+  @spec apply_execution_result(
           {:ok, map(), keyword()} | {:error, term()},
-          atom(),
-          Config.t(),
-          WorkflowDefinition.t(),
-          Run.t(),
-          Ecto.UUID.t(),
+          PreparedStep.t(),
           Ecto.UUID.t(),
           pos_integer(),
           integer()
         ) :: :ok | {:error, execution_error() | term()}
-  def persist_execution_result(
+  def apply_execution_result(
         {:ok, output, execution_opts},
-        step_name,
-        config,
-        definition,
-        run,
-        step_run_id,
+        %PreparedStep{
+          config: config,
+          definition: definition,
+          run: run,
+          step_name: step_name,
+          step_run: %StepRunRecord{id: step_run_id}
+        },
         attempt_id,
         attempt_number,
         started_at
@@ -122,13 +97,15 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  def persist_execution_result(
+  def apply_execution_result(
         {:error, reason},
-        step_name,
-        config,
-        definition,
-        run,
-        step_run_id,
+        %PreparedStep{
+          config: config,
+          definition: definition,
+          run: run,
+          step_name: step_name,
+          step_run: %StepRunRecord{id: step_run_id}
+        },
         attempt_id,
         attempt_number,
         started_at
@@ -172,6 +149,45 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           handle_terminal_or_routed_failure(config, definition, run, step_name, error)
       end
     end
+  end
+
+  @spec persist_execution_result(
+          {:ok, map(), keyword()} | {:error, term()},
+          atom(),
+          Config.t(),
+          WorkflowDefinition.t(),
+          Run.t(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          pos_integer(),
+          integer()
+        ) :: :ok | {:error, execution_error() | term()}
+  def persist_execution_result(
+        result,
+        step_name,
+        config,
+        definition,
+        run,
+        step_run_id,
+        attempt_id,
+        attempt_number,
+        started_at
+      ) do
+    apply_execution_result(
+      result,
+      %PreparedStep{
+        config: config,
+        definition: definition,
+        run: run,
+        step_name: step_name,
+        step: %{},
+        step_run: %StepRunRecord{id: step_run_id},
+        input: %{}
+      },
+      attempt_id,
+      attempt_number,
+      started_at
+    )
   end
 
   defp advance_after_success(
