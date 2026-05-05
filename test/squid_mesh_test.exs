@@ -693,6 +693,30 @@ defmodule SquidMeshTest do
       assert unblocked_run.current_step == :record_delivery
     end
 
+    test "rolls back unblock when dispatching the resumed step fails" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+      assert paused_run.status == :paused
+
+      assert {:error, {:dispatch_failed, %RuntimeError{}}} =
+               SquidMesh.unblock_run(run.id, repo: Repo, execution: [name: MissingOban])
+
+      assert {:ok, current_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+      assert current_run.status == :paused
+      assert current_run.current_step == :wait_for_approval
+
+      paused_step = Enum.find(current_run.step_runs, &(&1.step == :wait_for_approval))
+      assert paused_step.status == :running
+      assert Enum.map(paused_step.attempts, & &1.status) == [:running]
+    end
+
     test "returns not found for missing runs" do
       assert {:error, :not_found} = SquidMesh.unblock_run(Ecto.UUID.generate(), repo: Repo)
     end

@@ -496,7 +496,14 @@ defmodule SquidMesh.RunStore do
   end
 
   @type pause_result ::
-          :noop
+          %{
+            run: Run.t(),
+            from_status: Run.status(),
+            to_status: Run.status(),
+            terminal_noop?: true,
+            finalized_step?: boolean(),
+            error: map()
+          }
           | %{
               run: Run.t(),
               from_status: Run.status(),
@@ -516,7 +523,26 @@ defmodule SquidMesh.RunStore do
 
                case current_run.status do
                  status when status in [:failed, :completed, :cancelled] ->
-                   :noop
+                   terminal_error = terminal_pause_error(status)
+
+                   with {:ok, finalized_step?} <-
+                          finalize_terminal_pause_history(
+                            repo,
+                            step_run_id,
+                            attempt_id,
+                            terminal_error
+                          ) do
+                     %{
+                       run: current_run,
+                       from_status: status,
+                       to_status: status,
+                       terminal_noop?: true,
+                       finalized_step?: finalized_step?,
+                       error: terminal_error
+                     }
+                   else
+                     {:error, reason} -> repo.rollback(reason)
+                   end
 
                  :cancelling ->
                    with {:ok, _attempt} <-
@@ -556,9 +582,6 @@ defmodule SquidMesh.RunStore do
                repo.rollback(:not_found)
            end
          end) do
-      {:ok, :noop} ->
-        {:ok, :noop}
-
       {:ok, %{} = result} ->
         {:ok, result}
 
@@ -836,6 +859,51 @@ defmodule SquidMesh.RunStore do
     end
   end
 
+  @spec finalize_terminal_pause_history(module(), Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, boolean()} | {:error, Ecto.Changeset.t() | :not_found}
+  defp finalize_terminal_pause_history(repo, step_run_id, attempt_id, error) do
+    with {:ok, attempt_finalized?} <- fail_attempt_if_running(repo, attempt_id, error),
+         {:ok, step_finalized?} <- fail_step_if_running(repo, step_run_id, error) do
+      {:ok, attempt_finalized? or step_finalized?}
+    end
+  end
+
+  @spec fail_attempt_if_running(module(), Ecto.UUID.t(), map()) ::
+          {:ok, boolean()} | {:error, Ecto.Changeset.t() | :not_found}
+  defp fail_attempt_if_running(repo, attempt_id, error) do
+    case locked_attempt(repo, attempt_id) do
+      %StepAttempt{status: "running"} ->
+        case AttemptStore.fail_attempt(repo, attempt_id, error) do
+          {:ok, _attempt} -> {:ok, true}
+          {:error, reason} -> {:error, reason}
+        end
+
+      %StepAttempt{} ->
+        {:ok, false}
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
+  @spec fail_step_if_running(module(), Ecto.UUID.t(), map()) ::
+          {:ok, boolean()} | {:error, Ecto.Changeset.t() | :not_found}
+  defp fail_step_if_running(repo, step_run_id, error) do
+    case locked_step_run_by_id(repo, step_run_id) do
+      %StepRun{status: "running"} ->
+        case StepRunStore.fail_step(repo, step_run_id, error) do
+          {:ok, _step_run} -> {:ok, true}
+          {:error, reason} -> {:error, reason}
+        end
+
+      %StepRun{} ->
+        {:ok, false}
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
   @spec emit_paused_cancellation_failure(Run.t(), map() | nil, map()) :: :ok
   defp emit_paused_cancellation_failure(_paused_run, nil, _error), do: :ok
 
@@ -855,10 +923,36 @@ defmodule SquidMesh.RunStore do
     %{message: "run cancelled while paused", reason: "cancelled"}
   end
 
+  @spec terminal_pause_error(Run.status()) :: map()
+  defp terminal_pause_error(:cancelled), do: pause_cancellation_error()
+
+  defp terminal_pause_error(status) do
+    %{
+      message: "run already finalized before pause progression",
+      status: status
+    }
+  end
+
+  @spec locked_attempt(module(), Ecto.UUID.t()) :: StepAttempt.t() | nil
+  defp locked_attempt(repo, attempt_id) do
+    StepAttempt
+    |> where([attempt], attempt.id == ^attempt_id)
+    |> lock("FOR UPDATE")
+    |> repo.one()
+  end
+
   @spec locked_step_run(module(), Ecto.UUID.t(), String.t()) :: StepRun.t() | nil
   defp locked_step_run(repo, run_id, step_name) do
     StepRun
     |> where([step_run], step_run.run_id == ^run_id and step_run.step == ^step_name)
+    |> lock("FOR UPDATE")
+    |> repo.one()
+  end
+
+  @spec locked_step_run_by_id(module(), Ecto.UUID.t()) :: StepRun.t() | nil
+  defp locked_step_run_by_id(repo, step_run_id) do
+    StepRun
+    |> where([step_run], step_run.id == ^step_run_id)
     |> lock("FOR UPDATE")
     |> repo.one()
   end

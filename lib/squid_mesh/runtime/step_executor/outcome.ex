@@ -214,7 +214,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         Observability.emit_run_transition(paused_run, from_status, to_status)
         :ok
 
-      {:ok, :noop} ->
+      {:ok, %{terminal_noop?: true, finalized_step?: true, error: error}} ->
+        Observability.emit_step_failed(run, step_name, attempt_number, duration, error)
+        :ok
+
+      {:ok, %{terminal_noop?: true}} ->
         :ok
 
       {:error, reason} ->
