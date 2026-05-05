@@ -62,7 +62,7 @@ The smoke task:
 - starts a manual approval workflow through
   `MinimalHostApp.WorkflowRuns.start_manual_approval/1`
 - resumes the paused run through `MinimalHostApp.WorkflowRuns.unblock_run/1`
-- waits for execution and inspects both completed manual runs
+- waits for execution and inspects all three completed manual workflows
 - activates the example cron workflow through the host app's Oban-backed cron plugin
 - verifies the cron-triggered run completes as well
 

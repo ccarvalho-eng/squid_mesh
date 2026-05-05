@@ -70,7 +70,12 @@ Additional measurements:
 - step completion and failure events include `duration`
 - retry scheduling events include `delay_ms`
 
-`duration` is emitted in native time units from `System.monotonic_time/0`.
+`duration` is emitted in native time units.
+
+For ordinary step execution, duration is measured from `System.monotonic_time/0`
+within the executing worker. For paused-step completion or failure, the terminal
+event can happen later during unblock or cancellation, so duration is derived
+from the persisted attempt start timestamp instead.
 
 ## Structured Logs
 

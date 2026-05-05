@@ -26,12 +26,22 @@ defmodule SquidMesh.Runtime.Unblocker do
            with {:ok, paused_run} <- locked_paused_run(config.repo, run.id),
                 {:ok, step_name} <- paused_step_name(paused_run),
                 {:ok, definition} <- WorkflowDefinition.load(workflow),
-                {:ok, %{module: :pause}} <- WorkflowDefinition.step(definition, step_name),
+                {:ok, _pause_step} <- paused_step_definition(definition, step_name),
+                {:ok, mapped_output} <-
+                  WorkflowDefinition.apply_output_mapping(definition, step_name, %{}),
                 {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
                 {:ok, attempt} <- running_attempt(config.repo, step_run.id),
                 {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
-                {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run.id, %{}),
-                :ok <- Outcome.resume_paused_step(config, definition, paused_run, step_name) do
+                {:ok, _step_run} <-
+                  StepRunStore.complete_step(config.repo, step_run.id, mapped_output),
+                :ok <-
+                  Outcome.resume_paused_step(
+                    config,
+                    definition,
+                    paused_run,
+                    step_name,
+                    mapped_output
+                  ) do
              {paused_run, step_name, attempt}
            else
              {:error, reason} -> config.repo.rollback(reason)
@@ -73,6 +83,15 @@ defmodule SquidMesh.Runtime.Unblocker do
     do: {:ok, step_name}
 
   defp paused_step_name(%Run{current_step: step_name}), do: {:error, {:invalid_step, step_name}}
+
+  defp paused_step_definition(definition, step_name) do
+    with {:ok, step} <- WorkflowDefinition.step(definition, step_name) do
+      case step do
+        %{module: :pause} -> {:ok, step}
+        _other -> {:error, {:invalid_step, step_name}}
+      end
+    end
+  end
 
   defp running_step_run(repo, run_id, step_name) do
     serialized_step = WorkflowDefinition.serialize_step(step_name)

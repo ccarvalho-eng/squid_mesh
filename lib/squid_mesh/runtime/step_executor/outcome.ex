@@ -243,14 +243,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     )
   end
 
-  @spec resume_paused_step(Config.t(), WorkflowDefinition.t(), Run.t(), atom()) ::
+  @spec resume_paused_step(Config.t(), WorkflowDefinition.t(), Run.t(), atom(), map()) ::
           :ok | {:error, execution_error() | term()}
-  def resume_paused_step(%Config{} = config, definition, %Run{} = run, step_name)
-      when is_atom(step_name) do
+  def resume_paused_step(%Config{} = config, definition, %Run{} = run, step_name, mapped_output)
+      when is_atom(step_name) and is_map(mapped_output) do
     case success_resolution(config.repo, definition, run, step_name) do
       {:ok, latest_run, target} ->
         progression =
-          success_progression(config, definition, latest_run, step_name, target, %{}, [])
+          success_progression(
+            config,
+            definition,
+            latest_run,
+            step_name,
+            target,
+            mapped_output,
+            []
+          )
 
         apply_resumed_progression(config, latest_run.id, progression)
 

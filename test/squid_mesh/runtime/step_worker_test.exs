@@ -18,6 +18,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.InputIsolationWorkflow
   alias __MODULE__.MissingOban
   alias __MODULE__.OrderedDependencyWorkflow
+  alias __MODULE__.PauseMappedWorkflow
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
   alias __MODULE__.SuccessfulWorkflow
@@ -424,6 +425,41 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert Enum.map(completed_run.step_runs, &{&1.step, &1.status}) == [
                {:wait_for_approval, :completed},
                {:record_delivery, :completed}
+             ]
+    end
+
+    test "persists pause output mappings after unblock" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseMappedWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, paused_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert paused_run.status == :paused
+
+      assert {:ok, unblocked_run} = SquidMesh.unblock_run(run.id, repo: Repo)
+      assert unblocked_run.status == :running
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.approval == %{}
+      assert completed_run.context.delivery == %{account_id: "acct_123", approval: %{}}
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.output}) == [
+               {:wait_for_approval, %{approval: %{}}},
+               {:record_delivery, %{delivery: %{account_id: "acct_123", approval: %{}}}}
              ]
     end
 
@@ -2018,6 +2054,45 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       transition(:wait_for_approval, on: :ok, to: :record_delivery)
       transition(:record_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule PauseMappedWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_approval, :pause, output: :approval)
+
+      step(:record_delivery, PauseMappedWorkflow.RecordDelivery,
+        input: [:approval, :account_id],
+        output: :delivery
+      )
+
+      transition(:wait_for_approval, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule PauseMappedWorkflow.RecordDelivery do
+    use Jido.Action,
+      name: "record_delivery",
+      description: "Confirms pause output mappings flow into the resumed step",
+      schema: [
+        approval: [type: :map, required: true],
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{approval: approval, account_id: account_id}, _context) do
+      {:ok, %{account_id: account_id, approval: approval}}
     end
   end
 

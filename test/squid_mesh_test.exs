@@ -715,6 +715,24 @@ defmodule SquidMeshTest do
                SquidMesh.unblock_run(run.id, repo: Repo)
     end
 
+    test "returns a structured error when the paused step no longer resolves to built-in :pause" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      Repo.update_all(
+        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        set: [current_step: "record_delivery"]
+      )
+
+      assert {:error, {:invalid_step, :record_delivery}} =
+               SquidMesh.unblock_run(run.id, repo: Repo)
+    end
+
     test "does not mutate pause state when a stale unblock races with cancellation" do
       assert {:ok, run} =
                SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
