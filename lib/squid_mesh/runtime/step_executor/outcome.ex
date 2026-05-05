@@ -217,7 +217,10 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       when is_atom(step_name) do
     case success_resolution(config.repo, definition, run, step_name) do
       {:ok, latest_run, target} ->
-        apply_paused_success(config, definition, latest_run, target)
+        progression =
+          success_progression(config, definition, latest_run, step_name, target, %{}, [])
+
+        apply_resumed_progression(config, latest_run.id, progression)
 
       :already_terminal ->
         :ok
@@ -418,88 +421,62 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     end
   end
 
-  defp apply_paused_success(config, _definition, run, :complete) do
-    RunStore.progress_run_with(
-      config.repo,
-      run.id,
-      fn current_run ->
-        %{
-          context: current_run.context || %{},
-          current_step: nil,
-          last_error: nil
-        }
-      end,
-      {:transition, :completed}
-    )
+  defp apply_resumed_progression(%Config{} = config, run_id, %Complete{} = progression) do
+    apply_progression(config, run_id, progression)
+  end
+
+  defp apply_resumed_progression(%Config{} = config, run_id, %Update{attrs_fun: attrs_fun}) do
+    RunStore.progress_run_with(config.repo, run_id, attrs_fun, {:transition, :running})
     |> normalize_progress_result()
   end
 
-  defp apply_paused_success(config, _definition, run, {:dispatch, next_steps})
-       when is_list(next_steps) do
+  defp apply_resumed_progression(
+         %Config{} = config,
+         run_id,
+         %DispatchSteps{
+           attrs_fun: attrs_fun,
+           steps: steps,
+           dispatch_opts: dispatch_opts,
+           dispatch_error_handler: dispatch_error_handler
+         }
+       ) do
     case RunStore.progress_run_with(
            config.repo,
-           run.id,
-           fn _current_run -> %{current_step: nil, last_error: nil} end,
+           run_id,
+           attrs_fun,
            {:transition_or_dispatch, :running,
             fn updated_run ->
               Dispatcher.dispatch_steps(
                 config,
                 updated_run,
-                next_steps,
-                schedule_pending: true
+                steps,
+                Keyword.put(dispatch_opts, :schedule_pending, true)
               )
             end}
          ) do
-      {:ok, _result} ->
-        :ok
-
-      {:error, reason} ->
-        dispatch_error = %{
-          message: "failed to dispatch workflow step",
-          next_steps: next_steps,
-          dispatch_reason: normalize_dispatch_cause(reason)
-        }
-
-        mark_failed_after_dispatch_error(
-          config.repo,
-          run.id,
-          %{current_step: nil},
-          dispatch_error
-        )
+      {:ok, _result} -> :ok
+      {:error, reason} -> dispatch_error_handler.(reason)
     end
   end
 
-  defp apply_paused_success(config, _definition, run, {:wait, _phase_steps}) do
-    RunStore.progress_run_with(
-      config.repo,
-      run.id,
-      fn _current_run -> %{current_step: nil, last_error: nil} end,
-      {:transition, :running}
-    )
-    |> normalize_progress_result()
-  end
-
-  defp apply_paused_success(config, definition, run, next_step) when is_atom(next_step) do
-    attrs = success_attrs(definition, run, %{}, next_step)
-
+  defp apply_resumed_progression(
+         %Config{} = config,
+         run_id,
+         %DispatchRun{
+           attrs_fun: attrs_fun,
+           dispatch_opts: dispatch_opts,
+           dispatch_error_handler: dispatch_error_handler
+         }
+       ) do
     case RunStore.progress_run_with(
            config.repo,
-           run.id,
-           normalize_attrs_fun(attrs),
+           run_id,
+           attrs_fun,
            {:transition_or_dispatch, :running,
-            fn updated_run -> Dispatcher.dispatch_run(config, updated_run, []) end}
+            fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end}
          ) do
-      {:ok, _result} ->
-        :ok
-
-      {:error, reason} ->
-        dispatch_error = %{
-          message: "failed to dispatch workflow step",
-          next_step: next_step,
-          dispatch_reason: normalize_dispatch_cause(reason)
-        }
-
-        mark_failed_after_dispatch_error(config.repo, run.id, attrs, dispatch_error)
+      {:ok, _result} -> :ok
+      {:error, reason} -> dispatch_error_handler.(reason)
     end
   end
 

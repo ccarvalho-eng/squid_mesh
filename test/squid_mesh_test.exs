@@ -5,6 +5,7 @@ defmodule SquidMeshTest do
   alias SquidMesh.Persistence.Run, as: PersistedRun
   alias SquidMesh.Run
   alias SquidMesh.RunStore
+  alias SquidMesh.Runtime.Unblocker
   alias SquidMesh.StepAttempt, as: PublicStepAttempt
   alias SquidMesh.StepRun, as: PublicStepRun
   alias SquidMesh.TestSupport.LazyWorkflow
@@ -664,6 +665,33 @@ defmodule SquidMeshTest do
 
     test "returns not found for missing runs" do
       assert {:error, :not_found} = SquidMesh.unblock_run(Ecto.UUID.generate(), repo: Repo)
+    end
+
+    test "does not mutate pause state when a stale unblock races with cancellation" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+      assert paused_run.status == :paused
+
+      assert {:ok, cancelled_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+      assert cancelled_run.status == :cancelled
+
+      assert {:error, {:invalid_transition, :cancelled, :running}} =
+               Unblocker.unblock(SquidMesh.config!(repo: Repo), paused_run)
+
+      assert {:ok, current_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+      assert current_run.status == :cancelled
+
+      paused_step = Enum.find(current_run.step_runs, &(&1.step == :wait_for_approval))
+      assert paused_step.status == :running
+      assert paused_step.output == nil
+      assert Enum.map(paused_step.attempts, & &1.status) == [:running]
     end
   end
 end
