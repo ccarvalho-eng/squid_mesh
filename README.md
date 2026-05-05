@@ -158,8 +158,8 @@ The step modules can stay small and domain-focused, while Squid Mesh handles
 durable state, scheduling through Oban, retries, failure routing after retry
 exhaustion, and run inspection.
 
-For manual review gates, use the built-in `:pause` step and later resume the
-run through `SquidMesh.unblock_run/2`.
+For manual review gates, use the built-in `:pause` step in transition-based
+workflows and later resume the run through `SquidMesh.unblock_run/2`.
 
 When a step needs a narrower contract than the whole payload plus accumulated
 context, use `input: [...]` to select keys and `output: :key` to namespace the

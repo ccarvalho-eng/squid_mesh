@@ -41,6 +41,10 @@ defmodule SquidMesh.Runtime.Unblocker do
     end
   end
 
+  def unblock(%Config{}, %Run{workflow: workflow}) do
+    {:error, {:invalid_workflow, workflow}}
+  end
+
   defp locked_paused_run(repo, run_id) do
     case locked_run_record(repo, run_id) do
       %RunRecord{status: "paused"} = run_record ->

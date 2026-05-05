@@ -596,6 +596,36 @@ defmodule SquidMeshTest do
     test "returns not found for missing runs" do
       assert {:error, :not_found} = SquidMesh.cancel_run(Ecto.UUID.generate(), repo: Repo)
     end
+
+    test "finalizes paused step history when cancelling a paused run" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, cancelled_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+      assert cancelled_run.status == :cancelled
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      paused_step = Enum.find(inspected_run.step_runs, &(&1.step == :wait_for_approval))
+
+      assert paused_step.status == :failed
+      assert paused_step.output == nil
+
+      assert paused_step.last_error == %{
+               message: "run cancelled while paused",
+               reason: "cancelled"
+             }
+
+      assert Enum.map(paused_step.attempts, &{&1.attempt_number, &1.status, &1.error}) == [
+               {1, :failed, %{message: "run cancelled while paused", reason: "cancelled"}}
+             ]
+    end
   end
 
   describe "replay_run/2" do
@@ -667,6 +697,24 @@ defmodule SquidMeshTest do
       assert {:error, :not_found} = SquidMesh.unblock_run(Ecto.UUID.generate(), repo: Repo)
     end
 
+    test "returns a structured error when the paused run workflow can no longer be loaded" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      Repo.update_all(
+        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        set: [workflow: "Elixir.Missing.Workflow"]
+      )
+
+      assert {:error, {:invalid_workflow, "Elixir.Missing.Workflow"}} =
+               SquidMesh.unblock_run(run.id, repo: Repo)
+    end
+
     test "does not mutate pause state when a stale unblock races with cancellation" do
       assert {:ok, run} =
                SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
@@ -689,9 +737,12 @@ defmodule SquidMeshTest do
       assert current_run.status == :cancelled
 
       paused_step = Enum.find(current_run.step_runs, &(&1.step == :wait_for_approval))
-      assert paused_step.status == :running
+      assert paused_step.status == :failed
       assert paused_step.output == nil
-      assert Enum.map(paused_step.attempts, & &1.status) == [:running]
+
+      assert Enum.map(paused_step.attempts, &{&1.status, &1.error}) == [
+               {:failed, %{message: "run cancelled while paused", reason: "cancelled"}}
+             ]
     end
   end
 end

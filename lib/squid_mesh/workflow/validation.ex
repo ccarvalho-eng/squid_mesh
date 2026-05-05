@@ -286,9 +286,12 @@ defmodule SquidMesh.Workflow.Validation do
   defp require_steps(errors, _step_names), do: errors
 
   defp validate_built_in_steps(errors, steps) do
-    Enum.reduce(steps, errors, fn step, acc ->
-      validate_built_in_step(acc, step)
-    end)
+    errors =
+      Enum.reduce(steps, errors, fn step, acc ->
+        validate_built_in_step(acc, step)
+      end)
+
+    validate_dependency_pause_steps(errors, steps)
   end
 
   defp validate_built_in_step(errors, %{module: kind} = step) when kind in @built_in_step_kinds do
@@ -300,6 +303,14 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp validate_built_in_step(errors, _step), do: errors
+
+  defp validate_dependency_pause_steps(errors, steps) do
+    if dependency_mode?(steps) and Enum.any?(steps, &(&1.module == :pause)) do
+      ["dependency-based workflows cannot declare built-in :pause steps" | errors]
+    else
+      errors
+    end
+  end
 
   defp validate_step_mappings(errors, steps) do
     Enum.reduce(steps, errors, fn %{name: name, opts: opts}, acc ->

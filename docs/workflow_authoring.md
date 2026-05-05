@@ -173,6 +173,7 @@ Built-in step options supported today:
 - `:log` requires `message` and accepts `level`
 - `:pause` intentionally stops the run at that step until an operator resumes it
 - `:wait` uses Oban-delayed continuation so long waits do not block a worker slot
+- `:pause` is supported in transition-based workflows; dependency-based workflows cannot declare `:pause`
 
 Manual approval example:
 
