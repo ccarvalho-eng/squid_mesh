@@ -251,6 +251,23 @@ defmodule SquidMesh.RunStoreTest do
       assert {:ok, cancelling_run} = RunStore.cancel_run(LockStepRepo, paused_run.id)
       assert cancelling_run.status == :cancelling
     end
+
+    test "clears current_step when cancelling a paused run" do
+      assert {:ok, run} =
+               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, running_run} =
+               RunStore.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
+
+      assert {:ok, paused_run} =
+               RunStore.transition_run(Repo, running_run.id, :paused, %{
+                 current_step: :wait_for_approval
+               })
+
+      assert {:ok, cancelled_run} = RunStore.cancel_run(Repo, paused_run.id)
+      assert cancelled_run.status == :cancelled
+      assert is_nil(cancelled_run.current_step)
+    end
   end
 
   describe "get_run/2" do

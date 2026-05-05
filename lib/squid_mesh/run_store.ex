@@ -781,7 +781,7 @@ defmodule SquidMesh.RunStore do
            Persistence.update_run_record(
              repo,
              run,
-             Persistence.transition_changeset_attrs(:cancelled, %{})
+             Persistence.transition_changeset_attrs(:cancelled, %{current_step: nil})
            ) do
       {:paused_cancelled, updated_run, current_run, failure_event}
     else
