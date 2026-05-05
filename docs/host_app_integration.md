@@ -188,6 +188,11 @@ defmodule MyApp.WorkflowRuns do
 end
 ```
 
+If the host app exposes pause-resume workflows, keep the latest Squid Mesh
+migrations applied before deploying the feature. Paused step runs now persist
+internal resume metadata so `unblock_run/2` can continue with stable output and
+transition semantics after restarts or code changes.
+
 ## Minimal Phoenix Host Skeleton
 
 A Phoenix application uses the same runtime contract. The main difference is

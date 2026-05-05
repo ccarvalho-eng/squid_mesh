@@ -35,7 +35,7 @@ Before a new version is called supported, the team should:
 
 1. Run the root test suite.
 2. Run the example host app smoke path.
-3. Run the restart resilience and soak/load verifications in the example app.
+3. Run the restart resilience and soak/load verifications in the example app, including paused-run unblock after restart.
 4. Review docs and configuration snippets for version-specific drift.
 
 Until that work is done, newer versions may still work, but they should be

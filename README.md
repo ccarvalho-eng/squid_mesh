@@ -159,7 +159,11 @@ durable state, scheduling through Oban, retries, failure routing after retry
 exhaustion, and run inspection.
 
 For manual review gates, use the built-in `:pause` step in transition-based
-workflows and later resume the run through `SquidMesh.unblock_run/2`.
+workflows and later resume the run through `SquidMesh.unblock_run/2`. Pause
+steps now persist both their mapped output and their resolved `:ok` target, so
+already-paused runs keep the same resume behavior across restarts and deploys.
+Host apps should apply the latest Squid Mesh migrations before relying on this
+durability contract in production.
 
 When a step needs a narrower contract than the whole payload plus accumulated
 context, use `input: [...]` to select keys and `output: :key` to namespace the

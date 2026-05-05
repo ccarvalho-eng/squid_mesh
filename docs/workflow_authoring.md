@@ -178,8 +178,11 @@ Built-in step options supported today:
 Manual approval example:
 
 ```elixir
-step(:wait_for_approval, :pause)
-step(:record_approval, Billing.Steps.RecordApproval, input: [:account_id], output: :approval)
+step(:wait_for_approval, :pause, output: :approval)
+step(:record_approval, Billing.Steps.RecordApproval,
+  input: [:account_id, :approval],
+  output: :approval
+)
 
 transition(:wait_for_approval, on: :ok, to: :record_approval)
 transition(:record_approval, on: :ok, to: :complete)
@@ -191,6 +194,14 @@ When a run is paused, inspect it as usual and resume it through the public API:
 {:ok, paused_run} = SquidMesh.inspect_run(run_id, include_history: true)
 {:ok, resumed_run} = SquidMesh.unblock_run(run_id)
 ```
+
+Pause-step durability notes:
+
+- `:pause` is only supported in transition-based workflows
+- the pause step stays `:running` while the run is `:paused`
+- `unblock_run/2` completes that pause step and then advances the declared `:ok` path
+- mapped pause output and the resolved `:ok` target are persisted with the paused step so restart or deploy boundaries do not recompute resume semantics from the current workflow definition
+- host apps should apply the latest Squid Mesh migrations before using pause-resume in existing environments
 
 ## Step Modules
 
