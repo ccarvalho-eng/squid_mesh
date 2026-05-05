@@ -463,6 +463,71 @@ defmodule SquidMesh.RunStore do
   end
 
   @doc false
+  @spec pause_run(module(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), transition_attrs()) ::
+          {:ok, progress_result()} | {:error, update_error() | transition_error() | term()}
+  def pause_run(repo, run_id, step_run_id, attempt_id, attrs) when is_map(attrs) do
+    cancellation_error = pause_cancellation_error()
+
+    case repo.transaction(fn ->
+           case get_run_record_for_update(repo, run_id) do
+             %RunRecord{} = run ->
+               current_run = Serialization.to_public_run(run)
+
+               case current_run.status do
+                 status when status in [:failed, :completed, :cancelled] ->
+                   :noop
+
+                 :cancelling ->
+                   with {:ok, _attempt} <-
+                          AttemptStore.fail_attempt(repo, attempt_id, cancellation_error),
+                        {:ok, _step_run} <-
+                          StepRunStore.fail_step(repo, step_run_id, cancellation_error),
+                        {:ok, _next_status} <- StateMachine.transition(:cancelling, :cancelled),
+                        {:ok, updated_run} <-
+                          Persistence.update_run_record(
+                            repo,
+                            run,
+                            Persistence.transition_changeset_attrs(
+                              :cancelled,
+                              cancellation_progress_attrs(attrs)
+                            )
+                          ) do
+                     {updated_run, :cancelling, :cancelled}
+                   else
+                     {:error, reason} -> repo.rollback(reason)
+                   end
+
+                 from_status ->
+                   with {:ok, _next_status} <- StateMachine.transition(from_status, :paused),
+                        {:ok, updated_run} <-
+                          Persistence.update_run_record(
+                            repo,
+                            run,
+                            Persistence.transition_changeset_attrs(:paused, attrs)
+                          ) do
+                     {updated_run, from_status, :paused}
+                   else
+                     {:error, reason} -> repo.rollback(reason)
+                   end
+               end
+
+             nil ->
+               repo.rollback(:not_found)
+           end
+         end) do
+      {:ok, :noop} ->
+        {:ok, :noop}
+
+      {:ok, {run, from_status, to_status}} ->
+        Observability.emit_run_transition(run, from_status, to_status)
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
   @spec transition_run_with(module(), Ecto.UUID.t(), Run.status(), attrs_fun()) ::
           {:ok, Run.t()} | {:error, transition_error()}
   def transition_run_with(repo, run_id, to_status, attrs_fun)
@@ -663,79 +728,116 @@ defmodule SquidMesh.RunStore do
   @spec cancel_paused_run(module(), Ecto.UUID.t()) ::
           {:ok, Run.t()} | {:error, transition_error() | {:invalid_run, Ecto.Changeset.t()}}
   defp cancel_paused_run(repo, run_id) do
-    cancellation_error = %{message: "run cancelled while paused", reason: "cancelled"}
+    cancellation_error = pause_cancellation_error()
 
-    repo.transaction(fn ->
-      case get_run_record_for_update(repo, run_id) do
-        %RunRecord{} = run ->
-          case Serialization.deserialize_status(run.status) do
-            :paused ->
-              with {:ok, _next_status} <- StateMachine.transition(:paused, :cancelled),
-                   :ok <-
-                     finalize_paused_step_history(
-                       repo,
-                       run_id,
-                       run.current_step,
-                       cancellation_error
-                     ),
-                   {:ok, updated_run} <-
-                     Persistence.update_run_record(
-                       repo,
-                       run,
-                       Persistence.transition_changeset_attrs(:cancelled, %{})
-                     ) do
-                Observability.emit_run_transition(updated_run, :paused, :cancelled)
-                updated_run
-              else
-                {:error, reason} -> repo.rollback(reason)
-              end
+    case repo.transaction(fn ->
+           case get_run_record_for_update(repo, run_id) do
+             %RunRecord{} = run ->
+               current_run = Serialization.to_public_run(run)
 
-            current_status ->
-              repo.rollback({:invalid_transition, current_status, :cancelled})
-          end
+               case current_run.status do
+                 :paused ->
+                   with {:ok, _next_status} <- StateMachine.transition(:paused, :cancelled),
+                        {:ok, failure_event} <-
+                          finalize_paused_step_history(
+                            repo,
+                            run_id,
+                            run.current_step,
+                            cancellation_error
+                          ),
+                        {:ok, updated_run} <-
+                          Persistence.update_run_record(
+                            repo,
+                            run,
+                            Persistence.transition_changeset_attrs(:cancelled, %{})
+                          ) do
+                     {updated_run, current_run, failure_event}
+                   else
+                     {:error, reason} -> repo.rollback(reason)
+                   end
 
-        nil ->
-          repo.rollback(:not_found)
-      end
-    end)
+                 current_status ->
+                   repo.rollback({:invalid_transition, current_status, :cancelled})
+               end
+
+             nil ->
+               repo.rollback(:not_found)
+           end
+         end) do
+      {:ok, {updated_run, paused_run, failure_event}} ->
+        emit_paused_cancellation_failure(paused_run, failure_event, cancellation_error)
+        Observability.emit_run_transition(updated_run, :paused, :cancelled)
+        {:ok, updated_run}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   @spec finalize_paused_step_history(module(), Ecto.UUID.t(), String.t() | nil, map()) ::
-          :ok | {:error, Ecto.Changeset.t() | :not_found}
-  defp finalize_paused_step_history(_repo, _run_id, nil, _error), do: :ok
+          {:ok, %{attempt_number: pos_integer(), duration_native: non_neg_integer()} | nil}
+          | {:error, Ecto.Changeset.t() | :not_found}
+  defp finalize_paused_step_history(_repo, _run_id, nil, _error), do: {:ok, nil}
 
   defp finalize_paused_step_history(repo, run_id, current_step, error) do
     case locked_step_run(repo, run_id, current_step) do
       %StepRun{id: step_run_id, status: "running"} ->
-        with :ok <- fail_running_attempt(repo, step_run_id, error),
+        with {:ok, failure_event} <- fail_running_attempt(repo, step_run_id, error),
              {:ok, _step_run} <- StepRunStore.fail_step(repo, step_run_id, error) do
-          :ok
+          {:ok, failure_event}
         end
 
       %StepRun{} ->
-        :ok
+        {:ok, nil}
 
       nil ->
-        :ok
+        {:ok, nil}
     end
   end
 
   @spec fail_running_attempt(module(), Ecto.UUID.t(), map()) ::
-          :ok | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, %{attempt_number: pos_integer(), duration_native: non_neg_integer()} | nil}
+          | {:error, Ecto.Changeset.t() | :not_found}
   defp fail_running_attempt(repo, step_run_id, error) do
     case locked_latest_attempt(repo, step_run_id) do
       %StepAttempt{id: attempt_id, status: "running"} ->
         case AttemptStore.fail_attempt(repo, attempt_id, error) do
-          {:ok, _attempt} -> :ok
-          {:error, reason} -> {:error, reason}
+          {:ok, attempt} ->
+            {:ok,
+             %{
+               attempt_number: attempt.attempt_number,
+               duration_native: Observability.duration_since(attempt.inserted_at)
+             }}
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
       %StepAttempt{} ->
-        :ok
+        {:ok, nil}
 
       nil ->
-        :ok
+        {:ok, nil}
     end
+  end
+
+  @spec emit_paused_cancellation_failure(Run.t(), map() | nil, map()) :: :ok
+  defp emit_paused_cancellation_failure(_paused_run, nil, _error), do: :ok
+
+  defp emit_paused_cancellation_failure(paused_run, failure_event, error) do
+    Observability.emit_step_failed(
+      paused_run,
+      paused_run.current_step,
+      failure_event.attempt_number,
+      failure_event.duration_native,
+      error
+    )
+  end
+
+  @doc false
+  @spec pause_cancellation_error() :: map()
+  def pause_cancellation_error do
+    %{message: "run cancelled while paused", reason: "cancelled"}
   end
 
   @spec locked_step_run(module(), Ecto.UUID.t(), String.t()) :: StepRun.t() | nil

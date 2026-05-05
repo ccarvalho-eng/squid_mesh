@@ -10,6 +10,7 @@ defmodule SquidMesh.Runtime.Unblocker do
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
+  alias SquidMesh.Observability
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
@@ -31,13 +32,23 @@ defmodule SquidMesh.Runtime.Unblocker do
                 {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
                 {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run.id, %{}),
                 :ok <- Outcome.resume_paused_step(config, definition, paused_run, step_name) do
-             :ok
+             {paused_run, step_name, attempt}
            else
              {:error, reason} -> config.repo.rollback(reason)
            end
          end) do
-      {:ok, :ok} -> :ok
-      {:error, reason} -> {:error, reason}
+      {:ok, {paused_run, step_name, attempt}} ->
+        Observability.emit_step_completed(
+          paused_run,
+          step_name,
+          attempt.attempt_number,
+          Observability.duration_since(attempt.inserted_at)
+        )
+
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

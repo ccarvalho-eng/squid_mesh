@@ -63,18 +63,15 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     with {:ok, mapped_output} <-
            WorkflowDefinition.apply_output_mapping(definition, step_name, output) do
       if Keyword.get(execution_opts, :pause, false) do
-        RunStore.progress_run_with(
-          config.repo,
-          run.id,
-          fn _current_run ->
-            %{
-              current_step: step_name,
-              last_error: nil
-            }
-          end,
-          {:transition, :paused}
+        apply_pause_progression(
+          config,
+          run,
+          step_name,
+          step_run_id,
+          attempt_id,
+          attempt_number,
+          duration
         )
-        |> normalize_progress_result()
       else
         with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
              {:ok, _step_run} <-
@@ -173,6 +170,41 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         _no_retry ->
           handle_terminal_or_routed_failure(config, definition, run, step_name, error)
       end
+    end
+  end
+
+  defp apply_pause_progression(
+         %Config{} = config,
+         %Run{} = run,
+         step_name,
+         step_run_id,
+         attempt_id,
+         attempt_number,
+         duration
+       ) do
+    case RunStore.pause_run(
+           config.repo,
+           run.id,
+           step_run_id,
+           attempt_id,
+           %{
+             current_step: step_name,
+             last_error: nil
+           }
+         ) do
+      {:ok, %Run{status: :cancelled}} ->
+        Observability.emit_step_failed(
+          run,
+          step_name,
+          attempt_number,
+          duration,
+          RunStore.pause_cancellation_error()
+        )
+
+        :ok
+
+      other ->
+        normalize_progress_result(other)
     end
   end
 

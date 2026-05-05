@@ -1138,6 +1138,68 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert cancelled_run.status == :cancelled
       assert cancelled_run.current_step == nil
     end
+
+    test "finalizes pause step history when cancellation wins before pause progression" do
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
+
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert {:ok, running_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :wait_for_approval
+               })
+
+      assert {:ok, step_run, :execute} =
+               StepRunStore.begin_step(Repo, run.id, :wait_for_approval, %{
+                 account_id: "acct_123"
+               })
+
+      assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+      assert {:ok, cancelling_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+      assert cancelling_run.status == :cancelling
+
+      started_at = System.monotonic_time()
+
+      assert :ok =
+               Outcome.apply_execution_result(
+                 {:ok, %{}, [pause: true]},
+                 config,
+                 definition,
+                 running_run,
+                 :wait_for_approval,
+                 step_run.id,
+                 attempt.id,
+                 attempt.attempt_number,
+                 started_at
+               )
+
+      assert {:ok, cancelled_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert cancelled_run.status == :cancelled
+      assert cancelled_run.current_step == nil
+
+      assert [%SquidMesh.StepRun{} = paused_step] = cancelled_run.step_runs
+      assert paused_step.step == :wait_for_approval
+      assert paused_step.status == :failed
+      assert paused_step.output == nil
+
+      assert paused_step.last_error == %{
+               message: "run cancelled while paused",
+               reason: "cancelled"
+             }
+
+      assert Enum.map(paused_step.attempts, &{&1.status, &1.error}) == [
+               {:failed, %{message: "run cancelled while paused", reason: "cancelled"}}
+             ]
+    end
   end
 
   defmodule DependencyWorkflow do

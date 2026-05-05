@@ -125,6 +125,16 @@ defmodule SquidMesh.Observability do
   end
 
   @doc """
+  Converts a persisted UTC timestamp into a native-unit duration up to now.
+  """
+  @spec duration_since(DateTime.t()) :: non_neg_integer()
+  def duration_since(%DateTime{} = started_at) do
+    DateTime.diff(DateTime.utc_now(), started_at, :microsecond)
+    |> Kernel.max(0)
+    |> System.convert_time_unit(:microsecond, :native)
+  end
+
+  @doc """
   Runs a function with run-scoped logger metadata attached.
   """
   @spec with_run_metadata(Run.t(), (-> result)) :: result when result: var
