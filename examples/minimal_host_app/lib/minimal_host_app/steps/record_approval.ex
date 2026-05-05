@@ -7,16 +7,16 @@ defmodule MinimalHostApp.Steps.RecordApproval do
     name: "record_approval",
     description: "Records an approved manual review result",
     schema: [
-      account_id: [type: :string, required: true]
+      account_id: [type: :string, required: true],
+      approval: [type: :map, required: true]
     ]
 
   @impl true
   @spec run(map(), map()) :: {:ok, map()}
-  def run(%{account_id: account_id}, _context) do
+  def run(%{account_id: account_id, approval: approval}, _context) do
     {:ok,
-     %{
-       account_id: account_id,
-       status: "approved"
-     }}
+     approval
+     |> Map.put(:account_id, account_id)
+     |> Map.put(:status, "approved")}
   end
 end

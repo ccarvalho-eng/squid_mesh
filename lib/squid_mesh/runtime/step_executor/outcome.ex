@@ -63,15 +63,25 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     with {:ok, mapped_output} <-
            WorkflowDefinition.apply_output_mapping(definition, step_name, output) do
       if Keyword.get(execution_opts, :pause, false) do
-        apply_pause_progression(
-          config,
-          run,
-          step_name,
-          step_run_id,
-          attempt_id,
-          attempt_number,
-          duration
-        )
+        with {:ok, pause_target} <-
+               WorkflowDefinition.transition_target(definition, step_name, :ok),
+             {:ok, _step_run} <-
+               StepRunStore.persist_pause_resume(
+                 config.repo,
+                 step_run_id,
+                 mapped_output,
+                 pause_target
+               ) do
+          apply_pause_progression(
+            config,
+            run,
+            step_name,
+            step_run_id,
+            attempt_id,
+            attempt_number,
+            duration
+          )
+        end
       else
         with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
              {:ok, _step_run} <-

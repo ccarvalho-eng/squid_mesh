@@ -14,10 +14,10 @@ defmodule MinimalHostApp.Workflows.ManualApproval do
       end
     end
 
-    step(:wait_for_approval, :pause)
+    step(:wait_for_approval, :pause, output: :approval)
 
     step(:record_approval, MinimalHostApp.Steps.RecordApproval,
-      input: [:account_id],
+      input: [:account_id, :approval],
       output: :approval
     )
 

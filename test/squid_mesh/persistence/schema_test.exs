@@ -48,6 +48,7 @@ defmodule SquidMesh.Persistence.SchemaTest do
                :input,
                :output,
                :last_error,
+               :resume,
                :inserted_at,
                :updated_at
              ]

@@ -463,6 +463,44 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              ]
     end
 
+    test "uses persisted pause resume metadata when unblocking" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseMappedWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      persisted_output = %{approval: %{source: "persisted"}}
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(step_run in StepRun,
+                   where:
+                     step_run.run_id == ^run.id and step_run.step == "wait_for_approval" and
+                       step_run.status == "running"
+                 ),
+                 set: [
+                   resume: %{"output" => persisted_output, "target" => "__complete__"}
+                 ]
+               )
+
+      assert {:ok, unblocked_run} = SquidMesh.unblock_run(run.id, repo: Repo)
+      assert unblocked_run.status == :completed
+      assert is_nil(unblocked_run.current_step)
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.approval == %{source: "persisted"}
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.status, &1.output}) == [
+               {:wait_for_approval, :completed, %{approval: %{source: "persisted"}}}
+             ]
+    end
+
     test "allows parallel root workers to start from a pending dependency run" do
       :persistent_term.put({ConcurrentDependencyWorkflow, :test_pid}, self())
 

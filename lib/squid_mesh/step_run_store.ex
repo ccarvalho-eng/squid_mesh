@@ -14,6 +14,7 @@ defmodule SquidMesh.StepRunStore do
   @type step_input :: map()
   @type step_output :: map()
   @type step_error :: map()
+  @type pause_target :: :complete | atom()
   @type step_status :: :pending | :running | :completed | :failed
   @type begin_result :: {:ok, StepRun.t(), :execute | :skip} | {:error, Ecto.Changeset.t()}
   @type schedule_result :: {:ok, StepRun.t(), :schedule | :skip} | {:error, Ecto.Changeset.t()}
@@ -32,6 +33,7 @@ defmodule SquidMesh.StepRunStore do
       status: "running",
       input: input,
       output: nil,
+      resume: nil,
       last_error: nil
     }
 
@@ -63,6 +65,7 @@ defmodule SquidMesh.StepRunStore do
       status: "pending",
       input: input,
       output: nil,
+      resume: nil,
       last_error: nil,
       inserted_at: DateTime.utc_now(),
       updated_at: DateTime.utc_now()
@@ -91,7 +94,12 @@ defmodule SquidMesh.StepRunStore do
   @spec complete_step(module(), Ecto.UUID.t(), step_output()) ::
           {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def complete_step(repo, step_run_id, output) when is_map(output) do
-    update_step(repo, step_run_id, %{status: "completed", output: output, last_error: nil})
+    update_step(repo, step_run_id, %{
+      status: "completed",
+      output: output,
+      resume: nil,
+      last_error: nil
+    })
   end
 
   @doc """
@@ -100,7 +108,22 @@ defmodule SquidMesh.StepRunStore do
   @spec fail_step(module(), Ecto.UUID.t(), step_error()) ::
           {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def fail_step(repo, step_run_id, error) when is_map(error) do
-    update_step(repo, step_run_id, %{status: "failed", last_error: error})
+    update_step(repo, step_run_id, %{status: "failed", resume: nil, last_error: error})
+  end
+
+  @doc """
+  Persists pause-resume metadata for a running pause step without completing it.
+  """
+  @spec persist_pause_resume(module(), Ecto.UUID.t(), step_output(), pause_target()) ::
+          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def persist_pause_resume(repo, step_run_id, output, target)
+      when is_map(output) and (target == :complete or is_atom(target)) do
+    update_step(repo, step_run_id, %{
+      resume: %{
+        "output" => output,
+        "target" => serialize_pause_target(target)
+      }
+    })
   end
 
   @doc """
@@ -191,7 +214,7 @@ defmodule SquidMesh.StepRunStore do
   defp transition_pending_step_to_running(repo, run_id, step, attrs) do
     updates =
       attrs
-      |> Map.take([:status, :output, :last_error])
+      |> Map.take([:status, :output, :resume, :last_error])
       |> Map.put(:status, "running")
       |> Map.put(:updated_at, now_utc())
 
@@ -214,7 +237,7 @@ defmodule SquidMesh.StepRunStore do
   defp transition_failed_step_to_running(repo, run_id, step, attrs) do
     updates =
       attrs
-      |> Map.take([:status, :input, :output, :last_error])
+      |> Map.take([:status, :input, :output, :resume, :last_error])
       |> Map.put(:updated_at, now_utc())
 
     {count, _rows} =
@@ -261,6 +284,10 @@ defmodule SquidMesh.StepRunStore do
   defp deserialize_status("running"), do: :running
   defp deserialize_status("completed"), do: :completed
   defp deserialize_status("failed"), do: :failed
+
+  @spec serialize_pause_target(pause_target()) :: String.t()
+  defp serialize_pause_target(:complete), do: "__complete__"
+  defp serialize_pause_target(target) when is_atom(target), do: serialize_step(target)
 
   @spec serialize_step(step_identifier()) :: String.t()
   defp serialize_step(step) when is_atom(step), do: Atom.to_string(step)
