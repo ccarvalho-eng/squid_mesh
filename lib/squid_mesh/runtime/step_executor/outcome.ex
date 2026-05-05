@@ -192,7 +192,12 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
              last_error: nil
            }
          ) do
-      {:ok, %Run{status: :cancelled}} ->
+      {:ok,
+       %{
+         run: %Run{status: :cancelled} = cancelled_run,
+         from_status: from_status,
+         to_status: to_status
+       }} ->
         Observability.emit_step_failed(
           run,
           step_name,
@@ -201,10 +206,19 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           RunStore.pause_cancellation_error()
         )
 
+        Observability.emit_run_transition(cancelled_run, from_status, to_status)
+
         :ok
 
-      other ->
-        normalize_progress_result(other)
+      {:ok, %{run: paused_run, from_status: from_status, to_status: to_status}} ->
+        Observability.emit_run_transition(paused_run, from_status, to_status)
+        :ok
+
+      {:ok, :noop} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -241,48 +255,6 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       attempt_number,
       started_at
     )
-  end
-
-  @spec resume_paused_step(Config.t(), WorkflowDefinition.t(), Run.t(), atom(), map()) ::
-          :ok | {:error, execution_error() | term()}
-  def resume_paused_step(%Config{} = config, definition, %Run{} = run, step_name, mapped_output)
-      when is_atom(step_name) and is_map(mapped_output) do
-    case success_resolution(config.repo, definition, run, step_name) do
-      {:ok, latest_run, target} ->
-        progression =
-          success_progression(
-            config,
-            definition,
-            latest_run,
-            step_name,
-            target,
-            mapped_output,
-            []
-          )
-
-        apply_resumed_progression(config, latest_run.id, progression)
-
-      :already_terminal ->
-        :ok
-
-      {:retrying, latest_run} ->
-        RunStore.progress_run_with(
-          config.repo,
-          latest_run.id,
-          fn _current_run -> %{current_step: nil, last_error: nil} end,
-          {:transition, :running}
-        )
-        |> normalize_progress_result()
-
-      {:error, latest_run, reason} ->
-        mark_failed_after_success_resolution_error(
-          config.repo,
-          run,
-          step_name,
-          latest_run.context || %{},
-          reason
-        )
-    end
   end
 
   defp success_progression(
@@ -454,65 +426,6 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            run_id,
            attrs_fun,
            {:dispatch,
-            fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end}
-         ) do
-      {:ok, _result} -> :ok
-      {:error, reason} -> dispatch_error_handler.(reason)
-    end
-  end
-
-  defp apply_resumed_progression(%Config{} = config, run_id, %Complete{} = progression) do
-    apply_progression(config, run_id, progression)
-  end
-
-  defp apply_resumed_progression(%Config{} = config, run_id, %Update{attrs_fun: attrs_fun}) do
-    RunStore.progress_run_with(config.repo, run_id, attrs_fun, {:transition, :running})
-    |> normalize_progress_result()
-  end
-
-  defp apply_resumed_progression(
-         %Config{} = config,
-         run_id,
-         %DispatchSteps{
-           attrs_fun: attrs_fun,
-           steps: steps,
-           dispatch_opts: dispatch_opts,
-           dispatch_error_handler: dispatch_error_handler
-         }
-       ) do
-    case RunStore.progress_run_with(
-           config.repo,
-           run_id,
-           attrs_fun,
-           {:transition_or_dispatch, :running,
-            fn updated_run ->
-              Dispatcher.dispatch_steps(
-                config,
-                updated_run,
-                steps,
-                Keyword.put(dispatch_opts, :schedule_pending, true)
-              )
-            end}
-         ) do
-      {:ok, _result} -> :ok
-      {:error, reason} -> dispatch_error_handler.(reason)
-    end
-  end
-
-  defp apply_resumed_progression(
-         %Config{} = config,
-         run_id,
-         %DispatchRun{
-           attrs_fun: attrs_fun,
-           dispatch_opts: dispatch_opts,
-           dispatch_error_handler: dispatch_error_handler
-         }
-       ) do
-    case RunStore.progress_run_with(
-           config.repo,
-           run_id,
-           attrs_fun,
-           {:transition_or_dispatch, :running,
             fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end}
          ) do
       {:ok, _result} -> :ok

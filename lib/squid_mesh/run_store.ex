@@ -270,17 +270,50 @@ defmodule SquidMesh.RunStore do
   """
   @spec cancel_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, transition_error()}
   def cancel_run(repo, run_id) do
-    with {:ok, run} <- get_run(repo, run_id) do
-      case run.status do
-        :paused ->
-          cancel_paused_run(repo, run_id)
+    cancellation_error = pause_cancellation_error()
 
-        status ->
-          with {:ok, target_status} <- Persistence.cancellation_target_status(status) do
-            transition_run(repo, run_id, target_status)
-          end
-      end
-    else
+    case repo.transaction(fn ->
+           case get_run_record_for_update(repo, run_id) do
+             %RunRecord{} = run ->
+               current_run = Serialization.to_public_run(run)
+
+               case current_run.status do
+                 :paused ->
+                   cancel_locked_paused_run(
+                     repo,
+                     run,
+                     current_run,
+                     cancellation_error
+                   )
+
+                 status ->
+                   with {:ok, target_status} <- Persistence.cancellation_target_status(status),
+                        {:ok, _next_status} <- StateMachine.transition(status, target_status),
+                        {:ok, updated_run} <-
+                          Persistence.update_run_record(
+                            repo,
+                            run,
+                            Persistence.transition_changeset_attrs(target_status, %{})
+                          ) do
+                     {:transition, updated_run, status, target_status}
+                   else
+                     {:error, reason} -> repo.rollback(reason)
+                   end
+               end
+
+             nil ->
+               repo.rollback(:not_found)
+           end
+         end) do
+      {:ok, {:transition, updated_run, from_status, to_status}} ->
+        Observability.emit_run_transition(updated_run, from_status, to_status)
+        {:ok, updated_run}
+
+      {:ok, {:paused_cancelled, updated_run, paused_run, failure_event}} ->
+        emit_paused_cancellation_failure(paused_run, failure_event, cancellation_error)
+        Observability.emit_run_transition(updated_run, :paused, :cancelled)
+        {:ok, updated_run}
+
       {:error, _reason} = error ->
         error
     end
@@ -462,9 +495,17 @@ defmodule SquidMesh.RunStore do
     end
   end
 
+  @type pause_result ::
+          :noop
+          | %{
+              run: Run.t(),
+              from_status: Run.status(),
+              to_status: Run.status()
+            }
+
   @doc false
   @spec pause_run(module(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), transition_attrs()) ::
-          {:ok, progress_result()} | {:error, update_error() | transition_error() | term()}
+          {:ok, pause_result()} | {:error, update_error() | transition_error() | term()}
   def pause_run(repo, run_id, step_run_id, attempt_id, attrs) when is_map(attrs) do
     cancellation_error = pause_cancellation_error()
 
@@ -492,7 +533,7 @@ defmodule SquidMesh.RunStore do
                               cancellation_progress_attrs(attrs)
                             )
                           ) do
-                     {updated_run, :cancelling, :cancelled}
+                     %{run: updated_run, from_status: :cancelling, to_status: :cancelled}
                    else
                      {:error, reason} -> repo.rollback(reason)
                    end
@@ -505,7 +546,7 @@ defmodule SquidMesh.RunStore do
                             run,
                             Persistence.transition_changeset_attrs(:paused, attrs)
                           ) do
-                     {updated_run, from_status, :paused}
+                     %{run: updated_run, from_status: from_status, to_status: :paused}
                    else
                      {:error, reason} -> repo.rollback(reason)
                    end
@@ -518,9 +559,8 @@ defmodule SquidMesh.RunStore do
       {:ok, :noop} ->
         {:ok, :noop}
 
-      {:ok, {run, from_status, to_status}} ->
-        Observability.emit_run_transition(run, from_status, to_status)
-        {:ok, run}
+      {:ok, %{} = result} ->
+        {:ok, result}
 
       {:error, _reason} = error ->
         error
@@ -725,52 +765,27 @@ defmodule SquidMesh.RunStore do
     |> repo.one()
   end
 
-  @spec cancel_paused_run(module(), Ecto.UUID.t()) ::
-          {:ok, Run.t()} | {:error, transition_error() | {:invalid_run, Ecto.Changeset.t()}}
-  defp cancel_paused_run(repo, run_id) do
-    cancellation_error = pause_cancellation_error()
-
-    case repo.transaction(fn ->
-           case get_run_record_for_update(repo, run_id) do
-             %RunRecord{} = run ->
-               current_run = Serialization.to_public_run(run)
-
-               case current_run.status do
-                 :paused ->
-                   with {:ok, _next_status} <- StateMachine.transition(:paused, :cancelled),
-                        {:ok, failure_event} <-
-                          finalize_paused_step_history(
-                            repo,
-                            run_id,
-                            run.current_step,
-                            cancellation_error
-                          ),
-                        {:ok, updated_run} <-
-                          Persistence.update_run_record(
-                            repo,
-                            run,
-                            Persistence.transition_changeset_attrs(:cancelled, %{})
-                          ) do
-                     {updated_run, current_run, failure_event}
-                   else
-                     {:error, reason} -> repo.rollback(reason)
-                   end
-
-                 current_status ->
-                   repo.rollback({:invalid_transition, current_status, :cancelled})
-               end
-
-             nil ->
-               repo.rollback(:not_found)
-           end
-         end) do
-      {:ok, {updated_run, paused_run, failure_event}} ->
-        emit_paused_cancellation_failure(paused_run, failure_event, cancellation_error)
-        Observability.emit_run_transition(updated_run, :paused, :cancelled)
-        {:ok, updated_run}
-
-      {:error, _reason} = error ->
-        error
+  @spec cancel_locked_paused_run(module(), RunRecord.t(), Run.t(), map()) ::
+          {:paused_cancelled, Run.t(), Run.t(), map() | nil}
+          | no_return()
+  defp cancel_locked_paused_run(repo, run, current_run, cancellation_error) do
+    with {:ok, _next_status} <- StateMachine.transition(:paused, :cancelled),
+         {:ok, failure_event} <-
+           finalize_paused_step_history(
+             repo,
+             run.id,
+             run.current_step,
+             cancellation_error
+           ),
+         {:ok, updated_run} <-
+           Persistence.update_run_record(
+             repo,
+             run,
+             Persistence.transition_changeset_attrs(:cancelled, %{})
+           ) do
+      {:paused_cancelled, updated_run, current_run, failure_event}
+    else
+      {:error, reason} -> repo.rollback(reason)
     end
   end
 

@@ -1,8 +1,83 @@
 defmodule SquidMesh.RunStoreTest do
   use SquidMesh.DataCase
 
+  import Ecto.Query
+
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.RunStore
+
+  defmodule LockStepRepo do
+    import Ecto.Query
+
+    alias SquidMesh.Persistence.Run, as: RunRecord
+
+    @scenario_key {__MODULE__, :scenario}
+
+    def put_locked_transition(run_id, from_status, to_status, attrs \\ %{}) do
+      :persistent_term.put(@scenario_key, %{
+        run_id: run_id,
+        from_status: from_status,
+        to_status: to_status,
+        attrs: attrs,
+        fired: false
+      })
+    end
+
+    def clear_locked_transition do
+      :persistent_term.erase(@scenario_key)
+    end
+
+    def transaction(fun), do: SquidMesh.Test.Repo.transaction(fun)
+    def transaction(fun, opts), do: SquidMesh.Test.Repo.transaction(fun, opts)
+    def rollback(reason), do: SquidMesh.Test.Repo.rollback(reason)
+    def update(changeset), do: SquidMesh.Test.Repo.update(changeset)
+    def update(changeset, opts), do: SquidMesh.Test.Repo.update(changeset, opts)
+
+    def one(query), do: maybe_flip_locked_run(query, fn -> SquidMesh.Test.Repo.one(query) end)
+
+    def one(query, opts),
+      do: maybe_flip_locked_run(query, fn -> SquidMesh.Test.Repo.one(query, opts) end)
+
+    defp maybe_flip_locked_run(%Ecto.Query{lock: "FOR UPDATE"}, fetch_fun) do
+      case :persistent_term.get(@scenario_key, nil) do
+        %{
+          run_id: run_id,
+          from_status: from_status,
+          to_status: to_status,
+          attrs: attrs,
+          fired: false
+        } = scenario ->
+          current_run = SquidMesh.Test.Repo.get(RunRecord, run_id)
+
+          if current_run && current_run.status == Atom.to_string(from_status) do
+            SquidMesh.Test.Repo.update_all(
+              from(run_record in RunRecord, where: run_record.id == ^run_id),
+              set: locked_transition_attrs(to_status, attrs)
+            )
+
+            :persistent_term.put(@scenario_key, %{scenario | fired: true})
+          end
+
+          fetch_fun.()
+
+        _other ->
+          fetch_fun.()
+      end
+    end
+
+    defp maybe_flip_locked_run(_query, fetch_fun), do: fetch_fun.()
+
+    defp locked_transition_attrs(to_status, attrs) do
+      serialized_attrs =
+        attrs
+        |> Enum.map(fn
+          {:current_step, step} when is_atom(step) -> {:current_step, Atom.to_string(step)}
+          pair -> pair
+        end)
+
+      [{:status, Atom.to_string(to_status)} | serialized_attrs]
+    end
+  end
 
   defmodule InvoiceReminderWorkflow do
     use SquidMesh.Workflow
@@ -130,6 +205,51 @@ defmodule SquidMesh.RunStoreTest do
 
       assert {:error, {:invalid_transition, :failed, :cancelling}} =
                RunStore.cancel_run(Repo, failed_run.id)
+    end
+
+    test "cancels a run that becomes paused before cancellation acquires the lock" do
+      assert {:ok, run} =
+               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, running_run} =
+               RunStore.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
+
+      LockStepRepo.put_locked_transition(
+        run.id,
+        :running,
+        :paused,
+        %{current_step: :wait_for_approval}
+      )
+
+      on_exit(fn -> LockStepRepo.clear_locked_transition() end)
+
+      assert {:ok, cancelled_run} = RunStore.cancel_run(LockStepRepo, running_run.id)
+      assert cancelled_run.status == :cancelled
+    end
+
+    test "cancels a paused run that becomes running before cancellation acquires the lock" do
+      assert {:ok, run} =
+               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, running_run} =
+               RunStore.transition_run(Repo, run.id, :running, %{current_step: :load_invoice})
+
+      assert {:ok, paused_run} =
+               RunStore.transition_run(Repo, running_run.id, :paused, %{
+                 current_step: :wait_for_approval
+               })
+
+      LockStepRepo.put_locked_transition(
+        run.id,
+        :paused,
+        :running,
+        %{current_step: :load_invoice}
+      )
+
+      on_exit(fn -> LockStepRepo.clear_locked_transition() end)
+
+      assert {:ok, cancelling_run} = RunStore.cancel_run(LockStepRepo, paused_run.id)
+      assert cancelling_run.status == :cancelling
     end
   end
 
