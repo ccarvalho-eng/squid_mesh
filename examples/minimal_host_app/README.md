@@ -79,6 +79,7 @@ This path verifies:
 - queued work survives an Oban restart boundary
 - delayed work survives an Oban restart boundary
 - retrying work survives an Oban restart boundary
+- a paused manual-approval run survives restart and still unblocks through the host boundary with the same resume semantics
 
 ## Bounded Soak And Load
 

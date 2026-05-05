@@ -13,6 +13,7 @@ What exists today:
 - durable workflow runtime on top of Postgres and Oban
 - replay, cancellation, retries, cron activation, and inspection
 - example host app harness with smoke, cancellation, restart resilience, and soak/load entrypoints
+- paused-run resume semantics now verified across restart boundaries in the example host app
 - explicit recovery and operational boundaries in the docs
 
 Why the warning still remains:
@@ -46,7 +47,7 @@ MIX_ENV=test mix example.soak
 These checks are meant to answer different questions:
 
 - `example.smoke`: does the basic embedded workflow path work?
-- `example.resilience`: do queued, delayed, and retrying runs survive an Oban restart boundary?
+- `example.resilience`: do queued, delayed, retrying, and paused-then-resumed runs survive an Oban restart boundary?
 - `example.soak`: does the runtime remain stable under a bounded mix of success, retry, replay, and cancellation traffic?
 
 ## Decision Rule
