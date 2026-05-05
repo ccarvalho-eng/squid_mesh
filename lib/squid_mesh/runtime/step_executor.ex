@@ -43,7 +43,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   @spec execute_run(Config.t(), Run.t(), atom() | nil) ::
           :ok | {:error, execution_error() | term()}
   defp execute_run(_config, %Run{status: status}, _expected_step)
-       when status in [:completed, :failed, :cancelled] do
+       when status in [:completed, :failed, :cancelled, :paused] do
     :ok
   end
 

@@ -6,6 +6,7 @@ This example shows how an application can:
 
 - configure Squid Mesh with its own `Repo` and `Oban`
 - expose workflow operations through an application-facing module
+- pause and resume a human-in-the-loop workflow through that boundary
 - activate cron workflows through the host app's Oban plugins
 - run repeatable smoke, resilience, and bounded soak paths during development
 
@@ -58,7 +59,10 @@ The smoke task:
   `MinimalHostApp.WorkflowRuns.start_payment_recovery/1`
 - starts the dependency-based recovery workflow through
   `MinimalHostApp.WorkflowRuns.start_dependency_recovery/1`
-- waits for execution and inspects both completed manual runs
+- starts a manual approval workflow through
+  `MinimalHostApp.WorkflowRuns.start_manual_approval/1`
+- resumes the paused run through `MinimalHostApp.WorkflowRuns.unblock_run/1`
+- waits for execution and inspects all three completed manual workflows
 - activates the example cron workflow through the host app's Oban-backed cron plugin
 - verifies the cron-triggered run completes as well
 
@@ -111,6 +115,7 @@ The reference workflow and step modules live in:
 
 - `lib/minimal_host_app/workflows/payment_recovery.ex`
 - `lib/minimal_host_app/workflows/dependency_recovery.ex`
+- `lib/minimal_host_app/workflows/manual_approval.ex`
 - `lib/minimal_host_app/workflows/daily_digest.ex`
 - `lib/minimal_host_app/steps/`
 

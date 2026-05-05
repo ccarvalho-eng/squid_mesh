@@ -3,6 +3,12 @@ defmodule SquidMesh.ObservabilityTest do
 
   import ExUnit.CaptureLog
 
+  alias SquidMesh.AttemptStore
+  alias SquidMesh.Config
+  alias SquidMesh.RunStore
+  alias SquidMesh.Runtime.StepExecutor.Outcome
+  alias SquidMesh.StepRunStore
+
   @events [
     [:squid_mesh, :run, :created],
     [:squid_mesh, :run, :replayed],
@@ -73,6 +79,26 @@ defmodule SquidMesh.ObservabilityTest do
     @impl true
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+    end
+  end
+
+  defmodule PauseWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_approval, :pause)
+      step(:record_delivery, :log, message: "delivery recorded", level: :info)
+
+      transition(:wait_for_approval, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
     end
   end
 
@@ -189,5 +215,123 @@ defmodule SquidMesh.ObservabilityTest do
     assert log =~ "workflow=SquidMesh.ObservabilityTest.RetryWorkflow"
     assert log =~ "step=check_gateway"
     assert log =~ "attempt=1"
+  end
+
+  test "emits step completion telemetry when a paused step is unblocked" do
+    assert {:ok, run} = SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+    assert :ok =
+             SquidMesh.Workers.StepWorker.perform(%Oban.Job{
+               args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+             })
+
+    assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+    assert paused_run.status == :paused
+
+    flush_telemetry_events()
+
+    assert {:ok, resumed_run} = SquidMesh.unblock_run(run.id, repo: Repo)
+    assert resumed_run.status == :running
+
+    assert_receive {:telemetry_event, [:squid_mesh, :step, :completed],
+                    %{duration: duration, system_time: _}, metadata}
+
+    assert duration >= 0
+    assert metadata.run_id == run.id
+    assert metadata.workflow == PauseWorkflow
+    assert metadata.step == :wait_for_approval
+    assert metadata.attempt == 1
+
+    assert_receive {:telemetry_event, [:squid_mesh, :run, :transition], %{system_time: _},
+                    transition_metadata}
+
+    assert transition_metadata.run_id == run.id
+    assert transition_metadata.from_status == :paused
+    assert transition_metadata.to_status == :running
+
+    assert_receive {:telemetry_event, [:squid_mesh, :run, :dispatched], %{system_time: _},
+                    dispatch_metadata}
+
+    assert dispatch_metadata.run_id == run.id
+  end
+
+  test "emits step failure telemetry when a paused run is cancelled" do
+    assert {:ok, run} = SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+    assert :ok =
+             SquidMesh.Workers.StepWorker.perform(%Oban.Job{
+               args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+             })
+
+    assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+    assert paused_run.status == :paused
+
+    assert {:ok, cancelled_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+    assert cancelled_run.status == :cancelled
+
+    assert_receive {:telemetry_event, [:squid_mesh, :step, :failed],
+                    %{duration: duration, system_time: _}, metadata}
+
+    assert duration >= 0
+    assert metadata.run_id == run.id
+    assert metadata.workflow == PauseWorkflow
+    assert metadata.step == :wait_for_approval
+    assert metadata.attempt == 1
+    assert metadata.error == %{message: "run cancelled while paused", reason: "cancelled"}
+  end
+
+  test "emits paused step failure before the cancelled run transition when cancellation wins during pause progression" do
+    assert {:ok, config} = Config.load(repo: Repo)
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
+    assert {:ok, run} = RunStore.create_run(Repo, PauseWorkflow, %{account_id: "acct_123"})
+
+    assert {:ok, running_run} =
+             RunStore.transition_run(Repo, run.id, :running, %{current_step: :wait_for_approval})
+
+    assert {:ok, step_run, :execute} =
+             StepRunStore.begin_step(Repo, run.id, :wait_for_approval, %{account_id: "acct_123"})
+
+    assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+    assert {:ok, cancelling_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+    assert cancelling_run.status == :cancelling
+
+    flush_telemetry_events()
+
+    assert :ok =
+             Outcome.apply_execution_result(
+               {:ok, %{}, [pause: true]},
+               config,
+               definition,
+               running_run,
+               :wait_for_approval,
+               step_run.id,
+               attempt.id,
+               attempt.attempt_number,
+               System.monotonic_time()
+             )
+
+    assert_receive {:telemetry_event, [:squid_mesh, :step, :failed],
+                    %{duration: duration, system_time: _}, metadata}
+
+    assert duration >= 0
+    assert metadata.run_id == run.id
+    assert metadata.step == :wait_for_approval
+    assert metadata.attempt == 1
+    assert metadata.error == %{message: "run cancelled while paused", reason: "cancelled"}
+
+    assert_receive {:telemetry_event, [:squid_mesh, :run, :transition], %{system_time: _},
+                    transition_metadata}
+
+    assert transition_metadata.run_id == run.id
+    assert transition_metadata.from_status == :cancelling
+    assert transition_metadata.to_status == :cancelled
+  end
+
+  defp flush_telemetry_events do
+    receive do
+      {:telemetry_event, _event, _measurements, _metadata} -> flush_telemetry_events()
+    after
+      0 -> :ok
+    end
   end
 end

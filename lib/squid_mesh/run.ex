@@ -7,7 +7,14 @@ defmodule SquidMesh.Run do
   """
 
   @type status ::
-          :pending | :running | :retrying | :failed | :completed | :cancelling | :cancelled
+          :pending
+          | :running
+          | :retrying
+          | :paused
+          | :failed
+          | :completed
+          | :cancelling
+          | :cancelled
 
   @type t :: %__MODULE__{}
 

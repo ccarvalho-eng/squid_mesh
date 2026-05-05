@@ -164,13 +164,33 @@ Built-in steps:
 ```elixir
 step(:wait_for_settlement, :wait, duration: 5_000)
 step(:log_recovery_attempt, :log, message: "Checking gateway status", level: :info)
+step(:wait_for_approval, :pause)
 ```
 
 Built-in step options supported today:
 
 - `:wait` requires `duration`
 - `:log` requires `message` and accepts `level`
+- `:pause` intentionally stops the run at that step until an operator resumes it
 - `:wait` uses Oban-delayed continuation so long waits do not block a worker slot
+- `:pause` is supported in transition-based workflows; dependency-based workflows cannot declare `:pause`
+
+Manual approval example:
+
+```elixir
+step(:wait_for_approval, :pause)
+step(:record_approval, Billing.Steps.RecordApproval, input: [:account_id], output: :approval)
+
+transition(:wait_for_approval, on: :ok, to: :record_approval)
+transition(:record_approval, on: :ok, to: :complete)
+```
+
+When a run is paused, inspect it as usual and resume it through the public API:
+
+```elixir
+{:ok, paused_run} = SquidMesh.inspect_run(run_id, include_history: true)
+{:ok, resumed_run} = SquidMesh.unblock_run(run_id)
+```
 
 ## Step Modules
 
@@ -366,7 +386,7 @@ Supported today:
 - sequential transitions with explicit `:ok` and `:error` outcomes
 - dependency-based joins with `after: [...]`
 - durable retries and replay
-- built-in `:wait` and `:log` steps
+- built-in `:wait`, `:log`, and `:pause` steps
 
 Not implemented today:
 

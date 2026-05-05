@@ -15,7 +15,8 @@ defmodule MinimalHostApp.Verification.RestartResilience do
   @spec run!() :: %{
           queued_run: SquidMesh.Run.t(),
           delayed_run: SquidMesh.Run.t(),
-          retry_run: SquidMesh.Run.t()
+          retry_run: SquidMesh.Run.t(),
+          paused_run: SquidMesh.Run.t()
         }
   def run! do
     RuntimeHarness.ensure_runtime_started()
@@ -23,7 +24,8 @@ defmodule MinimalHostApp.Verification.RestartResilience do
     %{
       queued_run: verify_queued_run_restart!(),
       delayed_run: verify_delayed_run_restart!(),
-      retry_run: verify_retry_run_restart!()
+      retry_run: verify_retry_run_restart!(),
+      paused_run: verify_paused_run_restart!()
     }
   end
 
@@ -115,6 +117,37 @@ defmodule MinimalHostApp.Verification.RestartResilience do
     unless (completed_run.status == :completed and retry_step) &&
              length(retry_step.attempts) == 2 do
       raise "expected retried run to complete with two attempts"
+    end
+
+    completed_run
+  end
+
+  @spec verify_paused_run_restart!() :: SquidMesh.Run.t()
+  defp verify_paused_run_restart! do
+    {:ok, run} = WorkflowRuns.start_manual_approval(%{account_id: "acct_resilience_pause"})
+    :ok = RuntimeHarness.wait_for_execution()
+
+    {:ok, paused_run} = WorkflowRuns.inspect_run(run.id)
+
+    unless paused_run.status == :paused and paused_run.current_step == :wait_for_approval do
+      raise "expected paused run before restart"
+    end
+
+    :ok = RuntimeHarness.restart_oban!()
+
+    {:ok, resumed_run} = WorkflowRuns.unblock_run(run.id)
+
+    unless resumed_run.status == :running and resumed_run.current_step == :record_approval do
+      raise "expected resumed manual approval run after restart"
+    end
+
+    :ok = RuntimeHarness.wait_for_execution()
+
+    {:ok, completed_run} =
+      RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts)
+
+    unless completed_run.status == :completed and completed_run.context.approval.status == "approved" do
+      raise "expected paused run to complete after restart and unblock"
     end
 
     completed_run

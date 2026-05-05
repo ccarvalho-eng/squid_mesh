@@ -11,6 +11,7 @@ defmodule SquidMesh do
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
+  alias SquidMesh.Runtime.Unblocker
 
   @doc """
   Loads Squid Mesh configuration from the application environment with optional
@@ -155,6 +156,21 @@ defmodule SquidMesh do
   def cancel_run(run_id, overrides \\ []) do
     with {:ok, config} <- Config.load(overrides) do
       RunStore.cancel_run(config.repo, run_id)
+    end
+  end
+
+  @doc """
+  Resumes a run that is intentionally paused for manual intervention.
+  """
+  @spec unblock_run(Ecto.UUID.t(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+  def unblock_run(run_id, overrides \\ []) do
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, run} <- RunStore.get_run(config.repo, run_id),
+         :ok <- Unblocker.unblock(config, run) do
+      RunStore.get_run(config.repo, run_id)
     end
   end
 

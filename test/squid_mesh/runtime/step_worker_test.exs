@@ -18,6 +18,8 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.InputIsolationWorkflow
   alias __MODULE__.MissingOban
   alias __MODULE__.OrderedDependencyWorkflow
+  alias __MODULE__.PauseMappedWorkflow
+  alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
   alias __MODULE__.SuccessfulWorkflow
 
@@ -367,6 +369,135 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                {:load_account, %{account_id: "acct_123"}, %{account: %{id: "acct_123"}}},
                {:record_delivery, %{account: %{id: "acct_123"}, invoice_id: "inv_456"},
                 %{delivery: %{account_id: "acct_123", invoice_id: "inv_456"}}}
+             ]
+    end
+
+    test "pauses a run at a built-in pause step until explicitly unblocked" do
+      input = %{account_id: "acct_123"}
+
+      assert {:ok, run} = SquidMesh.start_run(PauseWorkflow, input, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, paused_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert paused_run.status == :paused
+      assert paused_run.current_step == :wait_for_approval
+      assert paused_run.last_error == nil
+
+      assert 0 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' = 'record_delivery'", job.args)
+                 ),
+                 :count
+               )
+
+      assert [%SquidMesh.StepRun{} = paused_step] = paused_run.step_runs
+      assert paused_step.step == :wait_for_approval
+      assert paused_step.status == :running
+      assert paused_step.output == nil
+      assert [%SquidMesh.StepAttempt{attempt_number: 1, status: :running}] = paused_step.attempts
+
+      assert {:ok, unblocked_run} = SquidMesh.unblock_run(run.id, repo: Repo)
+      assert unblocked_run.status == :running
+      assert unblocked_run.current_step == :record_delivery
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.current_step == nil
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.status}) == [
+               {:wait_for_approval, :completed},
+               {:record_delivery, :completed}
+             ]
+    end
+
+    test "persists pause output mappings after unblock" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseMappedWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, paused_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert paused_run.status == :paused
+
+      assert {:ok, unblocked_run} = SquidMesh.unblock_run(run.id, repo: Repo)
+      assert unblocked_run.status == :running
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.approval == %{}
+      assert completed_run.context.delivery == %{account_id: "acct_123", approval: %{}}
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.output}) == [
+               {:wait_for_approval, %{approval: %{}}},
+               {:record_delivery, %{delivery: %{account_id: "acct_123", approval: %{}}}}
+             ]
+    end
+
+    test "uses persisted pause resume metadata when unblocking" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseMappedWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      persisted_output = %{approval: %{source: "persisted"}}
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(step_run in StepRun,
+                   where:
+                     step_run.run_id == ^run.id and step_run.step == "wait_for_approval" and
+                       step_run.status == "running"
+                 ),
+                 set: [
+                   resume: %{"output" => persisted_output, "target" => "__complete__"}
+                 ]
+               )
+
+      assert {:ok, unblocked_run} = SquidMesh.unblock_run(run.id, repo: Repo)
+      assert unblocked_run.status == :completed
+      assert is_nil(unblocked_run.current_step)
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.approval == %{source: "persisted"}
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.status, &1.output}) == [
+               {:wait_for_approval, :completed, %{approval: %{source: "persisted"}}}
              ]
     end
 
@@ -1080,6 +1211,132 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, cancelled_run} = SquidMesh.inspect_run(run.id, repo: Repo)
       assert cancelled_run.status == :cancelled
       assert cancelled_run.current_step == nil
+    end
+
+    test "finalizes pause step history when cancellation wins before pause progression" do
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
+
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert {:ok, running_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :wait_for_approval
+               })
+
+      assert {:ok, step_run, :execute} =
+               StepRunStore.begin_step(Repo, run.id, :wait_for_approval, %{
+                 account_id: "acct_123"
+               })
+
+      assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+      assert {:ok, cancelling_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+      assert cancelling_run.status == :cancelling
+
+      started_at = System.monotonic_time()
+
+      assert :ok =
+               Outcome.apply_execution_result(
+                 {:ok, %{}, [pause: true]},
+                 config,
+                 definition,
+                 running_run,
+                 :wait_for_approval,
+                 step_run.id,
+                 attempt.id,
+                 attempt.attempt_number,
+                 started_at
+               )
+
+      assert {:ok, cancelled_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert cancelled_run.status == :cancelled
+      assert cancelled_run.current_step == nil
+
+      assert [%SquidMesh.StepRun{} = paused_step] = cancelled_run.step_runs
+      assert paused_step.step == :wait_for_approval
+      assert paused_step.status == :failed
+      assert paused_step.output == nil
+
+      assert paused_step.last_error == %{
+               message: "run cancelled while paused",
+               reason: "cancelled"
+             }
+
+      assert Enum.map(paused_step.attempts, &{&1.status, &1.error}) == [
+               {:failed, %{message: "run cancelled while paused", reason: "cancelled"}}
+             ]
+    end
+
+    test "finalizes pause step history when pause progression sees an already-cancelled run" do
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, definition} = SquidMesh.Workflow.Definition.load(PauseWorkflow)
+
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 PauseWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert {:ok, running_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :wait_for_approval
+               })
+
+      assert {:ok, step_run, :execute} =
+               StepRunStore.begin_step(Repo, run.id, :wait_for_approval, %{
+                 account_id: "acct_123"
+               })
+
+      assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+      assert {:ok, cancelling_run} = SquidMesh.RunStore.transition_run(Repo, run.id, :cancelling)
+      assert cancelling_run.status == :cancelling
+
+      assert {:ok, cancelled_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :cancelled, %{current_step: nil})
+
+      assert cancelled_run.status == :cancelled
+
+      assert :ok =
+               Outcome.apply_execution_result(
+                 {:ok, %{}, [pause: true]},
+                 config,
+                 definition,
+                 running_run,
+                 :wait_for_approval,
+                 step_run.id,
+                 attempt.id,
+                 attempt.attempt_number,
+                 System.monotonic_time()
+               )
+
+      assert {:ok, current_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert current_run.status == :cancelled
+      assert current_run.current_step == nil
+
+      assert [%SquidMesh.StepRun{} = paused_step] = current_run.step_runs
+      assert paused_step.step == :wait_for_approval
+      assert paused_step.status == :failed
+
+      assert paused_step.last_error == %{
+               message: "run cancelled while paused",
+               reason: "cancelled"
+             }
+
+      assert Enum.map(paused_step.attempts, &{&1.status, &1.error}) == [
+               {:failed, %{message: "run cancelled while paused", reason: "cancelled"}}
+             ]
     end
   end
 
@@ -1879,6 +2136,65 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       transition(:wait_for_settlement, on: :ok, to: :log_delivery)
       transition(:log_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule PauseWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_approval, :pause)
+      step(:record_delivery, :log, message: "delivery recorded", level: :info)
+
+      transition(:wait_for_approval, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule PauseMappedWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_approval, :pause, output: :approval)
+
+      step(:record_delivery, PauseMappedWorkflow.RecordDelivery,
+        input: [:approval, :account_id],
+        output: :delivery
+      )
+
+      transition(:wait_for_approval, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule PauseMappedWorkflow.RecordDelivery do
+    use Jido.Action,
+      name: "record_delivery",
+      description: "Confirms pause output mappings flow into the resumed step",
+      schema: [
+        approval: [type: :map, required: true],
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{approval: approval, account_id: account_id}, _context) do
+      {:ok, %{account_id: account_id, approval: approval}}
     end
   end
 

@@ -1,0 +1,213 @@
+defmodule SquidMesh.Runtime.Unblocker do
+  @moduledoc """
+  Resumes runs that are intentionally paused for manual intervention.
+
+  This module validates the paused step, completes its durable running step
+  state, and hands control back to the normal success progression path.
+  """
+
+  import Ecto.Query
+
+  alias SquidMesh.AttemptStore
+  alias SquidMesh.Config
+  alias SquidMesh.Observability
+  alias SquidMesh.RunStore.Persistence
+  alias SquidMesh.Persistence.Run, as: RunRecord
+  alias SquidMesh.Persistence.StepAttempt
+  alias SquidMesh.Persistence.StepRun
+  alias SquidMesh.Run
+  alias SquidMesh.RunStore.Serialization
+  alias SquidMesh.StepRunStore
+  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
+
+  @spec unblock(Config.t(), Run.t()) :: :ok | {:error, term()}
+  def unblock(%Config{} = config, %Run{workflow: workflow} = run) when is_atom(workflow) do
+    case config.repo.transaction(fn ->
+           with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
+                {:ok, step_name} <- paused_step_name(paused_run),
+                {:ok, definition} <- WorkflowDefinition.load(workflow),
+                {:ok, _pause_step} <- paused_step_definition(definition, step_name),
+                {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
+                {:ok, mapped_output, target} <-
+                  resume_metadata(step_run, definition, step_name),
+                {:ok, attempt} <- running_attempt(config.repo, step_run.id),
+                {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
+                {:ok, _step_run} <-
+                  StepRunStore.complete_step(config.repo, step_run.id, mapped_output),
+                {:ok, resumed_run, from_status, to_status} <-
+                  resume_paused_run(
+                    config,
+                    config.repo,
+                    run_record,
+                    paused_run,
+                    target,
+                    mapped_output
+                  ) do
+             {paused_run, step_name, attempt, resumed_run, from_status, to_status}
+           else
+             {:error, reason} -> config.repo.rollback(reason)
+           end
+         end) do
+      {:ok, {paused_run, step_name, attempt, resumed_run, from_status, to_status}} ->
+        Observability.emit_step_completed(
+          paused_run,
+          step_name,
+          attempt.attempt_number,
+          Observability.duration_since(attempt.inserted_at)
+        )
+
+        Observability.emit_run_transition(resumed_run, from_status, to_status)
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def unblock(%Config{}, %Run{workflow: workflow}) do
+    {:error, {:invalid_workflow, workflow}}
+  end
+
+  defp locked_paused_run(repo, run_id) do
+    case locked_run_record(repo, run_id) do
+      %RunRecord{status: "paused"} = run_record ->
+        {:ok, {Serialization.to_public_run(run_record), run_record}}
+
+      %RunRecord{status: status} ->
+        {:error, {:invalid_transition, Serialization.deserialize_status(status), :running}}
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
+  defp paused_step_name(%Run{current_step: step_name}) when is_atom(step_name),
+    do: {:ok, step_name}
+
+  defp paused_step_name(%Run{current_step: step_name}), do: {:error, {:invalid_step, step_name}}
+
+  defp paused_step_definition(definition, step_name) do
+    with {:ok, step} <- WorkflowDefinition.step(definition, step_name) do
+      case step do
+        %{module: :pause} -> {:ok, step}
+        _other -> {:error, {:invalid_step, step_name}}
+      end
+    end
+  end
+
+  defp running_step_run(repo, run_id, step_name) do
+    serialized_step = WorkflowDefinition.serialize_step(step_name)
+
+    case locked_step_run(repo, run_id, serialized_step) do
+      %StepRun{status: "running"} = step_run -> {:ok, step_run}
+      _other -> {:error, {:invalid_step, step_name}}
+    end
+  end
+
+  defp running_attempt(repo, step_run_id) do
+    case locked_latest_attempt(repo, step_run_id) do
+      %StepAttempt{status: "running"} = attempt -> {:ok, attempt}
+      _other -> {:error, :not_found}
+    end
+  end
+
+  defp locked_run_record(repo, run_id) do
+    RunRecord
+    |> where([run], run.id == ^run_id)
+    |> lock("FOR UPDATE")
+    |> repo.one()
+  end
+
+  defp resume_metadata(
+         %StepRun{resume: %{"output" => output, "target" => target}},
+         definition,
+         _step_name
+       )
+       when is_map(output) and is_binary(target) do
+    {:ok, output, deserialize_resume_target(definition, target)}
+  end
+
+  defp resume_metadata(%StepRun{}, definition, step_name) do
+    with {:ok, mapped_output} <-
+           WorkflowDefinition.apply_output_mapping(definition, step_name, %{}),
+         {:ok, target} <- WorkflowDefinition.transition_target(definition, step_name, :ok) do
+      {:ok, mapped_output, target}
+    end
+  end
+
+  defp resume_paused_run(%Config{} = config, repo, run_record, paused_run, target, mapped_output) do
+    attrs = %{
+      context: merged_context(paused_run, mapped_output),
+      last_error: nil
+    }
+
+    case target do
+      :complete ->
+        with {:ok, updated_run} <-
+               Persistence.update_run_record(
+                 repo,
+                 run_record,
+                 Persistence.transition_changeset_attrs(
+                   :completed,
+                   Map.put(attrs, :current_step, nil)
+                 )
+               ) do
+          {:ok, updated_run, :paused, :completed}
+        end
+
+      next_step when is_atom(next_step) ->
+        with {:ok, updated_run} <-
+               Persistence.update_run_record(
+                 repo,
+                 run_record,
+                 Persistence.transition_changeset_attrs(
+                   :running,
+                   Map.put(attrs, :current_step, next_step)
+                 )
+               ) do
+          case SquidMesh.Runtime.Dispatcher.dispatch_run(config, updated_run, []) do
+            {:ok, _job} ->
+              {:ok, updated_run, :paused, :running}
+
+            {:error, reason} ->
+              {:error, {:dispatch_failed, reason}}
+          end
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _other ->
+        {:error, {:invalid_step, paused_run.current_step}}
+    end
+  end
+
+  defp merged_context(%Run{} = run, mapped_output) do
+    Map.merge(run.context || %{}, mapped_output)
+  end
+
+  defp deserialize_resume_target(_definition, "__complete__"), do: :complete
+
+  defp deserialize_resume_target(definition, target),
+    do: WorkflowDefinition.deserialize_step(definition, target)
+
+  defp locked_step_run(repo, run_id, step_name) do
+    StepRun
+    |> where([step_run], step_run.run_id == ^run_id and step_run.step == ^step_name)
+    |> lock("FOR UPDATE")
+    |> repo.one()
+  end
+
+  defp locked_latest_attempt(repo, step_run_id) do
+    StepAttempt
+    |> where([attempt], attempt.step_run_id == ^step_run_id)
+    |> order_by([attempt],
+      desc: attempt.attempt_number,
+      desc: attempt.inserted_at,
+      desc: attempt.id
+    )
+    |> limit(1)
+    |> lock("FOR UPDATE")
+    |> repo.one()
+  end
+end

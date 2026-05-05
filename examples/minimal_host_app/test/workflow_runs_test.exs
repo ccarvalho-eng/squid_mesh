@@ -79,8 +79,41 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            ]
   end
 
+  test "pauses and resumes a manual approval workflow through the host boundary" do
+    assert {:ok, run} = WorkflowRuns.start_manual_approval(%{account_id: "acct_approval_123"})
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+    assert {:ok, paused_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
+
+    assert paused_run.status == :paused
+    assert paused_run.current_step == :wait_for_approval
+
+    assert Enum.map(paused_run.steps, &{&1.step, &1.status}) == [
+             {:wait_for_approval, :running},
+             {:record_approval, :waiting}
+           ]
+
+    assert {:ok, resumed_run} = WorkflowRuns.unblock_run(run.id)
+    assert resumed_run.status == :running
+    assert resumed_run.current_step == :record_approval
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+
+    assert completed_run.status == :completed
+
+    assert completed_run.context.approval == %{
+             account_id: "acct_approval_123",
+             status: "approved"
+           }
+  end
+
   test "runs the documented smoke path" do
-    assert %{payment_recovery: payment_recovery, dependency_recovery: dependency_recovery} =
+    assert %{
+             payment_recovery: payment_recovery,
+             dependency_recovery: dependency_recovery,
+             manual_approval: manual_approval
+           } =
              Smoke.run_all!()
 
     assert payment_recovery.status == :completed
@@ -89,6 +122,9 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert dependency_recovery.status == :completed
     assert dependency_recovery.context.notification.channel == "email"
+
+    assert manual_approval.status == :completed
+    assert manual_approval.context.approval.status == "approved"
   end
 
   test "runs the cancellation smoke path" do

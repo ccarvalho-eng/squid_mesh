@@ -181,6 +181,10 @@ defmodule MyApp.WorkflowRuns do
   def inspect_run(run_id) do
     SquidMesh.inspect_run(run_id, include_history: true)
   end
+
+  def unblock_run(run_id) do
+    SquidMesh.unblock_run(run_id)
+  end
 end
 ```
 
@@ -207,6 +211,10 @@ defmodule MyApp.WorkflowRuns do
 
   def inspect_run(run_id) do
     SquidMesh.inspect_run(run_id, include_history: true)
+  end
+
+  def unblock_run(run_id) do
+    SquidMesh.unblock_run(run_id)
   end
 
   def list_runs(opts \\ []) do

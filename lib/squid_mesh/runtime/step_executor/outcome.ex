@@ -61,48 +61,72 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     duration = System.monotonic_time() - started_at
 
     with {:ok, mapped_output} <-
-           WorkflowDefinition.apply_output_mapping(definition, step_name, output),
-         {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
-         {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, mapped_output) do
-      Observability.emit_step_completed(run, step_name, attempt_number, duration)
-
-      case success_resolution(config.repo, definition, run, step_name) do
-        {:ok, latest_run, target} ->
-          progression =
-            success_progression(
-              config,
-              definition,
-              latest_run,
-              step_name,
-              target,
-              mapped_output,
-              execution_opts
-            )
-
-          apply_progression(config, latest_run.id, progression)
-
-        :already_terminal ->
-          :ok
-
-        {:retrying, _latest_run} ->
-          RunStore.progress_run_with(
-            config.repo,
-            run.id,
-            fn current_run ->
-              %{context: merged_context(current_run, mapped_output)}
-            end,
-            :update
-          )
-          |> normalize_progress_result()
-
-        {:error, latest_run, reason} ->
-          mark_failed_after_success_resolution_error(
-            config.repo,
+           WorkflowDefinition.apply_output_mapping(definition, step_name, output) do
+      if Keyword.get(execution_opts, :pause, false) do
+        with {:ok, pause_target} <-
+               WorkflowDefinition.transition_target(definition, step_name, :ok),
+             {:ok, _step_run} <-
+               StepRunStore.persist_pause_resume(
+                 config.repo,
+                 step_run_id,
+                 mapped_output,
+                 pause_target
+               ) do
+          apply_pause_progression(
+            config,
             run,
             step_name,
-            merged_context(latest_run, mapped_output),
-            reason
+            step_run_id,
+            attempt_id,
+            attempt_number,
+            duration
           )
+        end
+      else
+        with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
+             {:ok, _step_run} <-
+               StepRunStore.complete_step(config.repo, step_run_id, mapped_output) do
+          Observability.emit_step_completed(run, step_name, attempt_number, duration)
+
+          case success_resolution(config.repo, definition, run, step_name) do
+            {:ok, latest_run, target} ->
+              progression =
+                success_progression(
+                  config,
+                  definition,
+                  latest_run,
+                  step_name,
+                  target,
+                  mapped_output,
+                  execution_opts
+                )
+
+              apply_progression(config, latest_run.id, progression)
+
+            :already_terminal ->
+              :ok
+
+            {:retrying, _latest_run} ->
+              RunStore.progress_run_with(
+                config.repo,
+                run.id,
+                fn current_run ->
+                  %{context: merged_context(current_run, mapped_output)}
+                end,
+                :update
+              )
+              |> normalize_progress_result()
+
+            {:error, latest_run, reason} ->
+              mark_failed_after_success_resolution_error(
+                config.repo,
+                run,
+                step_name,
+                merged_context(latest_run, mapped_output),
+                reason
+              )
+          end
+        end
       end
     end
   end
@@ -156,6 +180,59 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         _no_retry ->
           handle_terminal_or_routed_failure(config, definition, run, step_name, error)
       end
+    end
+  end
+
+  defp apply_pause_progression(
+         %Config{} = config,
+         %Run{} = run,
+         step_name,
+         step_run_id,
+         attempt_id,
+         attempt_number,
+         duration
+       ) do
+    case RunStore.pause_run(
+           config.repo,
+           run.id,
+           step_run_id,
+           attempt_id,
+           %{
+             current_step: step_name,
+             last_error: nil
+           }
+         ) do
+      {:ok,
+       %{
+         run: %Run{status: :cancelled} = cancelled_run,
+         from_status: from_status,
+         to_status: to_status
+       }} ->
+        Observability.emit_step_failed(
+          run,
+          step_name,
+          attempt_number,
+          duration,
+          RunStore.pause_cancellation_error()
+        )
+
+        Observability.emit_run_transition(cancelled_run, from_status, to_status)
+
+        :ok
+
+      {:ok, %{run: paused_run, from_status: from_status, to_status: to_status}} ->
+        Observability.emit_run_transition(paused_run, from_status, to_status)
+        :ok
+
+      {:ok, %{terminal_noop?: true, finalized_step?: true, error: error}} ->
+        Observability.emit_step_failed(run, step_name, attempt_number, duration, error)
+        :ok
+
+      {:ok, %{terminal_noop?: true}} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

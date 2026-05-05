@@ -7,7 +7,7 @@ defmodule SquidMesh.Workflow.Definition do
   run creation, payload resolution, and persistence serialization.
   """
 
-  @type built_in_step_kind :: :wait | :log
+  @type built_in_step_kind :: :wait | :log | :pause
   @type transition_outcome :: :ok | :error
   @type step_input_mapping :: [atom()]
   @type step_output_mapping :: atom()
@@ -545,8 +545,9 @@ defmodule SquidMesh.Workflow.Definition do
   @doc """
   Deserializes a persisted trigger name back to the declared workflow trigger.
   """
-  @spec deserialize_trigger(t(), String.t() | nil) :: atom() | String.t() | nil
+  @spec deserialize_trigger(t() | nil, String.t() | nil) :: atom() | String.t() | nil
   def deserialize_trigger(_definition, nil), do: nil
+  def deserialize_trigger(nil, trigger_name) when is_binary(trigger_name), do: trigger_name
 
   def deserialize_trigger(definition, trigger_name) when is_binary(trigger_name) do
     Enum.find_value(definition.triggers, trigger_name, fn

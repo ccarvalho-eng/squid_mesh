@@ -761,6 +761,26 @@ defmodule SquidMesh.WorkflowTest do
            ]
   end
 
+  test "rejects built-in :pause steps in dependency-based workflows" do
+    assert_compile_error(
+      """
+      defmodule DependencyWorkflowWithPause do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:load_account, DependencyWorkflowWithPause.LoadAccount)
+          step(:wait_for_approval, :pause, after: [:load_account])
+        end
+      end
+      """,
+      "dependency-based workflows cannot declare built-in :pause steps"
+    )
+  end
+
   test "fails when duplicate transitions are declared for the same outcome" do
     assert_compile_error(
       """

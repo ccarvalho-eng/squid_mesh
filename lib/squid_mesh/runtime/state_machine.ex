@@ -15,12 +15,13 @@ defmodule SquidMesh.Runtime.StateMachine do
           {:unknown_state, atom()}
           | {:invalid_transition, from_state :: state(), to_state :: state()}
 
-  @states [:pending, :running, :retrying, :failed, :completed, :cancelling, :cancelled]
+  @states [:pending, :running, :retrying, :paused, :failed, :completed, :cancelling, :cancelled]
 
   @transitions %{
     pending: [:running, :failed, :cancelled],
-    running: [:retrying, :failed, :completed, :cancelling],
+    running: [:retrying, :paused, :failed, :completed, :cancelling],
     retrying: [:running, :failed, :cancelling],
+    paused: [:running, :failed, :completed, :cancelled],
     failed: [],
     completed: [],
     cancelling: [:cancelled, :failed],
