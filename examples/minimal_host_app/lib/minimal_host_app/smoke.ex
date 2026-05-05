@@ -48,11 +48,13 @@ defmodule MinimalHostApp.Smoke do
   @spec run_all!() :: %{
           payment_recovery: SquidMesh.Run.t(),
           dependency_recovery: SquidMesh.Run.t(),
+          manual_approval: SquidMesh.Run.t(),
           daily_digest: SquidMesh.Run.t()
         }
   def run_all! do
     payment_recovery = run!()
     dependency_recovery = run_dependency_recovery!()
+    manual_approval = run_manual_approval!()
     existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
@@ -65,6 +67,7 @@ defmodule MinimalHostApp.Smoke do
       %{
         payment_recovery: payment_recovery,
         dependency_recovery: dependency_recovery,
+        manual_approval: manual_approval,
         daily_digest: cron_run
       }
     else
@@ -118,6 +121,28 @@ defmodule MinimalHostApp.Smoke do
     end
   end
 
+  @spec run_manual_approval!() :: SquidMesh.Run.t()
+  def run_manual_approval! do
+    with {:ok, run} <- WorkflowRuns.start_manual_approval(%{account_id: "acct_manual_demo"}),
+         :ok <- RuntimeHarness.wait_for_execution(),
+         {:ok, paused_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
+         :ok <- ensure_paused(paused_run),
+         {:ok, resumed_run} <- WorkflowRuns.unblock_run(run.id),
+         :ok <- ensure_resumed(resumed_run),
+         :ok <- RuntimeHarness.wait_for_execution(),
+         {:ok, inspected_run} <-
+           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts) do
+      unless inspected_run.id == run.id and inspected_run.status == :completed do
+        raise "unexpected manual approval smoke result"
+      end
+
+      inspected_run
+    else
+      {:error, reason} ->
+        raise "manual approval smoke test failed: #{inspect(reason)}"
+    end
+  end
+
   @spec wait_for_execution() :: :ok
   defp wait_for_execution do
     RuntimeHarness.wait_for_execution()
@@ -166,6 +191,14 @@ defmodule MinimalHostApp.Smoke do
   @spec ensure_cancelling(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_cancellation_status}
   defp ensure_cancelling(%SquidMesh.Run{status: :cancelling}), do: :ok
   defp ensure_cancelling(%SquidMesh.Run{}), do: {:error, :unexpected_cancellation_status}
+
+  @spec ensure_paused(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_paused_status}
+  defp ensure_paused(%SquidMesh.Run{status: :paused, current_step: :wait_for_approval}), do: :ok
+  defp ensure_paused(%SquidMesh.Run{}), do: {:error, :unexpected_paused_status}
+
+  @spec ensure_resumed(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_resumed_status}
+  defp ensure_resumed(%SquidMesh.Run{status: :running, current_step: :record_approval}), do: :ok
+  defp ensure_resumed(%SquidMesh.Run{}), do: {:error, :unexpected_resumed_status}
 
   @spec latest_daily_digest_run([SquidMesh.Run.t()]) ::
           {:ok, SquidMesh.Run.t()} | {:error, :missing_daily_digest_run}

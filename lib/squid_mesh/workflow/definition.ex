@@ -7,7 +7,7 @@ defmodule SquidMesh.Workflow.Definition do
   run creation, payload resolution, and persistence serialization.
   """
 
-  @type built_in_step_kind :: :wait | :log
+  @type built_in_step_kind :: :wait | :log | :pause
   @type transition_outcome :: :ok | :error
   @type step_input_mapping :: [atom()]
   @type step_output_mapping :: atom()

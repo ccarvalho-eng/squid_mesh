@@ -108,6 +108,7 @@ defmodule SquidMesh.RunStore.Persistence do
   def cancellation_target_status(:pending), do: {:ok, :cancelled}
   def cancellation_target_status(:running), do: {:ok, :cancelling}
   def cancellation_target_status(:retrying), do: {:ok, :cancelling}
+  def cancellation_target_status(:paused), do: {:ok, :cancelled}
   def cancellation_target_status(state), do: {:error, {:invalid_transition, state, :cancelling}}
 
   defp initial_current_step(definition) do

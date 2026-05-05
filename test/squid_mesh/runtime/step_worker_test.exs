@@ -18,6 +18,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.InputIsolationWorkflow
   alias __MODULE__.MissingOban
   alias __MODULE__.OrderedDependencyWorkflow
+  alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
   alias __MODULE__.SuccessfulWorkflow
 
@@ -367,6 +368,62 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                {:load_account, %{account_id: "acct_123"}, %{account: %{id: "acct_123"}}},
                {:record_delivery, %{account: %{id: "acct_123"}, invoice_id: "inv_456"},
                 %{delivery: %{account_id: "acct_123", invoice_id: "inv_456"}}}
+             ]
+    end
+
+    test "pauses a run at a built-in pause step until explicitly unblocked" do
+      input = %{account_id: "acct_123"}
+
+      assert {:ok, run} = SquidMesh.start_run(PauseWorkflow, input, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, paused_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert paused_run.status == :paused
+      assert paused_run.current_step == :wait_for_approval
+      assert paused_run.last_error == nil
+
+      assert 0 ==
+               Repo.aggregate(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       job.state == "available" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'step' = 'record_delivery'", job.args)
+                 ),
+                 :count
+               )
+
+      assert [%SquidMesh.StepRun{} = paused_step] = paused_run.step_runs
+      assert paused_step.step == :wait_for_approval
+      assert paused_step.status == :running
+      assert paused_step.output == nil
+      assert [%SquidMesh.StepAttempt{attempt_number: 1, status: :running}] = paused_step.attempts
+
+      assert {:ok, unblocked_run} = SquidMesh.unblock_run(run.id, repo: Repo)
+      assert unblocked_run.status == :running
+      assert unblocked_run.current_step == :record_delivery
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.current_step == nil
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.status}) == [
+               {:wait_for_approval, :completed},
+               {:record_delivery, :completed}
              ]
     end
 
@@ -1879,6 +1936,26 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       transition(:wait_for_settlement, on: :ok, to: :log_delivery)
       transition(:log_delivery, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule PauseWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_approval, :pause)
+      step(:record_delivery, :log, message: "delivery recorded", level: :info)
+
+      transition(:wait_for_approval, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
     end
   end
 

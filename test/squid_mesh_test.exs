@@ -9,6 +9,8 @@ defmodule SquidMeshTest do
   alias SquidMesh.StepRun, as: PublicStepRun
   alias SquidMesh.TestSupport.LazyWorkflow
   alias SquidMesh.Workers.CronTriggerWorker
+  alias SquidMesh.Workers.StepWorker
+  alias Oban.Job
 
   defmodule InvoiceReminderWorkflow do
     use SquidMesh.Workflow
@@ -165,6 +167,26 @@ defmodule SquidMeshTest do
 
       step(:announce_prompt, :log, message: "posting daily standup")
       transition(:announce_prompt, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule PauseWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:wait_for_approval, :pause)
+      step(:record_delivery, :log, message: "delivery recorded", level: :info)
+
+      transition(:wait_for_approval, on: :ok, to: :record_delivery)
+      transition(:record_delivery, on: :ok, to: :complete)
     end
   end
 
@@ -617,6 +639,31 @@ defmodule SquidMeshTest do
                )
 
       assert Repo.aggregate(RunRecord, :count, :id) == before_count
+    end
+  end
+
+  describe "unblock_run/2" do
+    test "resumes paused runs through the public API" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert paused_run.status == :paused
+
+      assert {:ok, unblocked_run} = SquidMesh.unblock_run(run.id, repo: Repo)
+
+      assert unblocked_run.id == run.id
+      assert unblocked_run.status == :running
+      assert unblocked_run.current_step == :record_delivery
+    end
+
+    test "returns not found for missing runs" do
+      assert {:error, :not_found} = SquidMesh.unblock_run(Ecto.UUID.generate(), repo: Repo)
     end
   end
 end

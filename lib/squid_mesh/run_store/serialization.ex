@@ -68,6 +68,7 @@ defmodule SquidMesh.RunStore.Serialization do
   def deserialize_status("pending"), do: :pending
   def deserialize_status("running"), do: :running
   def deserialize_status("retrying"), do: :retrying
+  def deserialize_status("paused"), do: :paused
   def deserialize_status("failed"), do: :failed
   def deserialize_status("completed"), do: :completed
   def deserialize_status("cancelling"), do: :cancelling

@@ -61,48 +61,65 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     duration = System.monotonic_time() - started_at
 
     with {:ok, mapped_output} <-
-           WorkflowDefinition.apply_output_mapping(definition, step_name, output),
-         {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
-         {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, mapped_output) do
-      Observability.emit_step_completed(run, step_name, attempt_number, duration)
+           WorkflowDefinition.apply_output_mapping(definition, step_name, output) do
+      if Keyword.get(execution_opts, :pause, false) do
+        RunStore.progress_run_with(
+          config.repo,
+          run.id,
+          fn _current_run ->
+            %{
+              current_step: step_name,
+              last_error: nil
+            }
+          end,
+          {:transition, :paused}
+        )
+        |> normalize_progress_result()
+      else
+        with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
+             {:ok, _step_run} <-
+               StepRunStore.complete_step(config.repo, step_run_id, mapped_output) do
+          Observability.emit_step_completed(run, step_name, attempt_number, duration)
 
-      case success_resolution(config.repo, definition, run, step_name) do
-        {:ok, latest_run, target} ->
-          progression =
-            success_progression(
-              config,
-              definition,
-              latest_run,
-              step_name,
-              target,
-              mapped_output,
-              execution_opts
-            )
+          case success_resolution(config.repo, definition, run, step_name) do
+            {:ok, latest_run, target} ->
+              progression =
+                success_progression(
+                  config,
+                  definition,
+                  latest_run,
+                  step_name,
+                  target,
+                  mapped_output,
+                  execution_opts
+                )
 
-          apply_progression(config, latest_run.id, progression)
+              apply_progression(config, latest_run.id, progression)
 
-        :already_terminal ->
-          :ok
+            :already_terminal ->
+              :ok
 
-        {:retrying, _latest_run} ->
-          RunStore.progress_run_with(
-            config.repo,
-            run.id,
-            fn current_run ->
-              %{context: merged_context(current_run, mapped_output)}
-            end,
-            :update
-          )
-          |> normalize_progress_result()
+            {:retrying, _latest_run} ->
+              RunStore.progress_run_with(
+                config.repo,
+                run.id,
+                fn current_run ->
+                  %{context: merged_context(current_run, mapped_output)}
+                end,
+                :update
+              )
+              |> normalize_progress_result()
 
-        {:error, latest_run, reason} ->
-          mark_failed_after_success_resolution_error(
-            config.repo,
-            run,
-            step_name,
-            merged_context(latest_run, mapped_output),
-            reason
-          )
+            {:error, latest_run, reason} ->
+              mark_failed_after_success_resolution_error(
+                config.repo,
+                run,
+                step_name,
+                merged_context(latest_run, mapped_output),
+                reason
+              )
+          end
+        end
       end
     end
   end
@@ -192,6 +209,37 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       attempt_number,
       started_at
     )
+  end
+
+  @spec resume_paused_step(Config.t(), WorkflowDefinition.t(), Run.t(), atom()) ::
+          :ok | {:error, execution_error() | term()}
+  def resume_paused_step(%Config{} = config, definition, %Run{} = run, step_name)
+      when is_atom(step_name) do
+    case success_resolution(config.repo, definition, run, step_name) do
+      {:ok, latest_run, target} ->
+        apply_paused_success(config, definition, latest_run, target)
+
+      :already_terminal ->
+        :ok
+
+      {:retrying, latest_run} ->
+        RunStore.progress_run_with(
+          config.repo,
+          latest_run.id,
+          fn _current_run -> %{current_step: nil, last_error: nil} end,
+          {:transition, :running}
+        )
+        |> normalize_progress_result()
+
+      {:error, latest_run, reason} ->
+        mark_failed_after_success_resolution_error(
+          config.repo,
+          run,
+          step_name,
+          latest_run.context || %{},
+          reason
+        )
+    end
   end
 
   defp success_progression(
@@ -367,6 +415,91 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          ) do
       {:ok, _result} -> :ok
       {:error, reason} -> dispatch_error_handler.(reason)
+    end
+  end
+
+  defp apply_paused_success(config, _definition, run, :complete) do
+    RunStore.progress_run_with(
+      config.repo,
+      run.id,
+      fn current_run ->
+        %{
+          context: current_run.context || %{},
+          current_step: nil,
+          last_error: nil
+        }
+      end,
+      {:transition, :completed}
+    )
+    |> normalize_progress_result()
+  end
+
+  defp apply_paused_success(config, _definition, run, {:dispatch, next_steps})
+       when is_list(next_steps) do
+    case RunStore.progress_run_with(
+           config.repo,
+           run.id,
+           fn _current_run -> %{current_step: nil, last_error: nil} end,
+           {:transition_or_dispatch, :running,
+            fn updated_run ->
+              Dispatcher.dispatch_steps(
+                config,
+                updated_run,
+                next_steps,
+                schedule_pending: true
+              )
+            end}
+         ) do
+      {:ok, _result} ->
+        :ok
+
+      {:error, reason} ->
+        dispatch_error = %{
+          message: "failed to dispatch workflow step",
+          next_steps: next_steps,
+          dispatch_reason: normalize_dispatch_cause(reason)
+        }
+
+        mark_failed_after_dispatch_error(
+          config.repo,
+          run.id,
+          %{current_step: nil},
+          dispatch_error
+        )
+    end
+  end
+
+  defp apply_paused_success(config, _definition, run, {:wait, _phase_steps}) do
+    RunStore.progress_run_with(
+      config.repo,
+      run.id,
+      fn _current_run -> %{current_step: nil, last_error: nil} end,
+      {:transition, :running}
+    )
+    |> normalize_progress_result()
+  end
+
+  defp apply_paused_success(config, definition, run, next_step) when is_atom(next_step) do
+    attrs = success_attrs(definition, run, %{}, next_step)
+
+    case RunStore.progress_run_with(
+           config.repo,
+           run.id,
+           normalize_attrs_fun(attrs),
+           {:transition_or_dispatch, :running,
+            fn updated_run -> Dispatcher.dispatch_run(config, updated_run, []) end}
+         ) do
+      {:ok, _result} ->
+        :ok
+
+      {:error, reason} ->
+        dispatch_error = %{
+          message: "failed to dispatch workflow step",
+          next_step: next_step,
+          dispatch_reason: normalize_dispatch_cause(reason)
+        }
+
+        mark_failed_after_dispatch_error(config.repo, run.id, attrs, dispatch_error)
     end
   end
 

@@ -30,5 +30,9 @@ defmodule SquidMesh.Runtime.BuiltInStep do
     {:ok, %{}, []}
   end
 
+  def execute(:pause, _opts, _input, _run) do
+    {:ok, %{}, [pause: true]}
+  end
+
   def execute(kind, _opts, _input, _run), do: {:error, {:unknown_built_in_step, kind}}
 end

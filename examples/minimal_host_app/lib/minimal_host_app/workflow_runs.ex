@@ -27,6 +27,10 @@ defmodule MinimalHostApp.WorkflowRuns do
           required(:attempt_id) => String.t()
         }
 
+  @type manual_approval_attrs :: %{
+          required(:account_id) => String.t()
+        }
+
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
@@ -51,6 +55,12 @@ defmodule MinimalHostApp.WorkflowRuns do
     SquidMesh.start_run(MinimalHostApp.Workflows.DependencyRecovery, :dependency_recovery, attrs)
   end
 
+  @spec start_manual_approval(manual_approval_attrs()) ::
+          {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def start_manual_approval(attrs) when is_map(attrs) do
+    SquidMesh.start_run(MinimalHostApp.Workflows.ManualApproval, :manual_approval, attrs)
+  end
+
   @spec inspect_payment_recovery(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
   def inspect_payment_recovery(run_id) do
     SquidMesh.inspect_run(run_id)
@@ -64,6 +74,11 @@ defmodule MinimalHostApp.WorkflowRuns do
   @spec cancel_run(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
   def cancel_run(run_id) do
     SquidMesh.cancel_run(run_id)
+  end
+
+  @spec unblock_run(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def unblock_run(run_id) do
+    SquidMesh.unblock_run(run_id)
   end
 
   @spec replay_run(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}

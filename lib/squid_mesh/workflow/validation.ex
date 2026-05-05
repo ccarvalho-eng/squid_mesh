@@ -9,7 +9,7 @@ defmodule SquidMesh.Workflow.Validation do
   @terminal_transitions [:complete]
   @supported_transition_outcomes [:ok, :error]
   @allowed_trigger_types [:manual, :cron]
-  @built_in_step_kinds [:wait, :log]
+  @built_in_step_kinds [:wait, :log, :pause]
   @log_levels [:debug, :info, :warning, :error]
 
   @doc """
@@ -295,6 +295,7 @@ defmodule SquidMesh.Workflow.Validation do
     case kind do
       :wait -> validate_wait_step(errors, step)
       :log -> validate_log_step(errors, step)
+      :pause -> errors
     end
   end
 

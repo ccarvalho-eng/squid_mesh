@@ -105,6 +105,23 @@ defmodule SquidMesh.RunStoreTest do
       assert RunStore.schedule_next_step?(cancelling_run) == false
     end
 
+    test "cancels paused runs immediately" do
+      assert {:ok, run} =
+               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, running_run} = RunStore.transition_run(Repo, run.id, :running)
+
+      assert {:ok, paused_run} =
+               RunStore.transition_run(Repo, running_run.id, :paused, %{
+                 current_step: :wait_for_approval
+               })
+
+      assert {:ok, cancelled_run} = RunStore.cancel_run(Repo, paused_run.id)
+
+      assert cancelled_run.status == :cancelled
+      assert RunStore.schedule_next_step?(cancelled_run) == false
+    end
+
     test "rejects cancellation for terminal runs" do
       assert {:ok, run} =
                RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
