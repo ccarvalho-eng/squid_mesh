@@ -79,7 +79,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            ]
   end
 
-  test "pauses and resumes a manual approval workflow through the host boundary" do
+  test "approves a manual approval workflow through the host boundary" do
     assert {:ok, run} = WorkflowRuns.start_manual_approval(%{account_id: "acct_approval_123"})
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
@@ -90,10 +90,13 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert Enum.map(paused_run.steps, &{&1.step, &1.status}) == [
              {:wait_for_approval, :running},
-             {:record_approval, :waiting}
+             {:record_approval, :waiting},
+             {:record_rejection, :waiting}
            ]
 
-    assert {:ok, resumed_run} = WorkflowRuns.unblock_run(run.id)
+    assert {:ok, resumed_run} =
+             WorkflowRuns.approve_run(run.id, %{actor: "ops_123", comment: "approved"})
+
     assert resumed_run.status == :running
     assert resumed_run.current_step == :record_approval
 
@@ -102,10 +105,37 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert completed_run.status == :completed
 
-    assert completed_run.context.approval == %{
-             account_id: "acct_approval_123",
-             status: "approved"
-           }
+    assert completed_run.context.approval.account_id == "acct_approval_123"
+    assert completed_run.context.approval.status == "approved"
+    assert completed_run.context.approval.decision == "approved"
+    assert completed_run.context.approval.actor == "ops_123"
+    assert completed_run.context.approval.comment == "approved"
+  end
+
+  test "rejects a manual approval workflow through the host boundary" do
+    assert {:ok, run} = WorkflowRuns.start_manual_approval(%{account_id: "acct_review_123"})
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+    assert {:ok, paused_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
+
+    assert paused_run.status == :paused
+    assert paused_run.current_step == :wait_for_approval
+
+    assert {:ok, resumed_run} =
+             WorkflowRuns.reject_run(run.id, %{actor: "ops_456", comment: "rejected"})
+
+    assert resumed_run.status == :running
+    assert resumed_run.current_step == :record_rejection
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+
+    assert completed_run.status == :completed
+    assert completed_run.context.approval.account_id == "acct_review_123"
+    assert completed_run.context.approval.status == "rejected"
+    assert completed_run.context.approval.decision == "rejected"
+    assert completed_run.context.approval.actor == "ops_456"
+    assert completed_run.context.approval.comment == "rejected"
   end
 
   test "runs the documented smoke path" do

@@ -7,7 +7,7 @@ defmodule SquidMesh.Workflow.Definition do
   run creation, payload resolution, and persistence serialization.
   """
 
-  @type built_in_step_kind :: :wait | :log | :pause
+  @type built_in_step_kind :: :wait | :log | :pause | :approval
   @type transition_outcome :: :ok | :error
   @type step_input_mapping :: [atom()]
   @type step_output_mapping :: atom()
@@ -225,6 +225,17 @@ defmodule SquidMesh.Workflow.Definition do
   end
 
   @doc """
+  Returns the explicit output mapping key for one declared step, if any.
+  """
+  @spec step_output_mapping(t(), atom()) ::
+          {:ok, step_output_mapping() | nil} | {:error, {:unknown_step, atom()}}
+  def step_output_mapping(definition, step_name) when is_atom(step_name) do
+    with {:ok, step} <- step(definition, step_name) do
+      {:ok, Keyword.get(step.opts, :output)}
+    end
+  end
+
+  @doc """
   Applies the declared output mapping for one step result.
   """
   @spec apply_output_mapping(t(), atom(), map()) ::
@@ -249,6 +260,19 @@ defmodule SquidMesh.Workflow.Definition do
     case Enum.find(definition.transitions, &(&1.from == from_step and &1.on == outcome)) do
       %{to: to_step} -> {:ok, to_step}
       nil -> {:error, {:unknown_transition, from_step, outcome}}
+    end
+  end
+
+  @doc """
+  Resolves the success and rejection targets for an approval step.
+  """
+  @spec approval_transition_targets(t(), atom()) ::
+          {:ok, %{ok: transition_target(), error: transition_target()}}
+          | {:error, {:unknown_transition, atom(), atom()}}
+  def approval_transition_targets(definition, step_name) when is_atom(step_name) do
+    with {:ok, ok_target} <- transition_target(definition, step_name, :ok),
+         {:ok, error_target} <- transition_target(definition, step_name, :error) do
+      {:ok, %{ok: ok_target, error: error_target}}
     end
   end
 

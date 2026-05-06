@@ -77,10 +77,10 @@ within the executing worker. For paused-step completion or failure, the terminal
 event can happen later during unblock or cancellation, so duration is derived
 from the persisted attempt start timestamp instead.
 
-That means a `:pause` step emits:
+That means a paused manual step such as `:pause` or `approval_step/2` emits:
 
 - `step.started` when the pause step is first executed
-- `step.completed` later during `unblock_run/2`, or `step.failed` if the paused run is cancelled
+- `step.completed` later during `unblock_run/2`, `approve_run/3`, or `reject_run/3`, or `step.failed` if the paused run is cancelled
 
 The terminal event still refers to the original running attempt, but its
 duration spans the full paused interval rather than only the worker execution

@@ -15,6 +15,7 @@ defmodule SquidMesh.StepRunStore do
   @type step_output :: map()
   @type step_error :: map()
   @type pause_target :: :complete | atom()
+  @type approval_targets :: %{ok: pause_target(), error: pause_target()}
   @type step_status :: :pending | :running | :completed | :failed
   @type begin_result :: {:ok, StepRun.t(), :execute | :skip} | {:error, Ecto.Changeset.t()}
   @type schedule_result :: {:ok, StepRun.t(), :schedule | :skip} | {:error, Ecto.Changeset.t()}
@@ -122,6 +123,31 @@ defmodule SquidMesh.StepRunStore do
       resume: %{
         "output" => output,
         "target" => serialize_pause_target(target)
+      }
+    })
+  end
+
+  @doc """
+  Persists approval resume metadata for a running approval step without
+  completing it.
+  """
+  @spec persist_approval_resume(module(), Ecto.UUID.t(), approval_targets(), atom() | nil) ::
+          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def persist_approval_resume(
+        repo,
+        step_run_id,
+        %{ok: ok_target, error: error_target},
+        output_key
+      )
+      when (ok_target == :complete or is_atom(ok_target)) and
+             (error_target == :complete or is_atom(error_target)) and
+             (is_atom(output_key) or is_nil(output_key)) do
+    update_step(repo, step_run_id, %{
+      resume: %{
+        "kind" => "approval",
+        "ok_target" => serialize_pause_target(ok_target),
+        "error_target" => serialize_pause_target(error_target),
+        "output_key" => serialize_output_key(output_key)
       }
     })
   end
@@ -288,6 +314,10 @@ defmodule SquidMesh.StepRunStore do
   @spec serialize_pause_target(pause_target()) :: String.t()
   defp serialize_pause_target(:complete), do: "__complete__"
   defp serialize_pause_target(target) when is_atom(target), do: serialize_step(target)
+
+  @spec serialize_output_key(atom() | nil) :: String.t() | nil
+  defp serialize_output_key(nil), do: nil
+  defp serialize_output_key(output_key), do: Atom.to_string(output_key)
 
   @spec serialize_step(step_identifier()) :: String.t()
   defp serialize_step(step) when is_atom(step), do: Atom.to_string(step)

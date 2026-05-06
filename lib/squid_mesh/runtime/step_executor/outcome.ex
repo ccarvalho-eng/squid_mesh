@@ -60,73 +60,98 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       ) do
     duration = System.monotonic_time() - started_at
 
-    with {:ok, mapped_output} <-
+    with {:ok, step} <- WorkflowDefinition.step(definition, step_name),
+         {:ok, mapped_output} <-
            WorkflowDefinition.apply_output_mapping(definition, step_name, output) do
-      if Keyword.get(execution_opts, :pause, false) do
-        with {:ok, pause_target} <-
-               WorkflowDefinition.transition_target(definition, step_name, :ok),
-             {:ok, _step_run} <-
-               StepRunStore.persist_pause_resume(
-                 config.repo,
-                 step_run_id,
-                 mapped_output,
-                 pause_target
-               ) do
-          apply_pause_progression(
-            config,
-            run,
-            step_name,
-            step_run_id,
-            attempt_id,
-            attempt_number,
-            duration
-          )
-        end
-      else
-        with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
-             {:ok, _step_run} <-
-               StepRunStore.complete_step(config.repo, step_run_id, mapped_output) do
-          Observability.emit_step_completed(run, step_name, attempt_number, duration)
-
-          case success_resolution(config.repo, definition, run, step_name) do
-            {:ok, latest_run, target} ->
-              progression =
-                success_progression(
-                  config,
-                  definition,
-                  latest_run,
-                  step_name,
-                  target,
-                  mapped_output,
-                  execution_opts
-                )
-
-              apply_progression(config, latest_run.id, progression)
-
-            :already_terminal ->
-              :ok
-
-            {:retrying, _latest_run} ->
-              RunStore.progress_run_with(
-                config.repo,
-                run.id,
-                fn current_run ->
-                  %{context: merged_context(current_run, mapped_output)}
-                end,
-                :update
-              )
-              |> normalize_progress_result()
-
-            {:error, latest_run, reason} ->
-              mark_failed_after_success_resolution_error(
-                config.repo,
-                run,
-                step_name,
-                merged_context(latest_run, mapped_output),
-                reason
-              )
+      case pause_kind(step, execution_opts) do
+        :pause ->
+          with {:ok, pause_target} <-
+                 WorkflowDefinition.transition_target(definition, step_name, :ok),
+               {:ok, _step_run} <-
+                 StepRunStore.persist_pause_resume(
+                   config.repo,
+                   step_run_id,
+                   mapped_output,
+                   pause_target
+                 ) do
+            apply_pause_progression(
+              config,
+              run,
+              step_name,
+              step_run_id,
+              attempt_id,
+              attempt_number,
+              duration
+            )
           end
-        end
+
+        :approval ->
+          with {:ok, targets} <-
+                 WorkflowDefinition.approval_transition_targets(definition, step_name),
+               {:ok, output_key} <- WorkflowDefinition.step_output_mapping(definition, step_name),
+               {:ok, _step_run} <-
+                 StepRunStore.persist_approval_resume(
+                   config.repo,
+                   step_run_id,
+                   targets,
+                   output_key
+                 ) do
+            apply_pause_progression(
+              config,
+              run,
+              step_name,
+              step_run_id,
+              attempt_id,
+              attempt_number,
+              duration
+            )
+          end
+
+        nil ->
+          with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
+               {:ok, _step_run} <-
+                 StepRunStore.complete_step(config.repo, step_run_id, mapped_output) do
+            Observability.emit_step_completed(run, step_name, attempt_number, duration)
+
+            case success_resolution(config.repo, definition, run, step_name) do
+              {:ok, latest_run, target} ->
+                progression =
+                  success_progression(
+                    config,
+                    definition,
+                    latest_run,
+                    step_name,
+                    target,
+                    mapped_output,
+                    execution_opts
+                  )
+
+                apply_progression(config, latest_run.id, progression)
+
+              :already_terminal ->
+                :ok
+
+              {:retrying, _latest_run} ->
+                RunStore.progress_run_with(
+                  config.repo,
+                  run.id,
+                  fn current_run ->
+                    %{context: merged_context(current_run, mapped_output)}
+                  end,
+                  :update
+                )
+                |> normalize_progress_result()
+
+              {:error, latest_run, reason} ->
+                mark_failed_after_success_resolution_error(
+                  config.repo,
+                  run,
+                  step_name,
+                  merged_context(latest_run, mapped_output),
+                  reason
+                )
+            end
+          end
       end
     end
   end
@@ -663,6 +688,16 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   defp retry_dispatch_opts(_delay_ms), do: []
+
+  defp pause_kind(%{module: :pause}, execution_opts) when is_list(execution_opts) do
+    if Keyword.get(execution_opts, :pause, false), do: :pause, else: nil
+  end
+
+  defp pause_kind(%{module: :approval}, execution_opts) when is_list(execution_opts) do
+    if Keyword.get(execution_opts, :pause, false), do: :approval, else: nil
+  end
+
+  defp pause_kind(_step, _execution_opts), do: nil
 
   defp resolve_dependency_success(repo, definition, latest_run) do
     step_statuses = StepRunStore.step_statuses(repo, latest_run.id)

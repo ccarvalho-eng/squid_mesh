@@ -11,6 +11,7 @@ defmodule SquidMesh do
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
+  alias SquidMesh.Runtime.Reviewer
   alias SquidMesh.Runtime.Unblocker
 
   @doc """
@@ -170,6 +171,36 @@ defmodule SquidMesh do
     with {:ok, config} <- Config.load(overrides),
          {:ok, run} <- RunStore.get_run(config.repo, run_id),
          :ok <- Unblocker.unblock(config, run) do
+      RunStore.get_run(config.repo, run_id)
+    end
+  end
+
+  @doc """
+  Approves a paused approval step and resumes the run through its success path.
+  """
+  @spec approve_run(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+  def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, run} <- RunStore.get_run(config.repo, run_id),
+         :ok <- Reviewer.review(config, run, :approved, attrs) do
+      RunStore.get_run(config.repo, run_id)
+    end
+  end
+
+  @doc """
+  Rejects a paused approval step and resumes the run through its rejection path.
+  """
+  @spec reject_run(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+  def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, run} <- RunStore.get_run(config.repo, run_id),
+         :ok <- Reviewer.review(config, run, :rejected, attrs) do
       RunStore.get_run(config.repo, run_id)
     end
   end

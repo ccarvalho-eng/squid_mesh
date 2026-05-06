@@ -191,6 +191,29 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule ApprovalWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      approval_step(:wait_for_review, output: :approval)
+      step(:record_approval, :log, message: "approval recorded", level: :info)
+      step(:record_rejection, :log, message: "rejection recorded", level: :warning)
+
+      transition(:wait_for_review, on: :ok, to: :record_approval)
+      transition(:wait_for_review, on: :error, to: :record_rejection)
+      transition(:record_approval, on: :ok, to: :complete)
+      transition(:record_rejection, on: :ok, to: :complete)
+    end
+  end
+
   defmodule MissingOban do
   end
 
@@ -785,6 +808,74 @@ defmodule SquidMeshTest do
       assert Enum.map(paused_step.attempts, &{&1.status, &1.error}) == [
                {:failed, %{message: "run cancelled while paused", reason: "cancelled"}}
              ]
+    end
+  end
+
+  describe "approve_run/3 and reject_run/3" do
+    test "approves paused approval runs through the public API" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert paused_run.status == :paused
+
+      assert {:ok, approved_run} =
+               SquidMesh.approve_run(
+                 run.id,
+                 %{actor: "ops_123", comment: "approved"},
+                 repo: Repo
+               )
+
+      assert approved_run.id == run.id
+      assert approved_run.status == :running
+      assert approved_run.current_step == :record_approval
+    end
+
+    test "rejects paused approval runs through the public API" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert paused_run.status == :paused
+
+      assert {:ok, rejected_run} =
+               SquidMesh.reject_run(
+                 run.id,
+                 %{actor: "ops_456", comment: "rejected"},
+                 repo: Repo
+               )
+
+      assert rejected_run.id == run.id
+      assert rejected_run.status == :running
+      assert rejected_run.current_step == :record_rejection
+    end
+
+    test "returns a structured error when the approval workflow can no longer be loaded" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      Repo.update_all(
+        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        set: [workflow: "Elixir.Missing.Workflow"]
+      )
+
+      assert {:error, {:invalid_workflow, "Elixir.Missing.Workflow"}} =
+               SquidMesh.approve_run(run.id, %{actor: "ops_123"}, repo: Repo)
     end
   end
 end

@@ -761,6 +761,36 @@ defmodule SquidMesh.WorkflowTest do
            ]
   end
 
+  test "supports first-class approval step declarations" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithApprovalStep do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          approval_step(:wait_for_review, output: :approval)
+          step(:record_approval, WorkflowWithApprovalStep.RecordApproval)
+          step(:record_rejection, WorkflowWithApprovalStep.RecordRejection)
+
+          transition(:wait_for_review, on: :ok, to: :record_approval)
+          transition(:wait_for_review, on: :error, to: :record_rejection)
+          transition(:record_approval, on: :ok, to: :complete)
+          transition(:record_rejection, on: :ok, to: :complete)
+        end
+      end
+      """)
+
+    assert module.workflow_definition().steps == [
+             %{name: :wait_for_review, module: :approval, opts: [output: :approval]},
+             %{name: :record_approval, module: Module.concat(module, RecordApproval), opts: []},
+             %{name: :record_rejection, module: Module.concat(module, RecordRejection), opts: []}
+           ]
+  end
+
   test "rejects built-in :pause steps in dependency-based workflows" do
     assert_compile_error(
       """
@@ -778,6 +808,49 @@ defmodule SquidMesh.WorkflowTest do
       end
       """,
       "dependency-based workflows cannot declare built-in :pause steps"
+    )
+  end
+
+  test "rejects approval steps in dependency-based workflows" do
+    assert_compile_error(
+      """
+      defmodule DependencyWorkflowWithApproval do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:load_account, DependencyWorkflowWithApproval.LoadAccount)
+          approval_step(:wait_for_review, after: [:load_account])
+        end
+      end
+      """,
+      "dependency-based workflows cannot declare built-in :approval steps"
+    )
+  end
+
+  test "requires approval steps to declare both :ok and :error transitions" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithIncompleteApprovalRouting do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          approval_step(:wait_for_review)
+          step(:record_approval, WorkflowWithIncompleteApprovalRouting.RecordApproval)
+
+          transition(:wait_for_review, on: :ok, to: :record_approval)
+          transition(:record_approval, on: :ok, to: :complete)
+        end
+      end
+      """,
+      "approval step :wait_for_review must define both :ok and :error transitions"
     )
   end
 

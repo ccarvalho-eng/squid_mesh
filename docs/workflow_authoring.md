@@ -165,6 +165,7 @@ Built-in steps:
 step(:wait_for_settlement, :wait, duration: 5_000)
 step(:log_recovery_attempt, :log, message: "Checking gateway status", level: :info)
 step(:wait_for_approval, :pause)
+approval_step(:wait_for_review, output: :approval)
 ```
 
 Built-in step options supported today:
@@ -172,35 +173,48 @@ Built-in step options supported today:
 - `:wait` requires `duration`
 - `:log` requires `message` and accepts `level`
 - `:pause` intentionally stops the run at that step until an operator resumes it
+- `approval_step/2` pauses the run for an explicit approve/reject decision and uses `:ok` or `:error` transitions to continue
 - `:wait` uses Oban-delayed continuation so long waits do not block a worker slot
 - `:pause` is supported in transition-based workflows; dependency-based workflows cannot declare `:pause`
+- `approval_step/2` is also transition-based only; dependency-based workflows cannot declare built-in `:approval` steps
 
 Manual approval example:
 
 ```elixir
-step(:wait_for_approval, :pause, output: :approval)
+approval_step(:wait_for_approval, output: :approval)
 step(:record_approval, Billing.Steps.RecordApproval,
   input: [:account_id, :approval],
   output: :approval
 )
 
+step(:record_rejection, Billing.Steps.RecordRejection,
+  input: [:account_id, :approval],
+  output: :approval
+)
+
 transition(:wait_for_approval, on: :ok, to: :record_approval)
+transition(:wait_for_approval, on: :error, to: :record_rejection)
 transition(:record_approval, on: :ok, to: :complete)
+transition(:record_rejection, on: :ok, to: :complete)
 ```
 
-When a run is paused, inspect it as usual and resume it through the public API:
+When a run is paused at an approval step, inspect it as usual and then approve
+or reject it through the public API:
 
 ```elixir
 {:ok, paused_run} = SquidMesh.inspect_run(run_id, include_history: true)
-{:ok, resumed_run} = SquidMesh.unblock_run(run_id)
+{:ok, approved_run} = SquidMesh.approve_run(run_id, %{actor: "ops_123"})
+{:ok, rejected_run} = SquidMesh.reject_run(run_id, %{actor: "ops_456"})
 ```
 
-Pause-step durability notes:
+Manual-review durability notes:
 
-- `:pause` is only supported in transition-based workflows
-- the pause step stays `:running` while the run is `:paused`
-- `unblock_run/2` completes that pause step and then advances the declared `:ok` path
-- mapped pause output and the resolved `:ok` target are persisted with the paused step so restart or deploy boundaries do not recompute resume semantics from the current workflow definition
+- `approval_step/2` is only supported in transition-based workflows
+- the approval step stays `:running` while the run is `:paused`
+- `approve_run/3` completes that step and advances the declared `:ok` path
+- `reject_run/3` completes that step and advances the declared `:error` path
+- reviewer identity, decision, timestamp, and optional review metadata are persisted in the completed step output and merged run context
+- the resolved `:ok` and `:error` targets plus output-mapping metadata are persisted with the paused step so restart or deploy boundaries do not recompute review semantics from the current workflow definition
 - host apps should apply the latest Squid Mesh migrations before using pause-resume in existing environments
 
 ## Step Modules
@@ -397,7 +411,7 @@ Supported today:
 - sequential transitions with explicit `:ok` and `:error` outcomes
 - dependency-based joins with `after: [...]`
 - durable retries and replay
-- built-in `:wait`, `:log`, and `:pause` steps
+- built-in `:wait`, `:log`, `:pause`, and `:approval` steps
 
 Not implemented today:
 

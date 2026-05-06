@@ -17,7 +17,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
         input: input,
         run: run
       })
-      when built_in_kind in [:wait, :log, :pause] do
+      when built_in_kind in [:wait, :log, :pause, :approval] do
     SquidMesh.Runtime.BuiltInStep.execute(built_in_kind, opts, input, run)
   end
 
