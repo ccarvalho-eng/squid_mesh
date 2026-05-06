@@ -28,7 +28,7 @@ defmodule SquidMesh.MixProject do
   defp elixirc_paths(_), do: ["lib"]
 
   defp description do
-    "Workflow automation platform for Elixir applications."
+    "Durable workflow runtime for Elixir applications."
   end
 
   defp package do
