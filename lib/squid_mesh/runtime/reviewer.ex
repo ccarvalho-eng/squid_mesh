@@ -158,7 +158,7 @@ defmodule SquidMesh.Runtime.Reviewer do
          attrs
        )
        when is_binary(ok_target) and is_binary(error_target) do
-    with {:ok, resolved_output_key} <- resolve_output_key(definition, step_name, output_key) do
+    with {:ok, resolved_output_key} <- persisted_output_key(step_name, output_key) do
       {:ok, map_review_output(attrs, decision, resolved_output_key),
        deserialize_decision_target(definition, decision, ok_target, error_target)}
     end
@@ -256,28 +256,13 @@ defmodule SquidMesh.Runtime.Reviewer do
   defp decision_target(:approved, targets), do: Map.fetch!(targets, :ok)
   defp decision_target(:rejected, targets), do: Map.fetch!(targets, :error)
 
-  defp resolve_output_key(definition, step_name, persisted_output_key) do
-    with {:ok, declared_output_key} <-
-           WorkflowDefinition.step_output_mapping(definition, step_name) do
-      case {declared_output_key, persisted_output_key} do
-        {nil, nil} ->
-          {:ok, nil}
+  defp persisted_output_key(_step_name, nil), do: {:ok, nil}
 
-        {declared_output_key, nil} when is_atom(declared_output_key) ->
-          {:ok, declared_output_key}
+  defp persisted_output_key(_step_name, output_key) when is_binary(output_key),
+    do: {:ok, output_key}
 
-        {declared_output_key, persisted_output_key} when is_atom(declared_output_key) ->
-          if persisted_output_key == Atom.to_string(declared_output_key) do
-            {:ok, declared_output_key}
-          else
-            {:error, {:invalid_resume_metadata, step_name}}
-          end
-
-        _other ->
-          {:error, {:invalid_resume_metadata, step_name}}
-      end
-    end
-  end
+  defp persisted_output_key(step_name, _output_key),
+    do: {:error, {:invalid_resume_metadata, step_name}}
 
   defp serialize_decision(:approved), do: "approved"
   defp serialize_decision(:rejected), do: "rejected"

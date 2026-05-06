@@ -653,7 +653,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                      "kind" => "approval",
                      "ok_target" => "__complete__",
                      "error_target" => "record_rejection",
-                     "output_key" => "approval"
+                     "output_key" => "legacy_approval"
                    }
                  ]
                )
@@ -668,16 +668,16 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
 
       assert completed_run.status == :completed
-      assert completed_run.context.approval.decision == "approved"
-      assert completed_run.context.approval.actor == "ops_123"
+      assert completed_run.context["legacy_approval"].decision == "approved"
+      assert completed_run.context["legacy_approval"].actor == "ops_123"
 
       assert Enum.map(completed_run.step_runs, &{&1.step, &1.status, &1.output}) == [
                {:wait_for_review, :completed,
                 %{
-                  approval: %{
+                  "legacy_approval" => %{
                     decision: "approved",
                     actor: "ops_123",
-                    decided_at: completed_run.context.approval.decided_at
+                    decided_at: completed_run.context["legacy_approval"].decided_at
                   }
                 }}
              ]
@@ -721,7 +721,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert completed_run.context.approval.actor == "ops_123"
     end
 
-    test "rejects corrupted persisted approval output metadata without mutating the paused step" do
+    test "rejects malformed persisted approval output metadata without mutating the paused step" do
       assert {:ok, run} =
                SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
@@ -742,7 +742,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                      "kind" => "approval",
                      "ok_target" => "record_approval",
                      "error_target" => "record_rejection",
-                     "output_key" => "unexpected_key"
+                     "output_key" => ["unexpected_key"]
                    }
                  ]
                )
