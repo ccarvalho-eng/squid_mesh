@@ -165,6 +165,24 @@ defmodule SquidMesh.Workflow do
   end
 
   @doc """
+  Declares a first-class approval step for manual review decisions.
+  """
+  defmacro approval_step(name, opts \\ []) do
+    quote bind_quoted: [name: name, opts: opts] do
+      @squid_mesh_steps %{name: name, module: :approval, opts: opts}
+    end
+  end
+
+  @doc """
+  Declares a manual review step as an alias of `approval_step/2`.
+  """
+  defmacro manual_review_step(name, opts \\ []) do
+    quote bind_quoted: [name: name, opts: opts] do
+      @squid_mesh_steps %{name: name, module: :approval, opts: opts}
+    end
+  end
+
+  @doc """
   Declares a transition from one step outcome to the next step.
   """
   defmacro transition(from, opts) do

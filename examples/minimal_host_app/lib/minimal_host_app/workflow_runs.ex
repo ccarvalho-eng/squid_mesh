@@ -81,6 +81,16 @@ defmodule MinimalHostApp.WorkflowRuns do
     SquidMesh.unblock_run(run_id)
   end
 
+  @spec approve_run(Ecto.UUID.t(), map()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def approve_run(run_id, attrs) when is_map(attrs) do
+    SquidMesh.approve_run(run_id, attrs)
+  end
+
+  @spec reject_run(Ecto.UUID.t(), map()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def reject_run(run_id, attrs) when is_map(attrs) do
+    SquidMesh.reject_run(run_id, attrs)
+  end
+
   @spec replay_run(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
   def replay_run(run_id) do
     SquidMesh.replay_run(run_id)

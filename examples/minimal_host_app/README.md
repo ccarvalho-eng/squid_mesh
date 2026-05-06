@@ -61,7 +61,7 @@ The smoke task:
   `MinimalHostApp.WorkflowRuns.start_dependency_recovery/1`
 - starts a manual approval workflow through
   `MinimalHostApp.WorkflowRuns.start_manual_approval/1`
-- resumes the paused run through `MinimalHostApp.WorkflowRuns.unblock_run/1`
+- approves the paused run through `MinimalHostApp.WorkflowRuns.approve_run/2`
 - waits for execution and inspects all three completed manual workflows
 - activates the example cron workflow through the host app's Oban-backed cron plugin
 - verifies the cron-triggered run completes as well
@@ -79,7 +79,7 @@ This path verifies:
 - queued work survives an Oban restart boundary
 - delayed work survives an Oban restart boundary
 - retrying work survives an Oban restart boundary
-- a paused manual-approval run survives restart and still unblocks through the host boundary with the same resume semantics
+- a paused manual-approval run survives restart and still approves through the host boundary with the same resume semantics
 
 ## Bounded Soak And Load
 

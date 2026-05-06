@@ -1,0 +1,317 @@
+defmodule SquidMesh.Runtime.Reviewer do
+  @moduledoc """
+  Applies explicit approval decisions to paused approval steps.
+
+  Approval and rejection reuse the durable paused-step lifecycle from the
+  runtime, but this module owns the decision-specific contract: validating
+  reviewer input, completing the paused step with decision output, and
+  resuming the run through the persisted approval targets.
+  """
+
+  import Ecto.Query
+
+  alias SquidMesh.AttemptStore
+  alias SquidMesh.Config
+  alias SquidMesh.Observability
+  alias SquidMesh.Run
+  alias SquidMesh.RunStore.Persistence
+  alias SquidMesh.RunStore.Serialization
+  alias SquidMesh.Persistence.Run, as: RunRecord
+  alias SquidMesh.Persistence.StepAttempt
+  alias SquidMesh.Persistence.StepRun
+  alias SquidMesh.StepRunStore
+  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
+
+  @type decision :: :approved | :rejected
+  @type review_attrs :: %{
+          required(:actor) => String.t() | map(),
+          optional(:comment) => String.t(),
+          optional(:metadata) => map()
+        }
+
+  @spec review(Config.t(), Run.t(), decision(), map()) :: :ok | {:error, term()}
+  def review(%Config{} = config, %Run{workflow: workflow} = run, decision, attrs)
+      when is_atom(workflow) and decision in [:approved, :rejected] and is_map(attrs) do
+    with :ok <- validate_review_attrs(attrs) do
+      case config.repo.transaction(fn ->
+             with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
+                  {:ok, step_name} <- paused_step_name(paused_run),
+                  {:ok, definition} <- WorkflowDefinition.load(workflow),
+                  {:ok, _approval_step} <- approval_step_definition(definition, step_name),
+                  {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
+                  {:ok, mapped_output, target} <-
+                    review_metadata(step_run, definition, step_name, decision, attrs),
+                  {:ok, attempt} <- running_attempt(config.repo, step_run.id),
+                  {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
+                  {:ok, _step_run} <-
+                    StepRunStore.complete_step(config.repo, step_run.id, mapped_output),
+                  {:ok, resumed_run, from_status, to_status} <-
+                    resume_reviewed_run(
+                      config,
+                      config.repo,
+                      run_record,
+                      paused_run,
+                      target,
+                      mapped_output
+                    ) do
+               {paused_run, step_name, attempt, resumed_run, from_status, to_status}
+             else
+               {:error, reason} -> config.repo.rollback(reason)
+             end
+           end) do
+        {:ok, {paused_run, step_name, attempt, resumed_run, from_status, to_status}} ->
+          Observability.emit_step_completed(
+            paused_run,
+            step_name,
+            attempt.attempt_number,
+            Observability.duration_since(attempt.inserted_at)
+          )
+
+          Observability.emit_run_transition(resumed_run, from_status, to_status)
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  def review(%Config{}, %Run{workflow: workflow}, _decision, _attrs) do
+    {:error, {:invalid_workflow, workflow}}
+  end
+
+  defp validate_review_attrs(%{actor: actor} = attrs)
+       when (is_binary(actor) and actor != "") or is_map(actor) do
+    case Map.fetch(attrs, :comment) do
+      {:ok, comment} when not (is_binary(comment) and comment != "") ->
+        {:error, {:invalid_review, %{comment: :string}}}
+
+      _other ->
+        case Map.fetch(attrs, :metadata) do
+          {:ok, metadata} when not is_map(metadata) ->
+            {:error, {:invalid_review, %{metadata: :map}}}
+
+          _other ->
+            :ok
+        end
+    end
+  end
+
+  defp validate_review_attrs(_attrs), do: {:error, {:invalid_review, %{actor: :required}}}
+
+  defp locked_paused_run(repo, run_id) do
+    case locked_run_record(repo, run_id) do
+      %RunRecord{status: "paused"} = run_record ->
+        {:ok, {Serialization.to_public_run(run_record), run_record}}
+
+      %RunRecord{status: status} ->
+        {:error, {:invalid_transition, Serialization.deserialize_status(status), :running}}
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
+  defp paused_step_name(%Run{current_step: step_name}) when is_atom(step_name),
+    do: {:ok, step_name}
+
+  defp paused_step_name(%Run{current_step: step_name}), do: {:error, {:invalid_step, step_name}}
+
+  defp approval_step_definition(definition, step_name) do
+    with {:ok, step} <- WorkflowDefinition.step(definition, step_name) do
+      case step do
+        %{module: :approval} -> {:ok, step}
+        _other -> {:error, {:invalid_step, step_name}}
+      end
+    end
+  end
+
+  defp running_step_run(repo, run_id, step_name) do
+    serialized_step = WorkflowDefinition.serialize_step(step_name)
+
+    case locked_step_run(repo, run_id, serialized_step) do
+      %StepRun{status: "running"} = step_run -> {:ok, step_run}
+      _other -> {:error, {:invalid_step, step_name}}
+    end
+  end
+
+  defp running_attempt(repo, step_run_id) do
+    case locked_latest_attempt(repo, step_run_id) do
+      %StepAttempt{status: "running"} = attempt -> {:ok, attempt}
+      _other -> {:error, :not_found}
+    end
+  end
+
+  defp review_metadata(
+         %StepRun{
+           resume: %{
+             "kind" => "approval",
+             "ok_target" => ok_target,
+             "error_target" => error_target,
+             "output_key" => output_key
+           }
+         },
+         definition,
+         step_name,
+         decision,
+         attrs
+       )
+       when is_binary(ok_target) and is_binary(error_target) do
+    with {:ok, resolved_output_key} <- resolve_output_key(definition, step_name, output_key) do
+      {:ok, map_review_output(attrs, decision, resolved_output_key),
+       deserialize_decision_target(definition, decision, ok_target, error_target)}
+    end
+  end
+
+  defp review_metadata(%StepRun{}, definition, step_name, decision, attrs) do
+    with {:ok, targets} <- WorkflowDefinition.approval_transition_targets(definition, step_name),
+         {:ok, output_key} <- WorkflowDefinition.step_output_mapping(definition, step_name) do
+      {:ok, map_review_output(attrs, decision, output_key), decision_target(decision, targets)}
+    end
+  end
+
+  defp resume_reviewed_run(
+         %Config{} = config,
+         repo,
+         run_record,
+         paused_run,
+         target,
+         mapped_output
+       ) do
+    attrs = %{
+      context: merged_context(paused_run, mapped_output),
+      last_error: nil
+    }
+
+    case target do
+      :complete ->
+        with {:ok, updated_run} <-
+               Persistence.update_run_record(
+                 repo,
+                 run_record,
+                 Persistence.transition_changeset_attrs(
+                   :completed,
+                   Map.put(attrs, :current_step, nil)
+                 )
+               ) do
+          {:ok, updated_run, :paused, :completed}
+        end
+
+      next_step when is_atom(next_step) ->
+        with {:ok, updated_run} <-
+               Persistence.update_run_record(
+                 repo,
+                 run_record,
+                 Persistence.transition_changeset_attrs(
+                   :running,
+                   Map.put(attrs, :current_step, next_step)
+                 )
+               ) do
+          case SquidMesh.Runtime.Dispatcher.dispatch_run(config, updated_run, []) do
+            {:ok, _job} ->
+              {:ok, updated_run, :paused, :running}
+
+            {:error, reason} ->
+              {:error, {:dispatch_failed, reason}}
+          end
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _other ->
+        {:error, {:invalid_step, paused_run.current_step}}
+    end
+  end
+
+  defp map_review_output(attrs, decision, output_key) do
+    review_output =
+      %{
+        decision: serialize_decision(decision),
+        actor: Map.fetch!(attrs, :actor),
+        decided_at: DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
+      }
+      |> maybe_put(:comment, Map.get(attrs, :comment))
+      |> maybe_put(:metadata, Map.get(attrs, :metadata))
+
+    case output_key do
+      nil -> review_output
+      mapped_key -> %{mapped_key => review_output}
+    end
+  end
+
+  defp deserialize_decision_target(definition, :approved, ok_target, _error_target),
+    do: deserialize_resume_target(definition, ok_target)
+
+  defp deserialize_decision_target(definition, :rejected, _ok_target, error_target),
+    do: deserialize_resume_target(definition, error_target)
+
+  defp deserialize_resume_target(_definition, "__complete__"), do: :complete
+
+  defp deserialize_resume_target(definition, target) when is_binary(target) do
+    WorkflowDefinition.deserialize_step(definition, target)
+  end
+
+  defp decision_target(:approved, targets), do: Map.fetch!(targets, :ok)
+  defp decision_target(:rejected, targets), do: Map.fetch!(targets, :error)
+
+  defp resolve_output_key(definition, step_name, persisted_output_key) do
+    with {:ok, declared_output_key} <-
+           WorkflowDefinition.step_output_mapping(definition, step_name) do
+      case {declared_output_key, persisted_output_key} do
+        {nil, nil} ->
+          {:ok, nil}
+
+        {declared_output_key, nil} when is_atom(declared_output_key) ->
+          {:ok, declared_output_key}
+
+        {declared_output_key, persisted_output_key} when is_atom(declared_output_key) ->
+          if persisted_output_key == Atom.to_string(declared_output_key) do
+            {:ok, declared_output_key}
+          else
+            {:error, {:invalid_resume_metadata, step_name}}
+          end
+
+        _other ->
+          {:error, {:invalid_resume_metadata, step_name}}
+      end
+    end
+  end
+
+  defp serialize_decision(:approved), do: "approved"
+  defp serialize_decision(:rejected), do: "rejected"
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp merged_context(%Run{} = run, mapped_output) do
+    Map.merge(run.context || %{}, mapped_output)
+  end
+
+  defp locked_run_record(repo, run_id) do
+    RunRecord
+    |> where([run], run.id == ^run_id)
+    |> lock("FOR UPDATE")
+    |> repo.one()
+  end
+
+  defp locked_step_run(repo, run_id, step_name) do
+    StepRun
+    |> where([step_run], step_run.run_id == ^run_id and step_run.step == ^step_name)
+    |> lock("FOR UPDATE")
+    |> repo.one()
+  end
+
+  defp locked_latest_attempt(repo, step_run_id) do
+    StepAttempt
+    |> where([attempt], attempt.step_run_id == ^step_run_id)
+    |> order_by([attempt],
+      desc: attempt.attempt_number,
+      desc: attempt.inserted_at,
+      desc: attempt.id
+    )
+    |> limit(1)
+    |> lock("FOR UPDATE")
+    |> repo.one()
+  end
+end

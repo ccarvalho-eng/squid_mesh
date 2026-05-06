@@ -1,6 +1,6 @@
 defmodule MinimalHostApp.Workflows.ManualApproval do
   @moduledoc """
-  Example workflow that pauses until an operator explicitly resumes the run.
+  Example workflow that waits for an explicit operator approval or rejection.
   """
 
   use SquidMesh.Workflow
@@ -14,14 +14,21 @@ defmodule MinimalHostApp.Workflows.ManualApproval do
       end
     end
 
-    step(:wait_for_approval, :pause, output: :approval)
+    approval_step(:wait_for_approval, output: :approval)
 
     step(:record_approval, MinimalHostApp.Steps.RecordApproval,
       input: [:account_id, :approval],
       output: :approval
     )
 
+    step(:record_rejection, MinimalHostApp.Steps.RecordRejection,
+      input: [:account_id, :approval],
+      output: :approval
+    )
+
     transition(:wait_for_approval, on: :ok, to: :record_approval)
+    transition(:wait_for_approval, on: :error, to: :record_rejection)
     transition(:record_approval, on: :ok, to: :complete)
+    transition(:record_rejection, on: :ok, to: :complete)
   end
 end

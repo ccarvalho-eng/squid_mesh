@@ -41,7 +41,7 @@ recover durable workflows in code.
 - declarative workflows with manual and cron triggers
 - durable run, step, and attempt history in Postgres
 - step-level retries, delays, replay, and inspection on top of your existing `Oban`
-- built-in steps like `:log`, `:wait`, and `:pause`, plus custom steps with `Jido.Action`
+- built-in steps like `:log`, `:wait`, `:pause`, and `:approval`, plus custom steps with `Jido.Action`
 
 ## Runtime Shape
 
@@ -158,12 +158,13 @@ The step modules can stay small and domain-focused, while Squid Mesh handles
 durable state, scheduling through Oban, retries, failure routing after retry
 exhaustion, and run inspection.
 
-For manual review gates, use the built-in `:pause` step in transition-based
-workflows and later resume the run through `SquidMesh.unblock_run/2`. Pause
-steps now persist both their mapped output and their resolved `:ok` target, so
-already-paused runs keep the same resume behavior across restarts and deploys.
-Host apps should apply the latest Squid Mesh migrations before relying on this
-durability contract in production.
+For approval or manual-review gates, use `approval_step/2` in transition-based
+workflows and resume the paused run through `SquidMesh.approve_run/3` or
+`SquidMesh.reject_run/3`. Approval steps persist their resolved `:ok` and
+`:error` targets plus output-mapping metadata, so already-paused review runs
+keep the same decision semantics across restarts and deploys. Generic
+`SquidMesh.unblock_run/2` remains available for lower-level `:pause` steps when
+you need manual intervention without an explicit approve/reject contract.
 
 When a step needs a narrower contract than the whole payload plus accumulated
 context, use `input: [...]` to select keys and `output: :key` to namespace the

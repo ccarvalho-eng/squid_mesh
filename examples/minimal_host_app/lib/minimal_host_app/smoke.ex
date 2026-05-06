@@ -127,7 +127,8 @@ defmodule MinimalHostApp.Smoke do
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, paused_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
          :ok <- ensure_paused(paused_run),
-         {:ok, resumed_run} <- WorkflowRuns.unblock_run(run.id),
+         {:ok, resumed_run} <-
+           WorkflowRuns.approve_run(run.id, %{actor: "ops_smoke", comment: "approved"}),
          :ok <- ensure_resumed(resumed_run),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-

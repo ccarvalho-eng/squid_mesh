@@ -135,7 +135,8 @@ defmodule MinimalHostApp.Verification.RestartResilience do
 
     :ok = RuntimeHarness.restart_oban!()
 
-    {:ok, resumed_run} = WorkflowRuns.unblock_run(run.id)
+    {:ok, resumed_run} =
+      WorkflowRuns.approve_run(run.id, %{actor: "ops_restart", comment: "approved"})
 
     unless resumed_run.status == :running and resumed_run.current_step == :record_approval do
       raise "expected resumed manual approval run after restart"
@@ -146,7 +147,8 @@ defmodule MinimalHostApp.Verification.RestartResilience do
     {:ok, completed_run} =
       RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts)
 
-    unless completed_run.status == :completed and completed_run.context.approval.status == "approved" do
+    unless completed_run.status == :completed and
+             completed_run.context.approval.status == "approved" do
       raise "expected paused run to complete after restart and unblock"
     end
 

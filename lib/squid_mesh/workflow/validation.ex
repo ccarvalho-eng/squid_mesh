@@ -9,7 +9,7 @@ defmodule SquidMesh.Workflow.Validation do
   @terminal_transitions [:complete]
   @supported_transition_outcomes [:ok, :error]
   @allowed_trigger_types [:manual, :cron]
-  @built_in_step_kinds [:wait, :log, :pause]
+  @built_in_step_kinds [:wait, :log, :pause, :approval]
   @log_levels [:debug, :info, :warning, :error]
 
   @doc """
@@ -148,7 +148,7 @@ defmodule SquidMesh.Workflow.Validation do
     |> validate_triggers(definition.triggers)
     |> validate_payload_defaults(payload_fields)
     |> require_steps(step_names)
-    |> validate_built_in_steps(definition.steps)
+    |> validate_built_in_steps(definition.steps, definition.transitions)
     |> validate_step_mappings(definition.steps)
     |> validate_unique_step_names(step_names)
     |> validate_dependency_graph(definition.steps, step_names)
@@ -285,13 +285,16 @@ defmodule SquidMesh.Workflow.Validation do
   defp require_steps(errors, []), do: ["at least one step is required" | errors]
   defp require_steps(errors, _step_names), do: errors
 
-  defp validate_built_in_steps(errors, steps) do
+  defp validate_built_in_steps(errors, steps, transitions) do
     errors =
       Enum.reduce(steps, errors, fn step, acc ->
         validate_built_in_step(acc, step)
       end)
 
-    validate_dependency_pause_steps(errors, steps)
+    errors
+    |> validate_dependency_manual_step_kind(steps, :pause)
+    |> validate_dependency_manual_step_kind(steps, :approval)
+    |> validate_approval_transitions(steps, transitions)
   end
 
   defp validate_built_in_step(errors, %{module: kind} = step) when kind in @built_in_step_kinds do
@@ -299,17 +302,32 @@ defmodule SquidMesh.Workflow.Validation do
       :wait -> validate_wait_step(errors, step)
       :log -> validate_log_step(errors, step)
       :pause -> errors
+      :approval -> errors
     end
   end
 
   defp validate_built_in_step(errors, _step), do: errors
 
-  defp validate_dependency_pause_steps(errors, steps) do
-    if dependency_mode?(steps) and Enum.any?(steps, &(&1.module == :pause)) do
-      ["dependency-based workflows cannot declare built-in :pause steps" | errors]
+  defp validate_dependency_manual_step_kind(errors, steps, kind) do
+    if dependency_mode?(steps) and Enum.any?(steps, &(&1.module == kind)) do
+      ["dependency-based workflows cannot declare built-in #{inspect(kind)} steps" | errors]
     else
       errors
     end
+  end
+
+  defp validate_approval_transitions(errors, steps, transitions) do
+    Enum.reduce(steps, errors, fn
+      %{name: name, module: :approval}, acc ->
+        if has_transition?(transitions, name, :ok) and has_transition?(transitions, name, :error) do
+          acc
+        else
+          ["approval step #{inspect(name)} must define both :ok and :error transitions" | acc]
+        end
+
+      _step, acc ->
+        acc
+    end)
   end
 
   defp validate_step_mappings(errors, steps) do
@@ -460,6 +478,10 @@ defmodule SquidMesh.Workflow.Validation do
           | acc
         ]
     end)
+  end
+
+  defp has_transition?(transitions, from_step, outcome) do
+    Enum.any?(transitions, &(&1.from == from_step and &1.on == outcome))
   end
 
   defp validate_retries(errors, retries, step_names) do

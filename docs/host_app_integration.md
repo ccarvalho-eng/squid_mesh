@@ -185,13 +185,22 @@ defmodule MyApp.WorkflowRuns do
   def unblock_run(run_id) do
     SquidMesh.unblock_run(run_id)
   end
+
+  def approve_run(run_id, attrs) do
+    SquidMesh.approve_run(run_id, attrs)
+  end
+
+  def reject_run(run_id, attrs) do
+    SquidMesh.reject_run(run_id, attrs)
+  end
 end
 ```
 
-If the host app exposes pause-resume workflows, keep the latest Squid Mesh
-migrations applied before deploying the feature. Paused step runs now persist
-internal resume metadata so `unblock_run/2` can continue with stable output and
-transition semantics after restarts or code changes.
+If the host app exposes pause-resume or approval workflows, keep the latest
+Squid Mesh migrations applied before deploying the feature. Paused step runs
+now persist internal resume metadata so `unblock_run/2`, `approve_run/3`, and
+`reject_run/3` can continue with stable output and transition semantics after
+restarts or code changes.
 
 ## Minimal Phoenix Host Skeleton
 
@@ -220,6 +229,14 @@ defmodule MyApp.WorkflowRuns do
 
   def unblock_run(run_id) do
     SquidMesh.unblock_run(run_id)
+  end
+
+  def approve_run(run_id, attrs) do
+    SquidMesh.approve_run(run_id, attrs)
+  end
+
+  def reject_run(run_id, attrs) do
+    SquidMesh.reject_run(run_id, attrs)
   end
 
   def list_runs(opts \\ []) do

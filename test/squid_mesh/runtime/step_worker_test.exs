@@ -18,6 +18,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.InputIsolationWorkflow
   alias __MODULE__.MissingOban
   alias __MODULE__.OrderedDependencyWorkflow
+  alias __MODULE__.ApprovalWorkflow
   alias __MODULE__.PauseMappedWorkflow
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
@@ -498,6 +499,267 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       assert Enum.map(completed_run.step_runs, &{&1.step, &1.status, &1.output}) == [
                {:wait_for_approval, :completed, %{approval: %{source: "persisted"}}}
+             ]
+    end
+
+    test "routes approved review steps through the explicit approval API" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {:ok, paused_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert paused_run.status == :paused
+
+      assert {:ok, approved_run} =
+               SquidMesh.approve_run(
+                 run.id,
+                 %{actor: "ops_123", comment: "looks good"},
+                 repo: Repo
+               )
+
+      assert approved_run.status == :running
+      assert approved_run.current_step == :record_approval
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.approval.decision == "approved"
+      assert completed_run.context.approval.actor == "ops_123"
+      assert completed_run.context.approval.comment == "looks good"
+      assert is_binary(completed_run.context.approval.decided_at)
+
+      assert completed_run.context.approved == %{
+               account_id: "acct_123",
+               actor: "ops_123",
+               decision: "approved"
+             }
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.output}) == [
+               {:wait_for_review,
+                %{
+                  approval: %{
+                    decision: "approved",
+                    actor: "ops_123",
+                    comment: "looks good",
+                    decided_at: completed_run.context.approval.decided_at
+                  }
+                }},
+               {:record_approval,
+                %{
+                  approved: %{
+                    account_id: "acct_123",
+                    actor: "ops_123",
+                    decision: "approved"
+                  }
+                }}
+             ]
+    end
+
+    test "routes rejected review steps through the explicit rejection API" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {:ok, paused_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert paused_run.status == :paused
+
+      assert {:ok, rejected_run} =
+               SquidMesh.reject_run(
+                 run.id,
+                 %{actor: "ops_456", comment: "insufficient evidence"},
+                 repo: Repo
+               )
+
+      assert rejected_run.status == :running
+      assert rejected_run.current_step == :record_rejection
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.approval.decision == "rejected"
+      assert completed_run.context.approval.actor == "ops_456"
+      assert completed_run.context.approval.comment == "insufficient evidence"
+      assert is_binary(completed_run.context.approval.decided_at)
+
+      assert completed_run.context.rejected == %{
+               account_id: "acct_123",
+               actor: "ops_456",
+               decision: "rejected"
+             }
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.output}) == [
+               {:wait_for_review,
+                %{
+                  approval: %{
+                    decision: "rejected",
+                    actor: "ops_456",
+                    comment: "insufficient evidence",
+                    decided_at: completed_run.context.approval.decided_at
+                  }
+                }},
+               {:record_rejection,
+                %{
+                  rejected: %{
+                    account_id: "acct_123",
+                    actor: "ops_456",
+                    decision: "rejected"
+                  }
+                }}
+             ]
+    end
+
+    test "uses persisted approval resume metadata when approving" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(step_run in StepRun,
+                   where:
+                     step_run.run_id == ^run.id and step_run.step == "wait_for_review" and
+                       step_run.status == "running"
+                 ),
+                 set: [
+                   resume: %{
+                     "kind" => "approval",
+                     "ok_target" => "__complete__",
+                     "error_target" => "record_rejection",
+                     "output_key" => "approval"
+                   }
+                 ]
+               )
+
+      assert {:ok, approved_run} =
+               SquidMesh.approve_run(run.id, %{actor: "ops_123"}, repo: Repo)
+
+      assert approved_run.status == :completed
+      assert is_nil(approved_run.current_step)
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.approval.decision == "approved"
+      assert completed_run.context.approval.actor == "ops_123"
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.status, &1.output}) == [
+               {:wait_for_review, :completed,
+                %{
+                  approval: %{
+                    decision: "approved",
+                    actor: "ops_123",
+                    decided_at: completed_run.context.approval.decided_at
+                  }
+                }}
+             ]
+    end
+
+    test "falls back to the declared approval output mapping when persisted review metadata is absent" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(step_run in StepRun,
+                   where:
+                     step_run.run_id == ^run.id and step_run.step == "wait_for_review" and
+                       step_run.status == "running"
+                 ),
+                 set: [resume: nil]
+               )
+
+      assert {:ok, approved_run} =
+               SquidMesh.approve_run(run.id, %{actor: "ops_123"}, repo: Repo)
+
+      assert approved_run.status == :running
+      assert approved_run.current_step == :record_approval
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.approval.decision == "approved"
+      assert completed_run.context.approval.actor == "ops_123"
+    end
+
+    test "rejects corrupted persisted approval output metadata without mutating the paused step" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(step_run in StepRun,
+                   where:
+                     step_run.run_id == ^run.id and step_run.step == "wait_for_review" and
+                       step_run.status == "running"
+                 ),
+                 set: [
+                   resume: %{
+                     "kind" => "approval",
+                     "ok_target" => "record_approval",
+                     "error_target" => "record_rejection",
+                     "output_key" => "unexpected_key"
+                   }
+                 ]
+               )
+
+      assert {:error, {:invalid_resume_metadata, :wait_for_review}} =
+               SquidMesh.approve_run(run.id, %{actor: "ops_123"}, repo: Repo)
+
+      assert {:ok, paused_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert paused_run.status == :paused
+      assert paused_run.current_step == :wait_for_review
+
+      assert Enum.map(paused_run.step_runs, fn step_run ->
+               {step_run.step, step_run.status, Enum.map(step_run.attempts, & &1.status)}
+             end) == [
+               {:wait_for_review, :running, [:running]}
              ]
     end
 
@@ -2195,6 +2457,77 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     @impl true
     def run(%{approval: approval, account_id: account_id}, _context) do
       {:ok, %{account_id: account_id, approval: approval}}
+    end
+  end
+
+  defmodule ApprovalWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      approval_step(:wait_for_review, output: :approval)
+
+      step(:record_approval, ApprovalWorkflow.RecordApproval,
+        input: [:approval, :account_id],
+        output: :approved
+      )
+
+      step(:record_rejection, ApprovalWorkflow.RecordRejection,
+        input: [:approval, :account_id],
+        output: :rejected
+      )
+
+      transition(:wait_for_review, on: :ok, to: :record_approval)
+      transition(:wait_for_review, on: :error, to: :record_rejection)
+      transition(:record_approval, on: :ok, to: :complete)
+      transition(:record_rejection, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule ApprovalWorkflow.RecordApproval do
+    use Jido.Action,
+      name: "record_approval",
+      description: "Persists approval decisions after review",
+      schema: [
+        approval: [type: :map, required: true],
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{approval: approval, account_id: account_id}, _context) do
+      {:ok,
+       %{
+         account_id: account_id,
+         actor: approval.actor,
+         decision: approval.decision
+       }}
+    end
+  end
+
+  defmodule ApprovalWorkflow.RecordRejection do
+    use Jido.Action,
+      name: "record_rejection",
+      description: "Persists rejection decisions after review",
+      schema: [
+        approval: [type: :map, required: true],
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{approval: approval, account_id: account_id}, _context) do
+      {:ok,
+       %{
+         account_id: account_id,
+         actor: approval.actor,
+         decision: approval.decision
+       }}
     end
   end
 
