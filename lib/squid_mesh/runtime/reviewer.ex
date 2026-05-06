@@ -14,6 +14,7 @@ defmodule SquidMesh.Runtime.Reviewer do
   alias SquidMesh.Config
   alias SquidMesh.Observability
   alias SquidMesh.Run
+  alias SquidMesh.Runtime.ManualAction
   alias SquidMesh.RunStore.Persistence
   alias SquidMesh.RunStore.Serialization
   alias SquidMesh.Persistence.Run, as: RunRecord
@@ -41,10 +42,16 @@ defmodule SquidMesh.Runtime.Reviewer do
                   {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
                   {:ok, mapped_output, target} <-
                     review_metadata(step_run, definition, step_name, decision, attrs),
+                  manual_event = ManualAction.build(decision, attrs),
                   {:ok, attempt} <- running_attempt(config.repo, step_run.id),
                   {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
                   {:ok, _step_run} <-
-                    StepRunStore.complete_step(config.repo, step_run.id, mapped_output),
+                    StepRunStore.complete_manual_step(
+                      config.repo,
+                      step_run.id,
+                      mapped_output,
+                      manual_event
+                    ),
                   {:ok, resumed_run, from_status, to_status} <-
                     resume_reviewed_run(
                       config,
@@ -82,18 +89,12 @@ defmodule SquidMesh.Runtime.Reviewer do
 
   defp validate_review_attrs(%{actor: actor} = attrs)
        when (is_binary(actor) and actor != "") or is_map(actor) do
-    case Map.fetch(attrs, :comment) do
-      {:ok, comment} when not (is_binary(comment) and comment != "") ->
-        {:error, {:invalid_review, %{comment: :string}}}
+    case ManualAction.validate(attrs, require_actor: true) do
+      :ok ->
+        :ok
 
-      _other ->
-        case Map.fetch(attrs, :metadata) do
-          {:ok, metadata} when not is_map(metadata) ->
-            {:error, {:invalid_review, %{metadata: :map}}}
-
-          _other ->
-            :ok
-        end
+      {:error, {:invalid_manual_action, details}} ->
+        {:error, {:invalid_review, details}}
     end
   end
 

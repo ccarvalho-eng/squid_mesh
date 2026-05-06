@@ -13,6 +13,7 @@ defmodule SquidMesh.RunStore.Serialization do
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
+  alias SquidMesh.RunAuditEvent
   alias SquidMesh.RunStepState
   alias SquidMesh.StepAttempt
   alias SquidMesh.StepRun
@@ -36,6 +37,7 @@ defmodule SquidMesh.RunStore.Serialization do
       context: deserialize_map(run.context || %{}),
       current_step: deserialize_step(definition, run.current_step),
       last_error: deserialize_run_error(definition, run.last_error),
+      audit_events: to_public_audit_events(definition, run.step_runs),
       steps: to_public_steps(definition, step_runs),
       step_runs: step_runs,
       replayed_from_run_id: run.replayed_from_run_id,
@@ -125,11 +127,12 @@ defmodule SquidMesh.RunStore.Serialization do
   defp to_public_step_run(step_run, definition) do
     %StepRun{
       id: step_run.id,
-      step: WorkflowDefinition.deserialize_step(definition, step_run.step),
+      step: deserialize_step(definition, step_run.step),
       status: deserialize_step_status(step_run.status),
       input: deserialize_map(step_run.input || %{}),
       output: deserialize_map(step_run.output),
       last_error: deserialize_map(step_run.last_error),
+      manual_event: deserialize_manual_event(step_run.manual, definition, step_run),
       attempts: to_public_attempts(step_run),
       inserted_at: step_run.inserted_at,
       updated_at: step_run.updated_at
@@ -171,6 +174,7 @@ defmodule SquidMesh.RunStore.Serialization do
       input: step_run.input,
       output: step_run.output,
       last_error: step_run.last_error,
+      manual_event: step_run.manual_event,
       attempts: step_run.attempts,
       inserted_at: step_run.inserted_at,
       updated_at: step_run.updated_at
@@ -182,8 +186,18 @@ defmodule SquidMesh.RunStore.Serialization do
       step: step,
       status: status,
       depends_on: depends_on,
+      manual_event: nil,
       attempts: []
     }
+  end
+
+  defp to_public_audit_events(_definition, %Ecto.Association.NotLoaded{}), do: nil
+  defp to_public_audit_events(_definition, nil), do: nil
+
+  defp to_public_audit_events(definition, step_runs) when is_list(step_runs) do
+    step_runs
+    |> Enum.flat_map(&step_run_audit_events(definition, &1))
+    |> Enum.sort_by(& &1.at, DateTime)
   end
 
   defp step_statuses(step_runs) do
@@ -213,6 +227,131 @@ defmodule SquidMesh.RunStore.Serialization do
   defp deserialize_attempt_status("running"), do: :running
   defp deserialize_attempt_status("completed"), do: :completed
   defp deserialize_attempt_status("failed"), do: :failed
+
+  defp deserialize_manual_event(nil, _definition, _step_run), do: nil
+
+  defp deserialize_manual_event(manual, definition, step_run) when is_map(manual) do
+    step = deserialize_step(definition, step_run.step)
+
+    %RunAuditEvent{
+      type: deserialize_audit_type(Map.get(manual, "event")),
+      step: step,
+      actor: deserialize_value(Map.get(manual, "actor")),
+      comment: Map.get(manual, "comment"),
+      metadata: deserialize_map(Map.get(manual, "metadata")),
+      at: deserialize_event_at(Map.get(manual, "at"), step_run.updated_at)
+    }
+  end
+
+  defp step_run_audit_events(definition, %StepRunRecord{} = step_run) do
+    step = deserialize_step(definition, step_run.step)
+
+    case manual_step_kind(definition, step, step_run) do
+      nil ->
+        []
+
+      _kind ->
+        paused_event = %RunAuditEvent{type: :paused, step: step, at: step_run.inserted_at}
+
+        [paused_event | completed_manual_events(definition, step_run)]
+        |> Enum.reject(&is_nil(&1))
+    end
+  end
+
+  defp completed_manual_events(definition, %StepRunRecord{status: "completed"} = step_run) do
+    case deserialize_manual_event(step_run.manual, definition, step_run) do
+      %RunAuditEvent{} = event ->
+        [event]
+
+      nil ->
+        fallback_manual_event(definition, step_run)
+    end
+  end
+
+  defp completed_manual_events(_definition, _step_run), do: []
+
+  defp fallback_manual_event(definition, %StepRunRecord{} = step_run) do
+    case manual_step_kind(definition, deserialize_step(definition, step_run.step), step_run) do
+      :pause ->
+        [
+          %RunAuditEvent{
+            type: :resumed,
+            step: deserialize_step(definition, step_run.step),
+            at: step_run.updated_at
+          }
+        ]
+
+      :approval ->
+        case decision_payload(step_run.output) do
+          %{decision: decision} = payload when decision in ["approved", "rejected"] ->
+            [
+              %RunAuditEvent{
+                type: deserialize_audit_type(decision),
+                step: deserialize_step(definition, step_run.step),
+                actor: Map.get(payload, :actor),
+                comment: Map.get(payload, :comment),
+                metadata: Map.get(payload, :metadata),
+                at: deserialize_event_at(Map.get(payload, :decided_at), step_run.updated_at)
+              }
+            ]
+
+          _other ->
+            []
+        end
+
+      _other ->
+        []
+    end
+  end
+
+  defp decision_payload(nil), do: nil
+
+  defp decision_payload(%{decision: _decision} = payload), do: payload
+
+  defp decision_payload(output) when is_map(output) do
+    Enum.find_value(output, fn
+      {_key, %{decision: _decision} = payload} -> payload
+      _other -> nil
+    end)
+  end
+
+  defp manual_step_kind(_definition, _step, %StepRunRecord{manual: %{"event" => event}})
+       when event in ["resumed", "approved", "rejected"] do
+    case event do
+      "resumed" -> :pause
+      _ -> :approval
+    end
+  end
+
+  defp manual_step_kind(_definition, _step, %StepRunRecord{resume: %{"kind" => "approval"}}),
+    do: :approval
+
+  defp manual_step_kind(_definition, _step, %StepRunRecord{resume: resume}) when is_map(resume),
+    do: :pause
+
+  defp manual_step_kind(nil, _step, %StepRunRecord{}), do: nil
+
+  defp manual_step_kind(definition, step, %StepRunRecord{}) do
+    case WorkflowDefinition.step(definition, step) do
+      {:ok, %{module: module}} when module in [:pause, :approval] -> module
+      _other -> nil
+    end
+  end
+
+  defp deserialize_audit_type("paused"), do: :paused
+  defp deserialize_audit_type("resumed"), do: :resumed
+  defp deserialize_audit_type("approved"), do: :approved
+  defp deserialize_audit_type("rejected"), do: :rejected
+  defp deserialize_audit_type(_value), do: nil
+
+  defp deserialize_event_at(nil, fallback), do: fallback
+
+  defp deserialize_event_at(timestamp, fallback) when is_binary(timestamp) do
+    case DateTime.from_iso8601(timestamp) do
+      {:ok, datetime, _offset} -> datetime
+      _other -> fallback
+    end
+  end
 
   defp step_runs_preload_query do
     from(step_run in StepRunRecord,

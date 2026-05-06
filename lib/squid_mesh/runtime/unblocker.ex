@@ -16,55 +16,70 @@ defmodule SquidMesh.Runtime.Unblocker do
   alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.Run
+  alias SquidMesh.Runtime.ManualAction
   alias SquidMesh.RunStore.Serialization
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
-  @spec unblock(Config.t(), Run.t()) :: :ok | {:error, term()}
-  def unblock(%Config{} = config, %Run{workflow: workflow} = run) when is_atom(workflow) do
-    case config.repo.transaction(fn ->
-           with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
-                {:ok, step_name} <- paused_step_name(paused_run),
-                {:ok, definition} <- WorkflowDefinition.load(workflow),
-                {:ok, _pause_step} <- paused_step_definition(definition, step_name),
-                {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
-                {:ok, mapped_output, target} <-
-                  resume_metadata(step_run, definition, step_name),
-                {:ok, attempt} <- running_attempt(config.repo, step_run.id),
-                {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
-                {:ok, _step_run} <-
-                  StepRunStore.complete_step(config.repo, step_run.id, mapped_output),
-                {:ok, resumed_run, from_status, to_status} <-
-                  resume_paused_run(
-                    config,
-                    config.repo,
-                    run_record,
-                    paused_run,
-                    target,
-                    mapped_output
-                  ) do
-             {paused_run, step_name, attempt, resumed_run, from_status, to_status}
-           else
-             {:error, reason} -> config.repo.rollback(reason)
-           end
-         end) do
-      {:ok, {paused_run, step_name, attempt, resumed_run, from_status, to_status}} ->
-        Observability.emit_step_completed(
-          paused_run,
-          step_name,
-          attempt.attempt_number,
-          Observability.duration_since(attempt.inserted_at)
-        )
+  @spec unblock(Config.t(), Run.t(), map()) :: :ok | {:error, term()}
+  def unblock(config, run, attrs \\ %{})
 
-        Observability.emit_run_transition(resumed_run, from_status, to_status)
-        :ok
+  def unblock(%Config{} = config, %Run{workflow: workflow} = run, attrs)
+      when is_atom(workflow) and is_map(attrs) do
+    with :ok <- ManualAction.validate(attrs) do
+      case config.repo.transaction(fn ->
+             with {:ok, {paused_run, run_record}} <- locked_paused_run(config.repo, run.id),
+                  {:ok, step_name} <- paused_step_name(paused_run),
+                  {:ok, definition} <- WorkflowDefinition.load(workflow),
+                  {:ok, _pause_step} <- paused_step_definition(definition, step_name),
+                  {:ok, step_run} <- running_step_run(config.repo, paused_run.id, step_name),
+                  {:ok, mapped_output, target} <-
+                    resume_metadata(step_run, definition, step_name),
+                  manual_event = ManualAction.build(:resumed, attrs),
+                  {:ok, attempt} <- running_attempt(config.repo, step_run.id),
+                  {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt.id),
+                  {:ok, _step_run} <-
+                    StepRunStore.complete_manual_step(
+                      config.repo,
+                      step_run.id,
+                      mapped_output,
+                      manual_event
+                    ),
+                  {:ok, resumed_run, from_status, to_status} <-
+                    resume_paused_run(
+                      config,
+                      config.repo,
+                      run_record,
+                      paused_run,
+                      target,
+                      mapped_output
+                    ) do
+               {paused_run, step_name, attempt, resumed_run, from_status, to_status}
+             else
+               {:error, reason} -> config.repo.rollback(reason)
+             end
+           end) do
+        {:ok, {paused_run, step_name, attempt, resumed_run, from_status, to_status}} ->
+          Observability.emit_step_completed(
+            paused_run,
+            step_name,
+            attempt.attempt_number,
+            Observability.duration_since(attempt.inserted_at)
+          )
 
-      {:error, reason} ->
-        {:error, reason}
+          Observability.emit_run_transition(resumed_run, from_status, to_status)
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, {:invalid_manual_action, details}} ->
+        {:error, {:invalid_resume, details}}
     end
   end
 
-  def unblock(%Config{}, %Run{workflow: workflow}) do
+  def unblock(%Config{}, %Run{workflow: workflow}, _attrs) do
     {:error, {:invalid_workflow, workflow}}
   end
 

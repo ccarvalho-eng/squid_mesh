@@ -207,6 +207,14 @@ or reject it through the public API:
 {:ok, rejected_run} = SquidMesh.reject_run(run_id, %{actor: "ops_456"})
 ```
 
+With `include_history: true`, the inspected run also exposes `audit_events` so
+host apps can show who paused, resumed, approved, or rejected the run and when:
+
+```elixir
+Enum.map(paused_run.audit_events, &{&1.type, &1.step})
+#=> [{:paused, :wait_for_approval}]
+```
+
 Manual-review durability notes:
 
 - `approval_step/2` is only supported in transition-based workflows
@@ -214,6 +222,7 @@ Manual-review durability notes:
 - `approve_run/3` completes that step and advances the declared `:ok` path
 - `reject_run/3` completes that step and advances the declared `:error` path
 - reviewer identity, decision, timestamp, and optional review metadata are persisted in the completed step output and merged run context
+- `inspect_run(..., include_history: true)` also returns durable audit events for pause, resume, approval, and rejection actions
 - the resolved `:ok` and `:error` targets plus output-mapping metadata are persisted with the paused step so restart or deploy boundaries do not recompute review semantics from the current workflow definition
 - host apps should apply the latest Squid Mesh migrations before using pause-resume in existing environments
 

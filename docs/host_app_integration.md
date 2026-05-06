@@ -182,8 +182,8 @@ defmodule MyApp.WorkflowRuns do
     SquidMesh.inspect_run(run_id, include_history: true)
   end
 
-  def unblock_run(run_id) do
-    SquidMesh.unblock_run(run_id)
+  def unblock_run(run_id, attrs \\ %{}) do
+    SquidMesh.unblock_run(run_id, attrs)
   end
 
   def approve_run(run_id, attrs) do
@@ -201,6 +201,31 @@ Squid Mesh migrations applied before deploying the feature. Paused step runs
 now persist internal resume metadata so `unblock_run/2`, `approve_run/3`, and
 `reject_run/3` can continue with stable output and transition semantics after
 restarts or code changes.
+
+Operational review shape:
+
+```elixir
+{:ok, paused_run} = MyApp.WorkflowRuns.inspect_run(run_id)
+
+Enum.map(paused_run.audit_events, &{&1.type, &1.step})
+#=> [{:paused, :wait_for_review}]
+
+{:ok, _run} =
+  MyApp.WorkflowRuns.approve_run(run_id, %{
+    actor: "ops_123",
+    comment: "customer verified",
+    metadata: %{ticket: "SUP-42"}
+  })
+
+{:ok, completed_run} = MyApp.WorkflowRuns.inspect_run(run_id)
+
+Enum.map(completed_run.audit_events, &{&1.type, &1.actor, &1.comment})
+#=> [{:paused, nil, nil}, {:approved, "ops_123", "customer verified"}]
+```
+
+`include_history: true` is the public audit boundary. With history enabled, the
+run includes chronological `step_runs`, graph-aware `steps`, and durable
+`audit_events` for pause, resume, approval, and rejection actions.
 
 ## Minimal Phoenix Host Skeleton
 
@@ -227,8 +252,8 @@ defmodule MyApp.WorkflowRuns do
     SquidMesh.inspect_run(run_id, include_history: true)
   end
 
-  def unblock_run(run_id) do
-    SquidMesh.unblock_run(run_id)
+  def unblock_run(run_id, attrs \\ %{}) do
+    SquidMesh.unblock_run(run_id, attrs)
   end
 
   def approve_run(run_id, attrs) do
