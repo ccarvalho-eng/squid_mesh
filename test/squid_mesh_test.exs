@@ -587,6 +587,51 @@ defmodule SquidMeshTest do
              ]
     end
 
+    test "reconstructs completed pause audit events from persisted resume metadata when the workflow definition can no longer load" do
+      assert {:ok, run} =
+               SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_approval"}
+               })
+
+      assert {:ok, _resumed_run} =
+               SquidMesh.unblock_run(run.id, %{actor: "ops_123", comment: "resume requested"},
+                 repo: Repo
+               )
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(step_run in SquidMesh.Persistence.StepRun,
+                   where:
+                     step_run.run_id == ^run.id and step_run.step == "wait_for_approval" and
+                       step_run.status == "completed"
+                 ),
+                 set: [manual: nil]
+               )
+
+      Repo.update_all(
+        from(run_record in RunRecord, where: run_record.id == ^run.id),
+        set: [workflow: "Elixir.Missing.Workflow"]
+      )
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.workflow == "Elixir.Missing.Workflow"
+
+      assert Enum.map(completed_run.audit_events, &{&1.type, &1.step, &1.actor, &1.comment}) == [
+               {:paused, "wait_for_approval", nil, nil},
+               {:resumed, "wait_for_approval", nil, nil}
+             ]
+    end
+
     test "reconstructs legacy approval audit events when the workflow definition can no longer load" do
       assert {:ok, run} =
                SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)

@@ -117,7 +117,6 @@ defmodule SquidMesh.StepRunStore do
       status: "completed",
       output: output,
       manual: manual,
-      resume: nil,
       last_error: nil
     })
   end
