@@ -152,13 +152,15 @@ defmodule SquidMesh.Runtime.Reviewer do
            }
          },
          definition,
-         _step_name,
+         step_name,
          decision,
          attrs
        )
        when is_binary(ok_target) and is_binary(error_target) do
-    {:ok, map_review_output(attrs, decision, output_key),
-     deserialize_decision_target(definition, decision, ok_target, error_target)}
+    with {:ok, resolved_output_key} <- resolve_output_key(definition, step_name, output_key) do
+      {:ok, map_review_output(attrs, decision, resolved_output_key),
+       deserialize_decision_target(definition, decision, ok_target, error_target)}
+    end
   end
 
   defp review_metadata(%StepRun{}, definition, step_name, decision, attrs) do
@@ -232,7 +234,7 @@ defmodule SquidMesh.Runtime.Reviewer do
       |> maybe_put(:comment, Map.get(attrs, :comment))
       |> maybe_put(:metadata, Map.get(attrs, :metadata))
 
-    case deserialize_output_key(output_key) do
+    case output_key do
       nil -> review_output
       mapped_key -> %{mapped_key => review_output}
     end
@@ -253,13 +255,26 @@ defmodule SquidMesh.Runtime.Reviewer do
   defp decision_target(:approved, targets), do: Map.fetch!(targets, :ok)
   defp decision_target(:rejected, targets), do: Map.fetch!(targets, :error)
 
-  defp deserialize_output_key(nil), do: nil
+  defp resolve_output_key(definition, step_name, persisted_output_key) do
+    with {:ok, declared_output_key} <-
+           WorkflowDefinition.step_output_mapping(definition, step_name) do
+      case {declared_output_key, persisted_output_key} do
+        {nil, nil} ->
+          {:ok, nil}
 
-  defp deserialize_output_key(output_key) when is_binary(output_key) do
-    try do
-      String.to_existing_atom(output_key)
-    rescue
-      ArgumentError -> String.to_atom(output_key)
+        {declared_output_key, nil} when is_atom(declared_output_key) ->
+          {:ok, declared_output_key}
+
+        {declared_output_key, persisted_output_key} when is_atom(declared_output_key) ->
+          if persisted_output_key == Atom.to_string(declared_output_key) do
+            {:ok, declared_output_key}
+          else
+            {:error, {:invalid_resume_metadata, step_name}}
+          end
+
+        _other ->
+          {:error, {:invalid_resume_metadata, step_name}}
+      end
     end
   end
 

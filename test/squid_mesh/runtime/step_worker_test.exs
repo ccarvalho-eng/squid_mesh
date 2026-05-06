@@ -683,6 +683,86 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              ]
     end
 
+    test "falls back to the declared approval output mapping when persisted review metadata is absent" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(step_run in StepRun,
+                   where:
+                     step_run.run_id == ^run.id and step_run.step == "wait_for_review" and
+                       step_run.status == "running"
+                 ),
+                 set: [resume: nil]
+               )
+
+      assert {:ok, approved_run} =
+               SquidMesh.approve_run(run.id, %{actor: "ops_123"}, repo: Repo)
+
+      assert approved_run.status == :running
+      assert approved_run.current_step == :record_approval
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 1
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.approval.decision == "approved"
+      assert completed_run.context.approval.actor == "ops_123"
+    end
+
+    test "rejects corrupted persisted approval output metadata without mutating the paused step" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(step_run in StepRun,
+                   where:
+                     step_run.run_id == ^run.id and step_run.step == "wait_for_review" and
+                       step_run.status == "running"
+                 ),
+                 set: [
+                   resume: %{
+                     "kind" => "approval",
+                     "ok_target" => "record_approval",
+                     "error_target" => "record_rejection",
+                     "output_key" => "unexpected_key"
+                   }
+                 ]
+               )
+
+      assert {:error, {:invalid_resume_metadata, :wait_for_review}} =
+               SquidMesh.approve_run(run.id, %{actor: "ops_123"}, repo: Repo)
+
+      assert {:ok, paused_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert paused_run.status == :paused
+      assert paused_run.current_step == :wait_for_review
+
+      assert Enum.map(paused_run.step_runs, fn step_run ->
+               {step_run.step, step_run.status, Enum.map(step_run.attempts, & &1.status)}
+             end) == [
+               {:wait_for_review, :running, [:running]}
+             ]
+    end
+
     test "allows parallel root workers to start from a pending dependency run" do
       :persistent_term.put({ConcurrentDependencyWorkflow, :test_pid}, self())
 
