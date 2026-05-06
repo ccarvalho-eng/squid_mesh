@@ -128,7 +128,10 @@ defmodule MinimalHostApp.Smoke do
          {:ok, paused_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
          :ok <- ensure_paused(paused_run),
          {:ok, resumed_run} <-
-           WorkflowRuns.approve_run(run.id, %{actor: "ops_smoke", comment: "approved"}),
+           WorkflowRuns.approve_run(
+             run.id,
+             %{actor: "ops_smoke", comment: "approved", metadata: %{ticket: "SMOKE-1"}}
+           ),
          :ok <- ensure_resumed(resumed_run),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-
@@ -207,10 +210,10 @@ defmodule MinimalHostApp.Smoke do
           :ok | {:error, :unexpected_manual_approval_audit}
   defp ensure_manual_approval_audit(%SquidMesh.Run{audit_events: audit_events})
        when is_list(audit_events) do
-    case Enum.map(audit_events, &{&1.type, &1.step, &1.actor, &1.comment}) do
+    case Enum.map(audit_events, &{&1.type, &1.step, &1.actor, &1.comment, &1.metadata}) do
       [
-        {:paused, :wait_for_approval, nil, nil},
-        {:approved, :wait_for_approval, "ops_smoke", "approved"}
+        {:paused, :wait_for_approval, nil, nil, nil},
+        {:approved, :wait_for_approval, "ops_smoke", "approved", %{ticket: "SMOKE-1"}}
       ] ->
         :ok
 

@@ -99,7 +99,10 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            ]
 
     assert {:ok, resumed_run} =
-             WorkflowRuns.approve_run(run.id, %{actor: "ops_123", comment: "approved"})
+             WorkflowRuns.approve_run(
+               run.id,
+               %{actor: "ops_123", comment: "approved", metadata: %{ticket: "SUP-123"}}
+             )
 
     assert resumed_run.status == :running
     assert resumed_run.current_step == :record_approval
@@ -119,6 +122,11 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert Enum.map(completed_history.audit_events, &{&1.type, &1.step, &1.actor}) == [
              {:paused, :wait_for_approval, nil},
              {:approved, :wait_for_approval, "ops_123"}
+           ]
+
+    assert Enum.map(completed_history.audit_events, & &1.metadata) == [
+             nil,
+             %{ticket: "SUP-123"}
            ]
   end
 

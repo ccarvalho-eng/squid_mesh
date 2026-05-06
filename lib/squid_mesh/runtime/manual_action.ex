@@ -47,7 +47,9 @@ defmodule SquidMesh.Runtime.ManualAction do
     |> maybe_put("metadata", Map.get(attrs, :metadata))
   end
 
-  defp valid_actor?(actor), do: (is_binary(actor) and actor != "") or is_map(actor)
+  defp valid_actor?(actor),
+    do: (is_binary(actor) and actor != "") or (is_map(actor) and map_size(actor) > 0)
+
   defp valid_comment?(comment), do: is_binary(comment) and comment != ""
 
   defp maybe_put(map, _key, nil), do: map

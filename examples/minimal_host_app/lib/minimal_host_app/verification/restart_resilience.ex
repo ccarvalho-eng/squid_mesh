@@ -127,16 +127,25 @@ defmodule MinimalHostApp.Verification.RestartResilience do
     {:ok, run} = WorkflowRuns.start_manual_approval(%{account_id: "acct_resilience_pause"})
     :ok = RuntimeHarness.wait_for_execution()
 
-    {:ok, paused_run} = WorkflowRuns.inspect_run(run.id)
+    {:ok, paused_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
 
     unless paused_run.status == :paused and paused_run.current_step == :wait_for_approval do
       raise "expected paused run before restart"
     end
 
+    unless Enum.map(paused_run.audit_events, &{&1.type, &1.step}) == [
+             {:paused, :wait_for_approval}
+           ] do
+      raise "expected paused audit history before restart"
+    end
+
     :ok = RuntimeHarness.restart_oban!()
 
     {:ok, resumed_run} =
-      WorkflowRuns.approve_run(run.id, %{actor: "ops_restart", comment: "approved"})
+      WorkflowRuns.approve_run(
+        run.id,
+        %{actor: "ops_restart", comment: "approved", metadata: %{ticket: "RESTART-1"}}
+      )
 
     unless resumed_run.status == :running and resumed_run.current_step == :record_approval do
       raise "expected resumed manual approval run after restart"
@@ -147,11 +156,21 @@ defmodule MinimalHostApp.Verification.RestartResilience do
     {:ok, completed_run} =
       RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts)
 
+    {:ok, completed_history} = WorkflowRuns.inspect_run(run.id, include_history: true)
+
     unless completed_run.status == :completed and
              completed_run.context.approval.status == "approved" do
       raise "expected paused run to complete after restart and unblock"
     end
 
-    completed_run
+    unless Enum.map(completed_history.audit_events, &{&1.type, &1.step, &1.actor, &1.metadata}) ==
+             [
+               {:paused, :wait_for_approval, nil, nil},
+               {:approved, :wait_for_approval, "ops_restart", %{ticket: "RESTART-1"}}
+             ] do
+      raise "expected approval audit history to survive restart"
+    end
+
+    completed_history
   end
 end

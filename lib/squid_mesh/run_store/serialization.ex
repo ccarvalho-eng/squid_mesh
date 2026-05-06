@@ -132,7 +132,6 @@ defmodule SquidMesh.RunStore.Serialization do
       input: deserialize_map(step_run.input || %{}),
       output: deserialize_map(step_run.output),
       last_error: deserialize_map(step_run.last_error),
-      manual_event: deserialize_manual_event(step_run.manual, definition, step_run),
       attempts: to_public_attempts(step_run),
       inserted_at: step_run.inserted_at,
       updated_at: step_run.updated_at
@@ -174,7 +173,6 @@ defmodule SquidMesh.RunStore.Serialization do
       input: step_run.input,
       output: step_run.output,
       last_error: step_run.last_error,
-      manual_event: step_run.manual_event,
       attempts: step_run.attempts,
       inserted_at: step_run.inserted_at,
       updated_at: step_run.updated_at
@@ -186,7 +184,6 @@ defmodule SquidMesh.RunStore.Serialization do
       step: step,
       status: status,
       depends_on: depends_on,
-      manual_event: nil,
       attempts: []
     }
   end
@@ -232,15 +229,20 @@ defmodule SquidMesh.RunStore.Serialization do
 
   defp deserialize_manual_event(manual, definition, step_run) when is_map(manual) do
     step = deserialize_step(definition, step_run.step)
+    type = deserialize_audit_type(Map.get(manual, "event"))
 
-    %RunAuditEvent{
-      type: deserialize_audit_type(Map.get(manual, "event")),
-      step: step,
-      actor: deserialize_value(Map.get(manual, "actor")),
-      comment: Map.get(manual, "comment"),
-      metadata: deserialize_map(Map.get(manual, "metadata")),
-      at: deserialize_event_at(Map.get(manual, "at"), step_run.updated_at)
-    }
+    if is_nil(type) do
+      nil
+    else
+      %RunAuditEvent{
+        type: type,
+        step: step,
+        actor: deserialize_value(Map.get(manual, "actor")),
+        comment: Map.get(manual, "comment"),
+        metadata: deserialize_map(Map.get(manual, "metadata")),
+        at: deserialize_event_at(Map.get(manual, "at"), step_run.updated_at)
+      }
+    end
   end
 
   defp step_run_audit_events(definition, %StepRunRecord{} = step_run) do
@@ -288,10 +290,10 @@ defmodule SquidMesh.RunStore.Serialization do
               %RunAuditEvent{
                 type: deserialize_audit_type(decision),
                 step: deserialize_step(definition, step_run.step),
-                actor: Map.get(payload, :actor),
-                comment: Map.get(payload, :comment),
-                metadata: Map.get(payload, :metadata),
-                at: deserialize_event_at(Map.get(payload, :decided_at), step_run.updated_at)
+                actor: payload_value(payload, :actor),
+                comment: payload_value(payload, :comment),
+                metadata: payload_value(payload, :metadata),
+                at: deserialize_event_at(payload_value(payload, :decided_at), step_run.updated_at)
               }
             ]
 
@@ -306,13 +308,26 @@ defmodule SquidMesh.RunStore.Serialization do
 
   defp decision_payload(nil), do: nil
 
-  defp decision_payload(%{decision: _decision} = payload), do: payload
+  defp decision_payload(%{decision: _decision, decided_at: _decided_at} = payload), do: payload
+
+  defp decision_payload(%{"decision" => _decision, "decided_at" => _decided_at} = payload),
+    do: deserialize_map(payload)
 
   defp decision_payload(output) when is_map(output) do
     Enum.find_value(output, fn
-      {_key, %{decision: _decision} = payload} -> payload
-      _other -> nil
+      {_key, %{decision: _decision, decided_at: _decided_at} = payload} ->
+        payload
+
+      {_key, %{"decision" => _decision, "decided_at" => _decided_at} = payload} ->
+        deserialize_map(payload)
+
+      _other ->
+        nil
     end)
+  end
+
+  defp payload_value(payload, key) when is_map(payload) do
+    Map.get(payload, key, Map.get(payload, Atom.to_string(key)))
   end
 
   defp manual_step_kind(_definition, _step, %StepRunRecord{manual: %{"event" => event}})
@@ -328,6 +343,10 @@ defmodule SquidMesh.RunStore.Serialization do
 
   defp manual_step_kind(_definition, _step, %StepRunRecord{resume: resume}) when is_map(resume),
     do: :pause
+
+  defp manual_step_kind(nil, _step, %StepRunRecord{output: output}) when is_map(output) do
+    if decision_payload(output), do: :approval, else: nil
+  end
 
   defp manual_step_kind(nil, _step, %StepRunRecord{}), do: nil
 

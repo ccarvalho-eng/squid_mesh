@@ -17,7 +17,6 @@ defmodule SquidMesh.RunStepState do
     :input,
     :output,
     :last_error,
-    :manual_event,
     :attempts,
     :inserted_at,
     :updated_at
