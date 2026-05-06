@@ -1,14 +1,14 @@
 <div align="center">
-  <h2>🦑 Squid Mesh</h2>
+  <h2>Squid Mesh</h2>
 
-  <p><i>Workflow automation platform for Elixir applications.</i></p>
+  <p><strong>Durable workflow runtime for Elixir applications, running on top of Postgres and Oban.</strong></p>
 
   <p>
     <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
       <img alt="CI" src="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg" />
     </a>
     <a href="https://hex.pm/packages/squid_mesh">
-      <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh" alt="Hex.pm"/></a>
+      <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh" />
     </a>
     <a href="https://hexdocs.pm/squid_mesh">
       <img alt="HexDocs" src="https://img.shields.io/badge/docs-hexdocs-purple" />
@@ -22,12 +22,27 @@
   </p>
 </div>
 
-Squid Mesh lets Phoenix and OTP applications define, run, inspect, replay, and
-recover durable workflows in code.
+Squid Mesh lets Phoenix and OTP applications model operational workflows as
+code: retries, waits, approval gates, dependency joins, failure routes, replay,
+and inspectable history live in one embedded runtime instead of being rebuilt
+inside each host app.
 
-> <i>The name blends a squid’s coordinated arms with a mesh of connected
-> workflow steps, capturing the idea of orchestrating many moving parts without
-> rebuilding the coordination layer in every app.</i>
+## What You Get
+
+- declarative workflows with manual and cron triggers
+- durable run, step, and attempt history in Postgres
+- step-level retries, delays, replay, and inspection on top of your existing `Oban`
+- transition, dependency, and approval-style workflow shapes
+- explicit step input and output mapping for clearer data flow
+- graph-aware inspection plus manual audit events for pause, resume, approval, and rejection
+- built-in steps like `:log`, `:wait`, `:pause`, and `:approval`, plus custom steps with `Jido.Action`
+
+## Use It When
+
+- a workflow should survive app restarts, deploys, retries, and Oban redelivery
+- a Phoenix context needs a durable approval, recovery, notification, or back-office flow
+- step history and manual decisions need to be inspectable after the fact
+- you want workflow state in your app's Postgres database, not in a separate service
 
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for
@@ -35,13 +50,6 @@ recover durable workflows in code.
 > positioned as production-ready. See
 > [Production Readiness](docs/production_readiness.md) for the current
 > checklist and remaining bar.
-
-## What You Get
-
-- declarative workflows with manual and cron triggers
-- durable run, step, and attempt history in Postgres
-- step-level retries, delays, replay, and inspection on top of your existing `Oban`
-- built-in steps like `:log`, `:wait`, `:pause`, and `:approval`, plus custom steps with `Jido.Action`
 
 ## Runtime Shape
 
@@ -192,7 +200,7 @@ Use the docs index for setup, workflow authoring, operations, and architecture:
 - [Docs index](docs/index.md)
 - [Host app integration](docs/host_app_integration.md)
 - [Workflow authoring guide](docs/workflow_authoring.md)
-- [Example host app](examples/minimal_host_app/README.md)
+- [Example host app](https://github.com/ccarvalho-eng/squid_mesh/tree/main/examples/minimal_host_app)
 
 ## Contributing
 

@@ -35,6 +35,10 @@ This example is the standalone development harness. Unlike the embedded host-app
 install path, it owns its own `Oban` migration so the runtime can be exercised
 without depending on another application.
 
+Run the verification tasks one at a time. They share the same test database,
+manual Oban instance, and local gateway stubs, so parallel runs can interfere
+with each other's polling windows.
+
 ## Smoke Path
 
 Run the test-mode smoke path:
