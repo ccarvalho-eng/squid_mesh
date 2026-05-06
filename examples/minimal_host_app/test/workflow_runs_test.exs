@@ -88,6 +88,10 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert paused_run.status == :paused
     assert paused_run.current_step == :wait_for_approval
 
+    assert Enum.map(paused_run.audit_events, &{&1.type, &1.step}) == [
+             {:paused, :wait_for_approval}
+           ]
+
     assert Enum.map(paused_run.steps, &{&1.step, &1.status}) == [
              {:wait_for_approval, :running},
              {:record_approval, :waiting},
@@ -95,13 +99,17 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            ]
 
     assert {:ok, resumed_run} =
-             WorkflowRuns.approve_run(run.id, %{actor: "ops_123", comment: "approved"})
+             WorkflowRuns.approve_run(
+               run.id,
+               %{actor: "ops_123", comment: "approved", metadata: %{ticket: "SUP-123"}}
+             )
 
     assert resumed_run.status == :running
     assert resumed_run.current_step == :record_approval
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
     assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+    assert {:ok, completed_history} = WorkflowRuns.inspect_run(run.id, include_history: true)
 
     assert completed_run.status == :completed
 
@@ -110,6 +118,16 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert completed_run.context.approval.decision == "approved"
     assert completed_run.context.approval.actor == "ops_123"
     assert completed_run.context.approval.comment == "approved"
+
+    assert Enum.map(completed_history.audit_events, &{&1.type, &1.step, &1.actor}) == [
+             {:paused, :wait_for_approval, nil},
+             {:approved, :wait_for_approval, "ops_123"}
+           ]
+
+    assert Enum.map(completed_history.audit_events, & &1.metadata) == [
+             nil,
+             %{ticket: "SUP-123"}
+           ]
   end
 
   test "rejects a manual approval workflow through the host boundary" do
@@ -129,6 +147,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
     assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+    assert {:ok, completed_history} = WorkflowRuns.inspect_run(run.id, include_history: true)
 
     assert completed_run.status == :completed
     assert completed_run.context.approval.account_id == "acct_review_123"
@@ -136,6 +155,11 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert completed_run.context.approval.decision == "rejected"
     assert completed_run.context.approval.actor == "ops_456"
     assert completed_run.context.approval.comment == "rejected"
+
+    assert Enum.map(completed_history.audit_events, &{&1.type, &1.step, &1.actor}) == [
+             {:paused, :wait_for_approval, nil},
+             {:rejected, :wait_for_approval, "ops_456"}
+           ]
   end
 
   test "runs the documented smoke path" do

@@ -163,14 +163,36 @@ defmodule SquidMesh do
   @doc """
   Resumes a run that is intentionally paused for manual intervention.
   """
+  @spec unblock_run(Ecto.UUID.t()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+  def unblock_run(run_id), do: unblock_run(run_id, %{}, [])
+
   @spec unblock_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()}
           | {:error,
              :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
-  def unblock_run(run_id, overrides \\ []) do
+  def unblock_run(run_id, overrides) when is_list(overrides) do
+    unblock_run(run_id, %{}, overrides)
+  end
+
+  @spec unblock_run(Ecto.UUID.t(), map()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+  def unblock_run(run_id, attrs) when is_map(attrs) do
+    unblock_run(run_id, attrs, [])
+  end
+
+  @spec unblock_run(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error,
+             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+  def unblock_run(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
          {:ok, run} <- RunStore.get_run(config.repo, run_id),
-         :ok <- Unblocker.unblock(config, run) do
+         :ok <- Unblocker.unblock(config, run, attrs) do
       RunStore.get_run(config.repo, run_id)
     end
   end

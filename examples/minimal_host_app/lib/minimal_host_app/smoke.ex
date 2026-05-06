@@ -128,16 +128,21 @@ defmodule MinimalHostApp.Smoke do
          {:ok, paused_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
          :ok <- ensure_paused(paused_run),
          {:ok, resumed_run} <-
-           WorkflowRuns.approve_run(run.id, %{actor: "ops_smoke", comment: "approved"}),
+           WorkflowRuns.approve_run(
+             run.id,
+             %{actor: "ops_smoke", comment: "approved", metadata: %{ticket: "SMOKE-1"}}
+           ),
          :ok <- ensure_resumed(resumed_run),
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, inspected_run} <-
-           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts) do
+           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts),
+         {:ok, history_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
+         :ok <- ensure_manual_approval_audit(history_run) do
       unless inspected_run.id == run.id and inspected_run.status == :completed do
         raise "unexpected manual approval smoke result"
       end
 
-      inspected_run
+      history_run
     else
       {:error, reason} ->
         raise "manual approval smoke test failed: #{inspect(reason)}"
@@ -200,6 +205,25 @@ defmodule MinimalHostApp.Smoke do
   @spec ensure_resumed(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_resumed_status}
   defp ensure_resumed(%SquidMesh.Run{status: :running, current_step: :record_approval}), do: :ok
   defp ensure_resumed(%SquidMesh.Run{}), do: {:error, :unexpected_resumed_status}
+
+  @spec ensure_manual_approval_audit(SquidMesh.Run.t()) ::
+          :ok | {:error, :unexpected_manual_approval_audit}
+  defp ensure_manual_approval_audit(%SquidMesh.Run{audit_events: audit_events})
+       when is_list(audit_events) do
+    case Enum.map(audit_events, &{&1.type, &1.step, &1.actor, &1.comment, &1.metadata}) do
+      [
+        {:paused, :wait_for_approval, nil, nil, nil},
+        {:approved, :wait_for_approval, "ops_smoke", "approved", %{ticket: "SMOKE-1"}}
+      ] ->
+        :ok
+
+      _other ->
+        {:error, :unexpected_manual_approval_audit}
+    end
+  end
+
+  defp ensure_manual_approval_audit(%SquidMesh.Run{}),
+    do: {:error, :unexpected_manual_approval_audit}
 
   @spec latest_daily_digest_run([SquidMesh.Run.t()]) ::
           {:ok, SquidMesh.Run.t()} | {:error, :missing_daily_digest_run}

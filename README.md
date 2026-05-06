@@ -181,9 +181,9 @@ Start the workflow through the public API and inspect the result with history:
 SquidMesh.inspect_run(run.id, include_history: true)
 ```
 
-With history enabled, the inspected run includes both chronological `step_runs`
-and a graph-aware `steps` view so host apps can render dependency workflows in a
-useful order.
+With history enabled, the inspected run includes chronological `step_runs`, a
+graph-aware `steps` view, and durable `audit_events` for pause, resume,
+approval, and rejection actions.
 
 ## Documentation
 

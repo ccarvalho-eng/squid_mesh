@@ -16,6 +16,7 @@ defmodule SquidMesh.StepRunStore do
   @type step_error :: map()
   @type pause_target :: :complete | atom()
   @type approval_targets :: %{ok: pause_target(), error: pause_target()}
+  @type manual_event :: map()
   @type step_status :: :pending | :running | :completed | :failed
   @type begin_result :: {:ok, StepRun.t(), :execute | :skip} | {:error, Ecto.Changeset.t()}
   @type schedule_result :: {:ok, StepRun.t(), :schedule | :skip} | {:error, Ecto.Changeset.t()}
@@ -98,7 +99,24 @@ defmodule SquidMesh.StepRunStore do
     update_step(repo, step_run_id, %{
       status: "completed",
       output: output,
+      manual: nil,
       resume: nil,
+      last_error: nil
+    })
+  end
+
+  @doc """
+  Marks a paused manual step as completed, persists its output, and records the
+  durable manual action metadata.
+  """
+  @spec complete_manual_step(module(), Ecto.UUID.t(), step_output(), manual_event()) ::
+          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def complete_manual_step(repo, step_run_id, output, manual)
+      when is_map(output) and is_map(manual) do
+    update_step(repo, step_run_id, %{
+      status: "completed",
+      output: output,
+      manual: manual,
       last_error: nil
     })
   end
@@ -109,7 +127,12 @@ defmodule SquidMesh.StepRunStore do
   @spec fail_step(module(), Ecto.UUID.t(), step_error()) ::
           {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def fail_step(repo, step_run_id, error) when is_map(error) do
-    update_step(repo, step_run_id, %{status: "failed", resume: nil, last_error: error})
+    update_step(repo, step_run_id, %{
+      status: "failed",
+      manual: nil,
+      resume: nil,
+      last_error: error
+    })
   end
 
   @doc """
