@@ -127,6 +127,8 @@ defmodule MinimalHostApp.Smoke do
          :ok <- RuntimeHarness.wait_for_execution(),
          {:ok, paused_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
          :ok <- ensure_paused(paused_run),
+         {:ok, explanation} <- WorkflowRuns.explain_run(run.id),
+         :ok <- ensure_paused_approval_explanation(explanation),
          {:ok, resumed_run} <-
            WorkflowRuns.approve_run(
              run.id,
@@ -201,6 +203,19 @@ defmodule MinimalHostApp.Smoke do
   @spec ensure_paused(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_paused_status}
   defp ensure_paused(%SquidMesh.Run{status: :paused, current_step: :wait_for_approval}), do: :ok
   defp ensure_paused(%SquidMesh.Run{}), do: {:error, :unexpected_paused_status}
+
+  @spec ensure_paused_approval_explanation(SquidMesh.RunExplanation.t()) ::
+          :ok | {:error, :unexpected_explanation}
+  defp ensure_paused_approval_explanation(%SquidMesh.RunExplanation{
+         status: :paused,
+         reason: :paused_for_approval,
+         step: :wait_for_approval,
+         next_actions: [:approve_run, :reject_run, :cancel_run]
+       }),
+       do: :ok
+
+  defp ensure_paused_approval_explanation(%SquidMesh.RunExplanation{}),
+    do: {:error, :unexpected_explanation}
 
   @spec ensure_resumed(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_resumed_status}
   defp ensure_resumed(%SquidMesh.Run{status: :running, current_step: :record_approval}), do: :ok

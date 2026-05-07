@@ -193,6 +193,19 @@ With history enabled, the inspected run includes chronological `step_runs`,
 declared `steps` state, and durable `audit_events` for pause, resume, approval,
 and rejection actions.
 
+Use `SquidMesh.explain_run/2` when a host app needs operator-facing diagnostics:
+
+```elixir
+{:ok, explanation} = SquidMesh.explain_run(run.id)
+
+explanation.reason
+#=> :waiting_for_retry
+```
+
+`inspect_run/2` returns the persisted runtime facts. `explain_run/2` summarizes
+the current reason, valid next actions, and evidence in a structured shape that
+dashboards and CLIs can render themselves.
+
 ## Documentation
 
 Use the docs index for setup, workflow authoring, operations, and architecture:

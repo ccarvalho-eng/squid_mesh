@@ -350,3 +350,22 @@ That returns the top-level run plus:
 
 This split gives host apps both declared per-step state and the raw execution
 timeline from one inspection call.
+
+Use `explain_run/2` when an operator surface needs the current reason and safe
+next actions instead of the full inspection snapshot:
+
+```elixir
+{:ok, explanation} = SquidMesh.explain_run(run_id)
+
+%{
+  status: explanation.status,
+  reason: explanation.reason,
+  step: explanation.step,
+  next_actions: explanation.next_actions
+}
+```
+
+`inspect_run/2` answers "what persisted state exists?". `explain_run/2` answers
+"why is this run here, what evidence supports that, and what can an operator do
+next?". The explanation keeps `details` and `evidence` structured so Phoenix
+apps, CLIs, and dashboards can render their own messages.

@@ -9,6 +9,7 @@ defmodule SquidMesh do
 
   alias SquidMesh.Config
   alias SquidMesh.Run
+  alias SquidMesh.RunExplanation
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.Reviewer
@@ -134,6 +135,23 @@ defmodule SquidMesh do
 
     with {:ok, config} <- Config.load(config_overrides) do
       RunStore.get_run(config.repo, run_id, inspect_opts)
+    end
+  end
+
+  @doc """
+  Explains the current runtime state of one workflow run.
+
+  The result is structured diagnostic data for host apps, CLIs, and dashboards.
+  Use `inspect_run/2` for the factual run snapshot and `explain_run/2` when an
+  operator-facing surface needs the reason, evidence, and valid next actions for
+  the run's current state.
+  """
+  @spec explain_run(Ecto.UUID.t(), keyword()) ::
+          {:ok, RunExplanation.t()}
+          | {:error, :not_found | Config.config_error()}
+  def explain_run(run_id, overrides \\ []) do
+    with {:ok, config} <- Config.load(overrides) do
+      RunExplanation.explain(config, run_id)
     end
   end
 
