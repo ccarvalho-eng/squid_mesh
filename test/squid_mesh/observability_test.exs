@@ -7,6 +7,7 @@ defmodule SquidMesh.ObservabilityTest do
   alias SquidMesh.Config
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.StepExecutor.Outcome
+  alias SquidMesh.Runtime.StepExecutor.Preparation
   alias SquidMesh.StepRunStore
 
   @events [
@@ -273,6 +274,36 @@ defmodule SquidMesh.ObservabilityTest do
     refute_receive {:outcome_tx_event, _event, true}
   end
 
+  test "emits preparation transition telemetry after the preparation transaction commits" do
+    handler_id = "squid-mesh-preparation-transaction-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:squid_mesh, :run, :transition],
+        fn event, _measurements, _metadata, pid ->
+          send(pid, {:preparation_tx_event, event, Repo.in_transaction?()})
+        end,
+        test_pid
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    assert {:ok, config} = Config.load(repo: Repo)
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(SuccessfulWorkflow)
+    assert {:ok, run} = RunStore.create_run(Repo, SuccessfulWorkflow, %{account_id: "acct_123"})
+
+    flush_telemetry_events()
+    flush_preparation_tx_events()
+
+    assert {:execute, prepared} = Preparation.prepare(config, definition, run, :deliver_invoice)
+    assert prepared.run.status == :running
+
+    assert_receive {:preparation_tx_event, [:squid_mesh, :run, :transition], false}
+    refute_receive {:preparation_tx_event, _event, true}
+  end
+
   test "emits successor dispatch telemetry after the outcome transaction commits" do
     handler_id = "squid-mesh-outcome-dispatch-#{System.unique_integer([:positive])}"
     test_pid = self()
@@ -526,6 +557,14 @@ defmodule SquidMesh.ObservabilityTest do
   defp flush_outcome_tx_events do
     receive do
       {:outcome_tx_event, _event, _in_transaction?} -> flush_outcome_tx_events()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp flush_preparation_tx_events do
+    receive do
+      {:preparation_tx_event, _event, _in_transaction?} -> flush_preparation_tx_events()
     after
       0 -> :ok
     end

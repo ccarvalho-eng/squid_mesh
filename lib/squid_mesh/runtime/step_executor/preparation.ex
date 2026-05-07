@@ -8,7 +8,6 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
   """
 
   alias SquidMesh.Config
-  alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.StepExecutor.PreparedStep
@@ -24,23 +23,24 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
           | {:cancel, Run.t()}
           | :skip
           | {:error, term()}
-  @type locked_prepare_result :: prepare_result() | {:recover_stale, PreparedStep.t()}
-
   @spec prepare(Config.t(), WorkflowDefinition.t(), Run.t(), atom() | nil) :: prepare_result()
   def prepare(%Config{} = config, definition, %Run{} = run, expected_step) do
     # Lock the run before claiming a step so stale workers cannot start side
     # effects after cancellation or another terminal transition wins the race.
     case config.repo.transaction(fn ->
            with {:ok, locked_run} <- RunStore.get_run_for_update(config.repo, run.id) do
-             do_prepare(config, definition, locked_run, expected_step)
+             {result, events} = do_prepare(config, definition, locked_run, expected_step)
+             {:prepared, result, events}
            else
              {:error, reason} -> config.repo.rollback(reason)
            end
          end) do
-      {:ok, {:recover_stale, prepared}} ->
+      {:ok, {:prepared, {:recover_stale, prepared}, events}} ->
+        emit_post_commit_events(events)
         recover_existing_step(config, prepared)
 
-      {:ok, result} ->
+      {:ok, {:prepared, result, events}} ->
+        emit_post_commit_events(events)
         result
 
       {:error, reason} ->
@@ -55,8 +55,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
         with {:ok, step} <- WorkflowDefinition.step(definition, execution_step),
              {:ok, input_mapping} <-
                WorkflowDefinition.step_input_mapping(definition, execution_step),
-             {:ok, running_run} <- ensure_running(config.repo, run, definition, execution_step),
-             :ok <- maybe_emit_preparation_transition(run, running_run),
+             {:ok, running_run, events} <-
+               ensure_running(config.repo, run, definition, execution_step),
              candidate_input = StepInput.build_step_input(running_run, input_mapping),
              {:ok, step_run, execution_mode} <-
                StepRunStore.begin_step(
@@ -76,27 +76,27 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
           }
 
           case execution_mode do
-            :execute -> {:execute, prepared}
-            :skip -> prepare_existing_step(config, prepared)
+            :execute -> {{:execute, prepared}, events}
+            :skip -> {prepare_existing_step(config, prepared), events}
           end
         end
 
       :skip ->
-        :skip
+        {:skip, []}
 
       {:error, _reason} = error ->
-        error
+        {error, []}
     end
   end
 
   defp do_prepare(_config, _definition, %Run{status: :cancelling} = run, _expected_step) do
-    {:cancel, run}
+    {{:cancel, run}, []}
   end
 
-  defp do_prepare(_config, _definition, %Run{}, _expected_step), do: :skip
+  defp do_prepare(_config, _definition, %Run{}, _expected_step), do: {:skip, []}
 
   @spec ensure_running(module(), Run.t(), WorkflowDefinition.t(), atom()) ::
-          {:ok, Run.t()} | {:error, term()}
+          {:ok, Run.t(), [tuple()]} | {:error, term()}
   defp ensure_running(
          repo,
          %Run{status: :pending, id: run_id},
@@ -106,11 +106,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
     case RunStore.transition_run_silent(repo, run_id, :running, %{
            current_step: running_step(definition, execution_step)
          }) do
-      {:ok, {running_run, _from_status, _to_status}} ->
-        {:ok, running_run}
+      {:ok, {running_run, from_status, to_status}} ->
+        {:ok, running_run, [run_transition_event(running_run, from_status, to_status)]}
 
       {:error, {:invalid_transition, :running, :running}} ->
-        RunStore.get_run(repo, run_id)
+        get_already_running_run(repo, run_id)
 
       {:error, reason} ->
         {:error, reason}
@@ -126,18 +126,18 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
     case RunStore.transition_run_silent(repo, run_id, :running, %{
            current_step: running_step(definition, execution_step)
          }) do
-      {:ok, {running_run, _from_status, _to_status}} ->
-        {:ok, running_run}
+      {:ok, {running_run, from_status, to_status}} ->
+        {:ok, running_run, [run_transition_event(running_run, from_status, to_status)]}
 
       {:error, {:invalid_transition, :running, :running}} ->
-        RunStore.get_run(repo, run_id)
+        get_already_running_run(repo, run_id)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp ensure_running(_repo, %Run{} = run, _definition, _execution_step), do: {:ok, run}
+  defp ensure_running(_repo, %Run{} = run, _definition, _execution_step), do: {:ok, run, []}
 
   @spec resolve_execution_step(module(), WorkflowDefinition.t(), Run.t(), atom() | nil) ::
           {:ok, atom()} | :skip | {:error, term()}
@@ -185,10 +185,20 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
     |> StepInput.normalize_map_keys()
   end
 
-  defp maybe_emit_preparation_transition(%Run{status: status}, %Run{status: status}), do: :ok
+  defp get_already_running_run(repo, run_id) do
+    with {:ok, run} <- RunStore.get_run(repo, run_id) do
+      {:ok, run, []}
+    end
+  end
 
-  defp maybe_emit_preparation_transition(%Run{status: from_status}, %Run{} = running_run) do
-    Observability.emit_run_transition(running_run, from_status, running_run.status)
+  defp emit_post_commit_events(events) do
+    Enum.each(events, fn {:run_transition, run, from_status, to_status} ->
+      SquidMesh.Observability.emit_run_transition(run, from_status, to_status)
+    end)
+  end
+
+  defp run_transition_event(run, from_status, to_status) do
+    {:run_transition, run, from_status, to_status}
   end
 
   defp prepare_existing_step(_config, %PreparedStep{step_run: %{status: "completed"}} = prepared) do
