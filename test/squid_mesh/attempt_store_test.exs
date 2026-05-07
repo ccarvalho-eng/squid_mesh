@@ -78,4 +78,34 @@ defmodule SquidMesh.AttemptStoreTest do
     assert Enum.sort(Enum.map(attempts, & &1.attempt_number)) == [1, 2, 3, 4]
     assert AttemptStore.attempt_count(Repo, step_run.id) == 4
   end
+
+  test "rejects stale terminal updates after an attempt is finalized" do
+    {:ok, run} =
+      %RunRecord{}
+      |> RunRecord.changeset(%{
+        workflow: "Elixir.SquidMesh.AttemptStoreTest.Workflow",
+        trigger: "manual",
+        status: "pending",
+        input: %{}
+      })
+      |> Repo.insert()
+
+    {:ok, step_run} =
+      %StepRun{}
+      |> StepRun.changeset(%{
+        run_id: run.id,
+        step: "load_invoice",
+        status: "running"
+      })
+      |> Repo.insert()
+
+    assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+    assert {:ok, completed_attempt} = AttemptStore.complete_attempt(Repo, attempt.id)
+    assert completed_attempt.status == "completed"
+
+    assert {:error, {:stale_attempt, "completed"}} =
+             AttemptStore.fail_attempt(Repo, attempt.id, %{message: "late failure"})
+
+    assert Repo.get!(SquidMesh.Persistence.StepAttempt, attempt.id).status == "completed"
+  end
 end

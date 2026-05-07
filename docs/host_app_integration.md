@@ -97,6 +97,8 @@ Optional keys:
 - `:execution` - execution system settings
 - `:execution[:name]` - the background job system name to target
 - `:execution[:queue]` - queue used for Squid Mesh jobs, defaults to `:squid_mesh`
+- `:execution[:stale_step_timeout]` - milliseconds before a redelivered running
+  step can be reclaimed after worker interruption, defaults to `900_000`
 
 ## First Run Checklist
 

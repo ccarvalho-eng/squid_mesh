@@ -27,9 +27,12 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
   alias SquidMesh.Persistence.StepRun
+  alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.StepExecutor
   alias SquidMesh.Runtime.StepExecutor.Outcome
+  alias SquidMesh.Runtime.StepExecutor.Preparation
   alias SquidMesh.StepRunStore
+  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
   alias SquidMesh.Workers.StepWorker
   alias Oban.Job
 
@@ -1414,6 +1417,130 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              end) == [{1, :failed}]
     end
 
+    test "reconciles completed step history when redelivery finds run state behind it" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+
+      assert {:ok, running_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :load_invoice
+               })
+
+      assert {:ok, step_run, :execute} =
+               StepRunStore.begin_step(Repo, running_run.id, :load_invoice, input)
+
+      assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+      assert {:ok, _attempt} = AttemptStore.complete_attempt(Repo, attempt.id)
+
+      assert {:ok, _step_run} =
+               StepRunStore.complete_step(Repo, step_run.id, %{
+                 account: %{id: "acct_123"},
+                 invoice: %{id: "inv_456", status: "open"}
+               })
+
+      assert :ok = StepExecutor.execute(run.id, :load_invoice, repo: Repo)
+
+      assert {:ok, reconciled_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+      assert reconciled_run.status == :running
+      assert reconciled_run.current_step == :send_email
+      assert reconciled_run.context.account == %{id: "acct_123"}
+      assert reconciled_run.context.invoice == %{id: "inv_456", status: "open"}
+
+      assert AttemptStore.attempt_count(Repo, step_run.id) == 1
+
+      assert_enqueued(
+        worker: SquidMesh.Workers.StepWorker,
+        queue: "squid_mesh",
+        args: %{"run_id" => run.id, "step" => "send_email"}
+      )
+    end
+
+    test "reclaims stale running attempts before executing a redelivered step" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+
+      assert {:ok, running_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :load_invoice
+               })
+
+      assert {:ok, step_run, :execute} =
+               StepRunStore.begin_step(Repo, running_run.id, :load_invoice, input)
+
+      assert {:ok, first_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+      first_attempt_id = first_attempt.id
+
+      stale_time =
+        DateTime.utc_now()
+        |> DateTime.add(-120, :second)
+        |> DateTime.truncate(:microsecond)
+
+      Repo.update_all(
+        from(stale_step in StepRun, where: stale_step.id == ^step_run.id),
+        set: [updated_at: stale_time]
+      )
+
+      assert :ok =
+               StepExecutor.execute(run.id, :load_invoice,
+                 repo: Repo,
+                 execution: [stale_step_timeout: 0]
+               )
+
+      assert {:ok, progressed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert progressed_run.status == :running
+      assert progressed_run.current_step == :send_email
+      assert progressed_run.context.invoice == %{id: "inv_456", status: "open"}
+
+      assert [%SquidMesh.StepRun{} = completed_step] = progressed_run.step_runs
+      assert completed_step.status == :completed
+
+      assert [
+               %{id: ^first_attempt_id, attempt_number: 1, status: :failed},
+               %{attempt_number: 2, status: :completed}
+             ] = completed_step.attempts
+    end
+
+    test "does not partially schedule fan-out dispatch when a later step is invalid" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+
+      assert {:error, {:unknown_step, :missing_step}} =
+               Dispatcher.dispatch_steps(
+                 config,
+                 run,
+                 [:load_account, :missing_step],
+                 schedule_pending: true
+               )
+
+      refute Repo.exists?(from(step_run in StepRun, where: step_run.run_id == ^run.id))
+
+      refute Repo.exists?(
+               from(job in Job,
+                 where: fragment("?->>'run_id' = ?", job.args, ^run.id)
+               )
+             )
+    end
+
+    test "rolls back pending fan-out rows when direct dispatch fails after scheduling" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, config} = Config.load(repo: Repo, execution: [name: MissingOban])
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+
+      assert {:error, _reason} =
+               Dispatcher.dispatch_steps(config, run, [:load_account, :load_invoice],
+                 schedule_pending: true
+               )
+
+      refute Repo.exists?(from(step_run in StepRun, where: step_run.run_id == ^run.id))
+    end
+
     test "converges cancelling runs to cancelled even when a stale scheduled step arrives" do
       assert {:ok, run} =
                SquidMesh.start_run(BuiltInWorkflow, %{account_id: "acct_123"}, repo: Repo)
@@ -1432,6 +1559,34 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, cancelled_run} = SquidMesh.inspect_run(run.id, repo: Repo)
       assert cancelled_run.status == :cancelled
       assert cancelled_run.current_step == nil
+    end
+
+    test "does not claim a step when preparation observes a stale running run after cancellation" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+
+      assert {:ok, stale_running_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :load_invoice
+               })
+
+      assert {:ok, cancelling_run} = SquidMesh.cancel_run(run.id, repo: Repo)
+      assert cancelling_run.status == :cancelling
+
+      assert {:ok, config} = Config.load(repo: Repo)
+      assert {:ok, definition} = WorkflowDefinition.load(SuccessfulWorkflow)
+
+      assert {:cancel, locked_run} =
+               Preparation.prepare(config, definition, stale_running_run, :load_invoice)
+
+      assert locked_run.status == :cancelling
+
+      refute Repo.one(
+               from(step_run in StepRun,
+                 where: step_run.run_id == ^run.id and step_run.step == "load_invoice"
+               )
+             )
     end
 
     test "converges to cancelled when a post-wait step finishes after cancellation is requested" do

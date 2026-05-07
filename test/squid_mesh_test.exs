@@ -232,15 +232,20 @@ defmodule SquidMeshTest do
       assert config.repo == SquidMeshTest.Repo
       assert config.execution_name == Oban
       assert config.execution_queue == :squid_mesh
+      assert config.stale_step_timeout == 900_000
     end
 
     test "allows host applications to override execution settings" do
-      overrides = [repo: SquidMeshTest.Repo, execution: [name: MyApp.Oban, queue: :workflows]]
+      overrides = [
+        repo: SquidMeshTest.Repo,
+        execution: [name: MyApp.Oban, queue: :workflows, stale_step_timeout: 60_000]
+      ]
 
       assert {:ok, config} = SquidMesh.config(overrides)
 
       assert config.execution_name == MyApp.Oban
       assert config.execution_queue == :workflows
+      assert config.stale_step_timeout == 60_000
     end
 
     test "reports missing required configuration keys" do
@@ -253,6 +258,14 @@ defmodule SquidMeshTest do
       Application.delete_env(:squid_mesh, :repo)
 
       assert {:error, {:missing_config, [:repo]}} = SquidMesh.config()
+    end
+
+    test "reports invalid stale step timeout settings" do
+      assert {:error, {:invalid_config, [stale_step_timeout: -1]}} =
+               SquidMesh.config(
+                 repo: SquidMeshTest.Repo,
+                 execution: [stale_step_timeout: -1]
+               )
     end
   end
 

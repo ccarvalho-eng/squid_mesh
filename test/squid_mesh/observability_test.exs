@@ -82,6 +82,9 @@ defmodule SquidMesh.ObservabilityTest do
     end
   end
 
+  defmodule MissingOban do
+  end
+
   defmodule PauseWorkflow do
     use SquidMesh.Workflow
 
@@ -215,6 +218,43 @@ defmodule SquidMesh.ObservabilityTest do
     assert log =~ "workflow=SquidMesh.ObservabilityTest.RetryWorkflow"
     assert log =~ "step=check_gateway"
     assert log =~ "attempt=1"
+  end
+
+  test "does not emit retry scheduled telemetry when retry dispatch fails" do
+    assert {:ok, config} = Config.load(repo: Repo, execution: [name: MissingOban])
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(RetryWorkflow)
+    assert {:ok, run} = RunStore.create_run(Repo, RetryWorkflow, %{account_id: "acct_123"})
+
+    assert {:ok, running_run} =
+             RunStore.transition_run(Repo, run.id, :running, %{current_step: :check_gateway})
+
+    assert {:ok, step_run, :execute} =
+             StepRunStore.begin_step(Repo, run.id, :check_gateway, %{account_id: "acct_123"})
+
+    assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+    flush_telemetry_events()
+
+    assert :ok =
+             Outcome.apply_execution_result(
+               {:error, %{message: "gateway timeout", code: "gateway_timeout"}},
+               config,
+               definition,
+               running_run,
+               :check_gateway,
+               step_run.id,
+               attempt.id,
+               attempt.attempt_number,
+               System.monotonic_time()
+             )
+
+    refute_receive {:telemetry_event, [:squid_mesh, :step, :retry_scheduled], _measurements,
+                    _metadata},
+                   50
+
+    assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+    assert failed_run.status == :failed
+    assert failed_run.last_error.message == "failed to dispatch workflow step"
   end
 
   test "emits step completion telemetry when a paused step is unblocked" do

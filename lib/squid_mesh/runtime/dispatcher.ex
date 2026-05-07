@@ -55,7 +55,11 @@ defmodule SquidMesh.Runtime.Dispatcher do
       |> maybe_put_schedule_in(schedule_in)
 
     with {:ok, jobs} <-
-           do_dispatch_steps(config, run, steps, job_opts, schedule_pending?, schedule_in) do
+           dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?) do
+      Enum.each(jobs, fn job ->
+        Observability.emit_run_dispatched(run, job, config.execution_queue, schedule_in)
+      end)
+
       case jobs do
         [job] -> {:ok, job}
         multiple_jobs -> {:ok, multiple_jobs}
@@ -63,52 +67,93 @@ defmodule SquidMesh.Runtime.Dispatcher do
     end
   end
 
-  defp do_dispatch_steps(config, run, steps, job_opts, schedule_pending?, schedule_in) do
-    steps
-    |> Enum.uniq()
-    |> Enum.reduce_while({:ok, []}, fn step, {:ok, jobs} ->
-      with :ok <- maybe_schedule_pending_step(config, run, step, schedule_pending?),
-           {:ok, job} <- insert_step_job(config, run, step, job_opts, schedule_in) do
-        {:cont, {:ok, [job | jobs]}}
-      else
-        {:skip, _step_run} ->
-          {:cont, {:ok, jobs}}
-
-        {:error, _reason} = error ->
-          {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, jobs} -> {:ok, Enum.reverse(jobs)}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp maybe_schedule_pending_step(_config, _run, _step, false), do: :ok
-
-  defp maybe_schedule_pending_step(config, run, step, true) do
-    with {:ok, input} <- scheduled_step_input(config, run, step) do
-      case StepRunStore.schedule_step(config.repo, run.id, step, input) do
-        {:ok, _step_run, :schedule} -> :ok
-        {:ok, step_run, :skip} -> {:skip, step_run}
+  defp dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?) do
+    if config.repo.in_transaction?() do
+      dispatch_steps_without_transaction(config, run, steps, job_opts, schedule_pending?)
+    else
+      # Pending step rows and Oban jobs are one dispatch unit. Direct callers
+      # need the same rollback behavior that run progression already provides.
+      case config.repo.transaction(fn ->
+             case dispatch_steps_without_transaction(
+                    config,
+                    run,
+                    steps,
+                    job_opts,
+                    schedule_pending?
+                  ) do
+               {:ok, jobs} -> jobs
+               {:error, reason} -> config.repo.rollback(reason)
+             end
+           end) do
+        {:ok, jobs} -> {:ok, jobs}
         {:error, reason} -> {:error, reason}
       end
     end
   end
 
-  defp insert_step_job(config, %Run{id: run_id} = run, step, job_opts, schedule_in) do
-    try do
-      %{run_id: run_id, step: step}
-      |> StepWorker.new(job_opts)
-      |> then(&Oban.insert(config.execution_name, &1))
-      |> case do
-        {:ok, job} = ok ->
-          Observability.emit_run_dispatched(run, job, config.execution_queue, schedule_in)
-          ok
+  defp dispatch_steps_without_transaction(config, run, steps, job_opts, schedule_pending?) do
+    with {:ok, steps_to_dispatch} <- steps_to_dispatch(config, run, steps, schedule_pending?) do
+      case insert_step_jobs(config, run, steps_to_dispatch, job_opts) do
+        {:ok, jobs} ->
+          {:ok, jobs}
 
         {:error, _reason} = error ->
+          :ok = StepRunStore.delete_pending_steps(config.repo, run.id, steps_to_dispatch)
           error
       end
+    end
+  end
+
+  defp steps_to_dispatch(config, run, steps, true) do
+    steps
+    |> Enum.uniq()
+    |> build_scheduled_step_inputs(config, run)
+    |> case do
+      {:ok, step_inputs} -> StepRunStore.schedule_steps(config.repo, run.id, step_inputs)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp steps_to_dispatch(_config, _run, steps, false), do: {:ok, Enum.uniq(steps)}
+
+  defp build_scheduled_step_inputs(steps, config, run) do
+    Enum.reduce_while(steps, {:ok, []}, fn step, {:ok, step_inputs} ->
+      case scheduled_step_input(config, run, step) do
+        {:ok, input} -> {:cont, {:ok, [{step, input} | step_inputs]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, step_inputs} -> {:ok, Enum.reverse(step_inputs)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp insert_step_jobs(_config, _run, [], _job_opts), do: {:ok, []}
+
+  defp insert_step_jobs(config, %Run{id: run_id}, steps, job_opts) do
+    changesets =
+      Enum.map(steps, fn step ->
+        StepWorker.new(%{run_id: run_id, step: step}, job_opts)
+      end)
+
+    with :ok <- validate_job_changesets(changesets) do
+      do_insert_step_jobs(config, changesets)
+    end
+  end
+
+  defp validate_job_changesets(changesets) do
+    case Enum.find(changesets, &(not &1.valid?)) do
+      nil -> :ok
+      invalid_changeset -> {:error, invalid_changeset}
+    end
+  end
+
+  defp do_insert_step_jobs(config, changesets) do
+    try do
+      config.execution_name
+      |> Oban.insert_all(changesets)
+      |> then(&{:ok, &1})
     rescue
       exception -> {:error, exception}
     end

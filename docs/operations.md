@@ -75,6 +75,16 @@ step(:check_gateway_status, MyApp.Steps.CheckGatewayStatus,
 )
 ```
 
+## Stale Running Steps
+
+If a worker is interrupted after claiming a step, a later redelivery can reclaim
+the running step after `execution[:stale_step_timeout]`. The default is 900,000
+milliseconds.
+
+Set this value higher than the longest normal step runtime. A timeout that is
+too low can allow duplicate execution of a slow but still-running step, so
+external side effects should still be idempotent.
+
 ## Long Waits
 
 Built-in `:wait` steps are non-blocking because they reschedule continuation
