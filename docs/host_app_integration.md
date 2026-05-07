@@ -25,7 +25,7 @@ Preferred Hex dependency:
 ```elixir
 defp deps do
   [
-    {:squid_mesh, "~> 0.1.0-alpha.2"}
+    {:squid_mesh, "~> 0.1.0-alpha.3"}
   ]
 end
 ```
@@ -38,7 +38,7 @@ dependency:
 defp deps do
   [
     {:jido, "~> 2.0"},
-    {:squid_mesh, "~> 0.1.0-alpha.2"}
+    {:squid_mesh, "~> 0.1.0-alpha.3"}
   ]
 end
 ```
@@ -159,7 +159,7 @@ defp deps do
     {:postgrex, "~> 0.20"},
     {:oban, "~> 2.21"},
     {:jido, "~> 2.0"},
-    {:squid_mesh, "~> 0.1.0-alpha.2"}
+    {:squid_mesh, "~> 0.1.0-alpha.3"}
   ]
 end
 ```
