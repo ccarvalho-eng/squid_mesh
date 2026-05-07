@@ -7,6 +7,7 @@ defmodule SquidMesh.RunExplanationTest do
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetryExhaustedWorkflow
   alias __MODULE__.SuccessfulWorkflow
+  alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.RunExplanation
   alias SquidMesh.StepRunStore
@@ -111,6 +112,33 @@ defmodule SquidMesh.RunExplanationTest do
       assert explanation.next_actions == [:cancel_run]
     end
 
+    test "does not advertise manual actions when a paused run workflow cannot load" do
+      assert {:ok, run} =
+               SquidMesh.start_run(ApprovalWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "wait_for_review"}
+               })
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(run_record in RunRecord, where: run_record.id == ^run.id),
+                 set: [workflow: "Elixir.Missing.Workflow"]
+               )
+
+      assert {:ok, explanation} = SquidMesh.explain_run(run.id, repo: Repo)
+
+      assert explanation.status == :paused
+      assert explanation.reason == :paused_with_unavailable_workflow
+      assert explanation.step == "wait_for_review"
+      assert explanation.details.workflow_definition == :unavailable
+      assert explanation.next_actions == [:cancel_run]
+      assert explanation.evidence.workflow_definition == %{available?: false}
+      refute :approve_run in explanation.next_actions
+      refute :reject_run in explanation.next_actions
+    end
+
     test "explains retrying runs waiting for a scheduled retry job" do
       assert {:ok, run} =
                SquidMesh.start_run(BackoffWorkflow, %{account_id: "acct_123"}, repo: Repo)
@@ -211,6 +239,31 @@ defmodule SquidMesh.RunExplanationTest do
       assert completed_explanation.status == :completed
       assert completed_explanation.reason == :completed
       assert completed_explanation.next_actions == [:replay_run]
+    end
+
+    test "omits replay actions for terminal runs whose workflow cannot load" do
+      assert {:ok, completed_run} =
+               SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert %{success: success, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert success >= 2
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(run_record in RunRecord, where: run_record.id == ^completed_run.id),
+                 set: [workflow: "Elixir.Missing.Workflow"]
+               )
+
+      assert {:ok, explanation} = SquidMesh.explain_run(completed_run.id, repo: Repo)
+
+      assert explanation.status == :completed
+      assert explanation.reason == :completed
+      assert explanation.details.workflow_definition == :unavailable
+      assert explanation.next_actions == []
+      assert explanation.evidence.workflow_definition == %{available?: false}
+      refute :replay_run in explanation.next_actions
     end
 
     test "surfaces stale running step recovery policy for duplicate delivery skips" do

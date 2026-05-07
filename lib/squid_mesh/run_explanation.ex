@@ -31,6 +31,7 @@ defmodule SquidMesh.RunExplanation do
           | :paused_for_approval
           | :paused_with_missing_resume_metadata
           | :paused_with_invalid_resume_target
+          | :paused_with_unavailable_workflow
           | :cancelling
           | :cancelled
           | :completed
@@ -68,19 +69,19 @@ defmodule SquidMesh.RunExplanation do
   @spec explain(Config.t(), Ecto.UUID.t()) :: {:ok, t()} | {:error, RunStore.get_error()}
   def explain(%Config{} = config, run_id) do
     with {:ok, run} <- RunStore.get_run(config.repo, run_id, include_history: true) do
-      {:ok, build(config, run)}
+      {:ok, build(config, run, workflow_definition(run))}
     end
   end
 
-  defp build(%Config{} = _config, %Run{status: :completed} = run) do
-    explanation(run, :completed, nil, %{}, [:replay_run], base_evidence(run))
+  defp build(%Config{} = _config, %Run{status: :completed} = run, definition) do
+    terminal_explanation(run, definition, :completed)
   end
 
-  defp build(%Config{} = _config, %Run{status: :cancelled} = run) do
-    explanation(run, :cancelled, nil, %{}, [:replay_run], base_evidence(run))
+  defp build(%Config{} = _config, %Run{status: :cancelled} = run, definition) do
+    terminal_explanation(run, definition, :cancelled)
   end
 
-  defp build(%Config{} = _config, %Run{status: :cancelling} = run) do
+  defp build(%Config{} = _config, %Run{status: :cancelling} = run, _definition) do
     explanation(
       run,
       :cancelling,
@@ -91,11 +92,11 @@ defmodule SquidMesh.RunExplanation do
     )
   end
 
-  defp build(%Config{} = config, %Run{status: :paused} = run) do
-    explain_paused(config, run)
+  defp build(%Config{} = config, %Run{status: :paused} = run, definition) do
+    explain_paused(config, run, definition)
   end
 
-  defp build(%Config{} = _config, %Run{status: :retrying} = run) do
+  defp build(%Config{} = _config, %Run{status: :retrying} = run, _definition) do
     {step_run, attempt} = current_step_attempt(run)
 
     details =
@@ -120,7 +121,7 @@ defmodule SquidMesh.RunExplanation do
     )
   end
 
-  defp build(%Config{} = _config, %Run{status: :failed} = run) do
+  defp build(%Config{} = _config, %Run{status: :failed} = run, definition) do
     {step_run, attempt} = current_step_attempt(run)
     {reason, retry_details} = failure_reason(run, step_run, attempt)
 
@@ -133,13 +134,17 @@ defmodule SquidMesh.RunExplanation do
 
     evidence =
       run
-      |> base_evidence()
+      |> evidence_with_workflow_definition(definition)
       |> Map.merge(step_evidence(step_run, attempt))
 
-    explanation(run, reason, run.current_step, details, [:replay_run], evidence)
+    details =
+      details
+      |> Map.merge(workflow_definition_details(definition))
+
+    explanation(run, reason, run.current_step, details, replay_actions(definition), evidence)
   end
 
-  defp build(%Config{} = config, %Run{} = run) do
+  defp build(%Config{} = config, %Run{} = run, _definition) do
     cond do
       dependency_wait?(run) ->
         explain_dependency_wait(run)
@@ -169,14 +174,16 @@ defmodule SquidMesh.RunExplanation do
     end
   end
 
-  defp explain_paused(%Config{} = config, %Run{} = run) do
+  defp explain_paused(%Config{} = config, %Run{} = run, definition) do
     persisted_step_run = persisted_current_step_run(config.repo, run)
     resume = persisted_step_run && persisted_step_run.resume
     {step_run, attempt} = current_step_attempt(run)
-    definition = workflow_definition(run)
 
-    case deserialize_resume(resume, definition) do
-      {:ok, %{kind: :approval} = resume_details} ->
+    case {definition, deserialize_resume(resume, definition)} do
+      {nil, {:ok, resume_details}} ->
+        unavailable_workflow_explanation(run, step_run, attempt, resume_details)
+
+      {_definition, {:ok, %{kind: :approval} = resume_details}} ->
         if invalid_approval_targets?(definition, resume_details) do
           invalid_resume_explanation(run, step_run, attempt, resume_details)
         else
@@ -201,7 +208,7 @@ defmodule SquidMesh.RunExplanation do
           )
         end
 
-      {:ok, %{kind: :pause, target: target} = resume_details} ->
+      {_definition, {:ok, %{kind: :pause, target: target} = resume_details}} ->
         if invalid_resume_target?(definition, target) do
           invalid_resume_explanation(run, step_run, attempt, resume_details)
         else
@@ -224,7 +231,7 @@ defmodule SquidMesh.RunExplanation do
           )
         end
 
-      {:missing, details} ->
+      {_definition, {:missing, details}} ->
         evidence =
           run
           |> base_evidence()
@@ -239,6 +246,34 @@ defmodule SquidMesh.RunExplanation do
           evidence
         )
     end
+  end
+
+  defp terminal_explanation(run, definition, reason) do
+    explanation(
+      run,
+      reason,
+      nil,
+      workflow_definition_details(definition),
+      replay_actions(definition),
+      evidence_with_workflow_definition(run, definition)
+    )
+  end
+
+  defp unavailable_workflow_explanation(run, step_run, attempt, resume_details) do
+    evidence =
+      run
+      |> evidence_with_workflow_definition(nil)
+      |> Map.merge(step_evidence(step_run, attempt))
+      |> Map.put(:step_run, Map.merge(step_run_evidence(step_run), %{resume: resume_details}))
+
+    explanation(
+      run,
+      :paused_with_unavailable_workflow,
+      run.current_step,
+      %{workflow_definition: :unavailable},
+      [:cancel_run],
+      evidence
+    )
   end
 
   defp invalid_resume_explanation(run, step_run, attempt, resume_details) do
@@ -465,6 +500,22 @@ defmodule SquidMesh.RunExplanation do
       }
     }
   end
+
+  defp evidence_with_workflow_definition(%Run{} = run, nil) do
+    run
+    |> base_evidence()
+    |> Map.put(:workflow_definition, %{available?: false})
+  end
+
+  defp evidence_with_workflow_definition(%Run{} = run, _definition) do
+    base_evidence(run)
+  end
+
+  defp workflow_definition_details(nil), do: %{workflow_definition: :unavailable}
+  defp workflow_definition_details(_definition), do: %{}
+
+  defp replay_actions(nil), do: []
+  defp replay_actions(_definition), do: [:replay_run]
 
   defp step_evidence(nil, nil), do: %{}
 
