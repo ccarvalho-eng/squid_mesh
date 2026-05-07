@@ -148,7 +148,7 @@ defmodule SquidMesh do
   """
   @spec explain_run(Ecto.UUID.t(), keyword()) ::
           {:ok, RunExplanation.t()}
-          | {:error, :not_found | {:missing_config, [atom()]}}
+          | {:error, :not_found | Config.config_error()}
   def explain_run(run_id, overrides \\ []) do
     with {:ok, config} <- Config.load(overrides) do
       RunExplanation.explain(config, run_id)

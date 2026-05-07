@@ -20,6 +20,14 @@ defmodule SquidMesh.RunExplanationTest do
                SquidMesh.explain_run(Ecto.UUID.generate(), repo: Repo)
     end
 
+    test "returns invalid configuration errors from the public API" do
+      assert {:error, {:invalid_config, [stale_step_timeout: -1]}} =
+               SquidMesh.explain_run(Ecto.UUID.generate(),
+                 repo: Repo,
+                 execution: [stale_step_timeout: -1]
+               )
+    end
+
     test "explains a failed run whose step exhausted retries" do
       assert {:ok, run} =
                SquidMesh.start_run(RetryExhaustedWorkflow, %{account_id: "acct_123"}, repo: Repo)
@@ -287,7 +295,7 @@ defmodule SquidMesh.RunExplanationTest do
       assert explanation.status == :running
       assert explanation.reason == :step_running
       assert explanation.step == :load_account
-      assert explanation.details.duplicate_delivery == :skipped_while_running
+      assert explanation.details.duplicate_delivery_policy == :skip_while_running
       assert explanation.details.stale_step_reclaim == %{enabled: true, timeout_ms: 30_000}
     end
   end

@@ -321,7 +321,7 @@ defmodule SquidMesh.RunExplanation do
 
     details =
       %{
-        duplicate_delivery: :skipped_while_running,
+        duplicate_delivery_policy: :skip_while_running,
         stale_step_reclaim: stale_step_reclaim(config)
       }
       |> compact()
