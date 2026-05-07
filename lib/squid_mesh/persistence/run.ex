@@ -32,6 +32,7 @@ defmodule SquidMesh.Persistence.Run do
     field(:context, :map, default: %{})
     field(:current_step, :string)
     field(:last_error, :map)
+
     belongs_to(:replayed_from_run, __MODULE__)
     has_many(:step_runs, StepRun)
 

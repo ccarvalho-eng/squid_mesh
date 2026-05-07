@@ -42,7 +42,6 @@ defmodule SquidMesh.Persistence.SchemaTest do
     test "defines persisted step fields and associations" do
       assert StepRun.__schema__(:fields) == [
                :id,
-               :run_id,
                :step,
                :status,
                :input,
@@ -50,6 +49,7 @@ defmodule SquidMesh.Persistence.SchemaTest do
                :last_error,
                :resume,
                :manual,
+               :run_id,
                :inserted_at,
                :updated_at
              ]
@@ -74,10 +74,10 @@ defmodule SquidMesh.Persistence.SchemaTest do
     test "defines persisted attempt fields and associations" do
       assert StepAttempt.__schema__(:fields) == [
                :id,
-               :step_run_id,
                :attempt_number,
                :status,
                :error,
+               :step_run_id,
                :inserted_at,
                :updated_at
              ]

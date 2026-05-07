@@ -25,10 +25,11 @@ defmodule SquidMesh.Persistence.StepAttempt do
   @optional_fields ~w(error)a
 
   schema "squid_mesh_step_attempts" do
-    belongs_to(:step_run, StepRun)
     field(:attempt_number, :integer)
     field(:status, :string)
     field(:error, :map)
+
+    belongs_to(:step_run, StepRun)
 
     timestamps()
   end
