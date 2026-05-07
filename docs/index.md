@@ -11,11 +11,11 @@ reference material.
   steps, transitions, and cron triggers
 - [Compatibility matrix](compatibility.md) for the supported baseline
 
-## Common Use Cases
+## Example Workflow Shapes
 
-- post an RSS digest to Discord on a schedule
-- turn a Linear issue into a planning workflow for your team
-- run recovery, approval, and back-office flows inside Phoenix apps
+- scheduled RSS digest delivery
+- issue triage or planning workflows
+- recovery, approval, and back-office workflows inside Phoenix apps
 
 ## Operations
 

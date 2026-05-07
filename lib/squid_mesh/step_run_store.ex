@@ -19,7 +19,7 @@ defmodule SquidMesh.StepRunStore do
   @type manual_event :: map()
   @type step_status :: :pending | :running | :completed | :failed
   @type stale_error :: {:stale_step_run, String.t()}
-  @type begin_result :: {:ok, StepRun.t(), :execute | :skip} | {:error, Ecto.Changeset.t()}
+  @type begin_result :: {:ok, StepRun.t(), :execute | :skip}
   @type schedule_result :: {:ok, StepRun.t(), :schedule | :skip} | {:error, Ecto.Changeset.t()}
   @type step_schedule_input :: {step_identifier(), step_input()}
 

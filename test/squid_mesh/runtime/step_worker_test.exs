@@ -1580,6 +1580,27 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       refute Repo.exists?(from(step_run in StepRun, where: step_run.run_id == ^run.id))
     end
 
+    test "keeps existing pending rows when dispatch fails without scheduling" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, config} = Config.load(repo: Repo, execution: [name: MissingOban])
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
+
+      assert {:ok, [:load_account]} =
+               StepRunStore.schedule_steps(Repo, run.id, [
+                 {:load_account, %{account_id: "acct_123"}}
+               ])
+
+      assert {:error, _reason} = Dispatcher.dispatch_steps(config, run, [:load_account])
+
+      assert %StepRun{status: "pending"} =
+               Repo.one(
+                 from(step_run in StepRun,
+                   where: step_run.run_id == ^run.id and step_run.step == "load_account"
+                 )
+               )
+    end
+
     test "converges cancelling runs to cancelled even when a stale scheduled step arrives" do
       assert {:ok, run} =
                SquidMesh.start_run(BuiltInWorkflow, %{account_id: "acct_123"}, repo: Repo)

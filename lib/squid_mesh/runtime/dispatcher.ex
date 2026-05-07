@@ -142,11 +142,17 @@ defmodule SquidMesh.Runtime.Dispatcher do
           {:ok, jobs}
 
         {:error, _reason} = error ->
-          :ok = StepRunStore.delete_pending_steps(config.repo, run.id, steps_to_dispatch)
+          cleanup_scheduled_steps(config, run, steps_to_dispatch, schedule_pending?)
           error
       end
     end
   end
+
+  defp cleanup_scheduled_steps(config, run, steps, true) do
+    StepRunStore.delete_pending_steps(config.repo, run.id, steps)
+  end
+
+  defp cleanup_scheduled_steps(_config, _run, _steps, false), do: :ok
 
   defp steps_to_dispatch(config, run, steps, true) do
     steps
