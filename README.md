@@ -24,8 +24,8 @@
 
 Squid Mesh lets Phoenix and OTP applications model operational workflows as
 code: retries, waits, approval gates, dependency joins, failure routes, replay,
-and inspectable history live in one embedded runtime instead of being rebuilt
-inside each host app.
+and inspectable history run in one embedded runtime powered by Postgres and
+Oban.
 
 ## What You Get
 
@@ -120,9 +120,9 @@ mix ecto.migrate
 
 ## Example: Daily RSS To Discord
 
-This kind of workflow is where Squid Mesh gets interesting: one cron trigger,
-typed payload defaults, built-in steps, custom steps, explicit failure routing,
-and step-level retry on the side effect that actually needs it.
+This example shows the core runtime shape: one cron trigger, typed payload
+defaults, built-in steps, custom steps, explicit failure routing, and
+step-level retry on the side effect that actually needs it.
 
 ```elixir
 defmodule Content.Workflows.PostDailyDigest do
