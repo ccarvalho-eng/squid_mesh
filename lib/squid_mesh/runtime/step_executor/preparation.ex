@@ -215,6 +215,13 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
   defp prepare_existing_step(_config, prepared), do: {:skip, prepared}
 
   defp recover_existing_step(
+         %Config{stale_step_timeout: :disabled},
+         %PreparedStep{} = prepared
+       ) do
+    {:skip, prepared}
+  end
+
+  defp recover_existing_step(
          %Config{stale_step_timeout: stale_step_timeout} = config,
          %PreparedStep{} = prepared
        ) do

@@ -232,7 +232,7 @@ defmodule SquidMeshTest do
       assert config.repo == SquidMeshTest.Repo
       assert config.execution_name == Oban
       assert config.execution_queue == :squid_mesh
-      assert config.stale_step_timeout == 900_000
+      assert config.stale_step_timeout == :disabled
     end
 
     test "allows host applications to override execution settings" do
@@ -253,7 +253,7 @@ defmodule SquidMeshTest do
 
       assert config.execution_name == Oban
       assert config.execution_queue == :squid_mesh
-      assert config.stale_step_timeout == 900_000
+      assert config.stale_step_timeout == :disabled
     end
 
     test "reports non-keyword execution settings" do

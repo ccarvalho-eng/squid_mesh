@@ -27,6 +27,8 @@ Recommended patterns:
 - include an application-owned idempotency key in the external request
 - persist enough domain state to detect duplicate delivery
 - treat remote `409` or duplicate acknowledgements as success when appropriate
+- for payment providers, pass a stable key derived from the workflow run, step,
+  and domain operation rather than generating a fresh key on each attempt
 
 Avoid:
 
@@ -77,13 +79,26 @@ step(:check_gateway_status, MyApp.Steps.CheckGatewayStatus,
 
 ## Stale Running Steps
 
-If a worker is interrupted after claiming a step, a later redelivery can reclaim
-the running step after `execution[:stale_step_timeout]`. The default is 900,000
-milliseconds.
+By default, Squid Mesh does not reclaim a step that is already marked
+`running`. A duplicate or redelivered job skips the running step instead of
+starting another attempt.
 
-Set this value higher than the longest normal step runtime. A timeout that is
-too low can allow duplicate execution of a slow but still-running step, so
-external side effects should still be idempotent.
+Host applications can opt in with `execution[:stale_step_timeout]`, measured in
+milliseconds. When enabled, a later redelivery can reclaim a `running` step whose
+step-run row has not been updated within that timeout. Reclaim marks the
+previous running attempt and step as failed with `reason: "stale_running_step"`,
+then prepares the same step again.
+
+Reclaim applies only while the run is still active. In practice the run is
+`:running` for the step being recovered; a `:pending` or `:retrying` run is
+transitioned back to `:running` during preparation. Terminal runs are skipped,
+and cancelling runs converge through cancellation instead of reclaiming work.
+
+Set this value higher than the longest normal step runtime. Squid Mesh does not
+heartbeat long-running actions while they execute, so a timeout that is too low
+can allow duplicate execution of a slow but still-running step. Steps that call
+external systems should still use idempotency keys or another duplicate-safety
+strategy.
 
 ## Long Waits
 

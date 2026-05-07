@@ -1504,6 +1504,45 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              ] = completed_step.attempts
     end
 
+    test "skips stale running attempts by default" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
+
+      assert {:ok, running_run} =
+               SquidMesh.RunStore.transition_run(Repo, run.id, :running, %{
+                 current_step: :load_invoice
+               })
+
+      assert {:ok, step_run, :execute} =
+               StepRunStore.begin_step(Repo, running_run.id, :load_invoice, input)
+
+      assert {:ok, first_attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+      stale_time =
+        DateTime.utc_now()
+        |> DateTime.add(-120, :second)
+        |> DateTime.truncate(:microsecond)
+
+      Repo.update_all(
+        from(stale_step in StepRun, where: stale_step.id == ^step_run.id),
+        set: [updated_at: stale_time]
+      )
+
+      assert :ok = StepExecutor.execute(run.id, :load_invoice, repo: Repo)
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert inspected_run.status == :running
+      assert inspected_run.current_step == :load_invoice
+
+      assert [%SquidMesh.StepRun{} = running_step] = inspected_run.step_runs
+      assert running_step.status == :running
+      assert [%{id: attempt_id, attempt_number: 1, status: :running}] = running_step.attempts
+      assert attempt_id == first_attempt.id
+    end
+
     test "does not partially schedule fan-out dispatch when a later step is invalid" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 

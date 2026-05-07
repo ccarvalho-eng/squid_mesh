@@ -7,24 +7,27 @@ defmodule SquidMesh.Config do
   workflow definitions and public API usage.
   """
 
+  @type stale_step_timeout :: non_neg_integer() | :disabled
   @type execution_option ::
-          {:name, module() | atom()} | {:queue, atom()} | {:stale_step_timeout, non_neg_integer()}
+          {:name, module() | atom()}
+          | {:queue, atom()}
+          | {:stale_step_timeout, stale_step_timeout()}
   @type raw_config :: [repo: module(), execution: [execution_option()] | nil]
   @type t :: %__MODULE__{
           repo: module(),
           execution_name: module() | atom(),
           execution_queue: atom(),
-          stale_step_timeout: non_neg_integer()
+          stale_step_timeout: stale_step_timeout()
         }
 
   defstruct [
     :repo,
     execution_name: Oban,
     execution_queue: :squid_mesh,
-    stale_step_timeout: 900_000
+    stale_step_timeout: :disabled
   ]
 
-  @default_execution [name: Oban, queue: :squid_mesh, stale_step_timeout: 900_000]
+  @default_execution [name: Oban, queue: :squid_mesh, stale_step_timeout: :disabled]
 
   @type config_error :: {:missing_config, [atom()]} | {:invalid_config, keyword()}
 
@@ -103,6 +106,9 @@ defmodule SquidMesh.Config do
 
   defp validate_execution(execution) do
     case Keyword.fetch!(execution, :stale_step_timeout) do
+      :disabled ->
+        {:ok, execution}
+
       timeout when is_integer(timeout) and timeout >= 0 ->
         {:ok, execution}
 
