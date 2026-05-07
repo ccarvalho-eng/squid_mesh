@@ -153,11 +153,16 @@ defmodule SquidMesh.Runtime.Dispatcher do
     try do
       config.execution_name
       |> Oban.insert_all(changesets)
-      |> then(&{:ok, &1})
+      |> normalize_insert_all_result()
     rescue
       exception -> {:error, exception}
     end
   end
+
+  defp normalize_insert_all_result({:ok, jobs}) when is_list(jobs), do: {:ok, jobs}
+  defp normalize_insert_all_result(jobs) when is_list(jobs), do: {:ok, jobs}
+  defp normalize_insert_all_result({:error, reason}), do: {:error, reason}
+  defp normalize_insert_all_result(other), do: {:error, {:unexpected_insert_all_result, other}}
 
   defp maybe_put_schedule_in(opts, schedule_in)
        when is_integer(schedule_in) and schedule_in > 0 do

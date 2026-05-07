@@ -90,7 +90,7 @@ defmodule SquidMesh.StepRunStore do
 
   @doc false
   @spec schedule_steps(module(), Ecto.UUID.t(), [step_schedule_input()]) ::
-          {:ok, [step_identifier()]} | {:error, Ecto.Changeset.t()}
+          {:ok, [step_identifier()]} | {:error, term()}
   def schedule_steps(_repo, _run_id, []), do: {:ok, []}
 
   def schedule_steps(repo, run_id, step_inputs) when is_list(step_inputs) do
@@ -98,22 +98,26 @@ defmodule SquidMesh.StepRunStore do
 
     # Bulk scheduling is used before fan-out job dispatch. It avoids committing
     # a prefix of pending step rows if a later step in the same fan-out is bad.
-    case repo.insert_all(
-           StepRun,
-           attrs,
-           on_conflict: :nothing,
-           conflict_target: [:run_id, :step],
-           returning: [:step]
-         ) do
-      {_count, inserted_rows} ->
-        inserted_steps = MapSet.new(inserted_rows, & &1.step)
+    try do
+      case repo.insert_all(
+             StepRun,
+             attrs,
+             on_conflict: :nothing,
+             conflict_target: [:run_id, :step],
+             returning: [:step]
+           ) do
+        {_count, inserted_rows} ->
+          inserted_steps = MapSet.new(inserted_rows, & &1.step)
 
-        scheduled_steps =
-          step_inputs
-          |> Enum.map(fn {step, _input} -> step end)
-          |> Enum.filter(&(serialize_step(&1) in inserted_steps))
+          scheduled_steps =
+            step_inputs
+            |> Enum.map(fn {step, _input} -> step end)
+            |> Enum.filter(&(serialize_step(&1) in inserted_steps))
 
-        {:ok, scheduled_steps}
+          {:ok, scheduled_steps}
+      end
+    rescue
+      exception -> {:error, exception}
     end
   end
 

@@ -86,7 +86,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
         )
 
       {:cancel, locked_run} ->
-        execute_run(config, locked_run, expected_step)
+        converge_cancellation(config, locked_run)
 
       {:skip, prepared} ->
         Observability.emit_step_skipped(
@@ -104,6 +104,15 @@ defmodule SquidMesh.Runtime.StepExecutor do
         error
     end
   end
+
+  defp converge_cancellation(config, %Run{status: :cancelling} = run) do
+    case RunStore.transition_run(config.repo, run.id, :cancelled, %{current_step: nil}) do
+      {:ok, _cancelled_run} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp converge_cancellation(_config, %Run{}), do: :ok
 
   defp execute_prepared_step(prepared) do
     with {:ok, attempt} <- AttemptStore.begin_attempt(prepared.config.repo, prepared.step_run.id) do

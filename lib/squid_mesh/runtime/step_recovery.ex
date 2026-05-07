@@ -10,7 +10,8 @@ defmodule SquidMesh.Runtime.StepRecovery do
   alias SquidMesh.Persistence.StepRun
   alias SquidMesh.StepRunStore
 
-  @type reclaim_result :: :reclaimed | :fresh | :not_running | {:error, term()}
+  @type reclaim_status :: :reclaimed | :fresh | :not_running
+  @type reclaim_result :: {:ok, reclaim_status()} | {:error, term()}
 
   @spec reclaim_stale_running_step(module(), StepRun.t(), non_neg_integer()) :: reclaim_result()
   def reclaim_stale_running_step(repo, %StepRun{id: step_run_id}, timeout_ms)
