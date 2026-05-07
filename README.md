@@ -1,5 +1,5 @@
 <div align="center">
-  <h2>Squid Mesh</h2>
+  <h2>🦑 Squid Mesh</h2>
 
   <p><strong>Durable workflow runtime for Elixir applications, running on top of Postgres and Oban.</strong></p>
 
