@@ -65,6 +65,7 @@ The smoke task:
   `MinimalHostApp.WorkflowRuns.start_dependency_recovery/1`
 - starts a manual approval workflow through
   `MinimalHostApp.WorkflowRuns.start_manual_approval/1`
+- explains the paused approval run through `MinimalHostApp.WorkflowRuns.explain_run/1`
 - approves the paused run through `MinimalHostApp.WorkflowRuns.approve_run/2`
 - waits for execution, inspects all three completed manual workflows, and
   verifies the paused approval run's durable audit history
@@ -116,6 +117,14 @@ MinimalHostApp.WorkflowRuns.start_payment_recovery(%{
 
 That map is the workflow payload for the `:payment_recovery` trigger declared
 in the example workflow.
+
+Host apps can expose diagnostics through the same boundary:
+
+```elixir
+{:ok, explanation} = MinimalHostApp.WorkflowRuns.explain_run(run_id)
+
+explanation.reason
+```
 
 The reference workflow and step modules live in:
 
