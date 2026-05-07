@@ -6,6 +6,40 @@ The format is based on Keep a Changelog and the project follows Semantic
 Versioning, including prerelease tags while the runtime remains in early
 development.
 
+## [0.1.0-alpha.3] - 2026-05-07
+
+### Added
+- Human-in-the-loop workflow support with paused runs and
+  `SquidMesh.unblock_run/2`.
+- Approval workflow primitives with `approval_step/2`,
+  `SquidMesh.approve_run/3`, and `SquidMesh.reject_run/3`.
+- Manual audit history for pause, resume, approval, and rejection actions when
+  inspecting runs with `include_history: true`.
+- Operations documentation for idempotent side-effect design and stale running
+  step recovery.
+
+### Changed
+- Paused and approval runs now persist their resume targets and output mapping,
+  so existing paused runs keep the same resume behavior across restarts and
+  deploys.
+- Runtime recovery paths now preserve queued step state more carefully during
+  duplicate delivery, cancellation, retry, and dispatch-failure scenarios.
+- Stale running step reclaim is opt-in. By default, a duplicate or redelivered
+  job skips an already running step instead of starting another attempt after a
+  timeout.
+- README and guide language now focuses on setup, runtime behavior, and
+  operational boundaries.
+
+### Fixed
+- Invalid `execution:` configuration now returns structured config errors
+  instead of raising during config load.
+- Runtime telemetry is emitted after the related durable state commits in
+  progression paths that update run or step state.
+
+### Notes
+- This remains an alpha release. Steps that call external systems should use
+  application-owned idempotency keys or another duplicate-safety strategy.
+
 ## [0.1.0-alpha.2] - 2026-05-04
 
 ### Added

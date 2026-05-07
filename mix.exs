@@ -4,7 +4,7 @@ defmodule SquidMesh.MixProject do
   def project do
     [
       app: :squid_mesh,
-      version: "0.1.0-alpha.2",
+      version: "0.1.0-alpha.3",
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
