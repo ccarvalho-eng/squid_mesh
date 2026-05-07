@@ -28,7 +28,7 @@ defmodule SquidMesh.AttemptStore do
   Marks one attempt as completed.
   """
   @spec complete_attempt(module(), Ecto.UUID.t()) ::
-          {:ok, StepAttempt.t()} | {:error, Ecto.Changeset.t() | :not_found | stale_error()}
+          {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
   def complete_attempt(repo, attempt_id) do
     update_running_attempt(repo, attempt_id, %{status: "completed", error: nil})
   end
@@ -37,7 +37,7 @@ defmodule SquidMesh.AttemptStore do
   Marks one attempt as failed and stores the normalized error payload.
   """
   @spec fail_attempt(module(), Ecto.UUID.t(), map()) ::
-          {:ok, StepAttempt.t()} | {:error, Ecto.Changeset.t() | :not_found | stale_error()}
+          {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
   def fail_attempt(repo, attempt_id, error) when is_map(error) do
     update_running_attempt(repo, attempt_id, %{status: "failed", error: error})
   end
@@ -136,7 +136,7 @@ defmodule SquidMesh.AttemptStore do
   end
 
   @spec update_running_attempt(module(), Ecto.UUID.t(), map()) ::
-          {:ok, StepAttempt.t()} | {:error, Ecto.Changeset.t() | :not_found | stale_error()}
+          {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
   defp update_running_attempt(repo, attempt_id, attrs) do
     updates = attrs |> Map.put(:updated_at, now_utc()) |> Map.to_list()
 

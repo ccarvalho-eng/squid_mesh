@@ -46,6 +46,8 @@ defmodule SquidMesh.RunStore do
   @type dispatch_fun :: (Run.t() -> {:ok, term()} | {:error, term()})
   @type attrs_fun :: (Run.t() -> transition_attrs())
   @type failure_attrs_fun :: (Run.t(), term() -> transition_attrs())
+  @type run_transition_event :: {:run_transition, Run.t(), Run.status(), Run.status()}
+  @type progress_event :: run_transition_event() | term()
   @type progress_operation ::
           :update
           | {:transition, Run.status()}
@@ -410,20 +412,55 @@ defmodule SquidMesh.RunStore do
           {:ok, progress_result()} | {:error, update_error() | transition_error() | term()}
   def progress_run_with(repo, run_id, attrs_fun, operation)
       when is_function(attrs_fun, 1) do
-    case repo.transaction(fn -> do_progress_run(repo, run_id, attrs_fun, operation) end) do
-      {:ok, :noop} ->
-        {:ok, :noop}
-
-      {:ok, {run, from_status, to_status}} ->
-        Observability.emit_run_transition(run, from_status, to_status)
-        {:ok, run}
-
-      {:ok, %Run{} = run} ->
-        {:ok, run}
+    case progress_run_with_events(repo, run_id, attrs_fun, operation) do
+      {:ok, result, events} ->
+        emit_run_transition_events(events)
+        {:ok, result}
 
       {:error, _reason} = error ->
         error
     end
+  end
+
+  @doc false
+  @spec progress_run_with_events(module(), Ecto.UUID.t(), attrs_fun(), progress_operation()) ::
+          {:ok, progress_result(), [progress_event()]}
+          | {:error, update_error() | transition_error() | term()}
+  def progress_run_with_events(repo, run_id, attrs_fun, operation)
+      when is_function(attrs_fun, 1) do
+    case repo.transaction(fn -> do_progress_run(repo, run_id, attrs_fun, operation) end) do
+      {:ok, result} ->
+        {run, events} = normalize_progress_events(result)
+        {:ok, run, events}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp normalize_progress_events(:noop), do: {:noop, []}
+
+  defp normalize_progress_events({run, from_status, to_status}) do
+    {run, [{:run_transition, run, from_status, to_status}]}
+  end
+
+  defp normalize_progress_events(%Run{} = run), do: {run, []}
+
+  defp normalize_progress_events({%Run{} = run, events}) when is_list(events), do: {run, events}
+
+  defp normalize_progress_events({%Run{} = run, from_status, to_status, events})
+       when is_list(events) do
+    {run, [{:run_transition, run, from_status, to_status} | events]}
+  end
+
+  defp emit_run_transition_events(events) do
+    Enum.each(events, fn
+      {:run_transition, run, from_status, to_status} ->
+        Observability.emit_run_transition(run, from_status, to_status)
+
+      _other ->
+        :ok
+    end)
   end
 
   defp do_progress_run(repo, run_id, attrs_fun, operation) do
@@ -737,7 +774,12 @@ defmodule SquidMesh.RunStore do
           Run.status(),
           transition_attrs(),
           progress_operation()
-        ) :: Run.t() | {Run.t(), Run.status(), Run.status()} | no_return()
+        ) ::
+          Run.t()
+          | {Run.t(), [progress_event()]}
+          | {Run.t(), Run.status(), Run.status()}
+          | {Run.t(), Run.status(), Run.status(), [progress_event()]}
+          | no_return()
   defp execute_progress_operation(repo, run, _from_status, attrs, :update) do
     case Persistence.update_run_record(
            repo,
@@ -777,8 +819,8 @@ defmodule SquidMesh.RunStore do
                Map.take(attrs, [:context, :current_step, :last_error])
              )
            ),
-         {:ok, _result} <- dispatch_fun.(updated_run) do
-      updated_run
+         {:ok, dispatch_result} <- dispatch_fun.(updated_run) do
+      append_progress_events(updated_run, dispatch_result)
     else
       {:error, reason} -> repo.rollback(reason)
     end
@@ -814,8 +856,8 @@ defmodule SquidMesh.RunStore do
                  Map.take(attrs, [:context, :current_step, :last_error])
                )
              ),
-           {:ok, _result} <- dispatch_fun.(updated_run) do
-        updated_run
+           {:ok, dispatch_result} <- dispatch_fun.(updated_run) do
+        append_progress_events(updated_run, dispatch_result)
       else
         {:error, reason} -> repo.rollback(reason)
       end
@@ -827,8 +869,8 @@ defmodule SquidMesh.RunStore do
                run,
                Persistence.transition_changeset_attrs(to_status, attrs)
              ),
-           {:ok, _result} <- dispatch_fun.(updated_run) do
-        {updated_run, from_status, to_status}
+           {:ok, dispatch_result} <- dispatch_fun.(updated_run) do
+        append_transition_events(updated_run, from_status, to_status, dispatch_result)
       else
         {:error, reason} -> repo.rollback(reason)
       end
@@ -919,8 +961,8 @@ defmodule SquidMesh.RunStore do
          failure_attrs_fun
        ) do
     case dispatch_fun.(updated_run) do
-      {:ok, _result} ->
-        {updated_run, from_status, to_status}
+      {:ok, dispatch_result} ->
+        append_transition_events(updated_run, from_status, to_status, dispatch_result)
 
       {:error, reason} ->
         fail_updated_run(repo, updated_run, from_status, failure_attrs_fun, reason)
@@ -939,8 +981,8 @@ defmodule SquidMesh.RunStore do
 
   defp dispatch_or_fail(repo, updated_run, from_status, dispatch_fun, failure_attrs_fun) do
     case dispatch_fun.(updated_run) do
-      {:ok, _result} ->
-        updated_run
+      {:ok, dispatch_result} ->
+        append_progress_events(updated_run, dispatch_result)
 
       {:error, reason} ->
         # Dispatch failure is part of progression: mark the run failed in this
@@ -948,6 +990,23 @@ defmodule SquidMesh.RunStore do
         fail_updated_run(repo, updated_run, from_status, failure_attrs_fun, reason)
     end
   end
+
+  defp append_progress_events(run, dispatch_result) do
+    case dispatch_result_events(dispatch_result) do
+      [] -> run
+      events -> {run, events}
+    end
+  end
+
+  defp append_transition_events(run, from_status, to_status, dispatch_result) do
+    case dispatch_result_events(dispatch_result) do
+      [] -> {run, from_status, to_status}
+      events -> {run, from_status, to_status, events}
+    end
+  end
+
+  defp dispatch_result_events({:dispatch_events, events}) when is_list(events), do: events
+  defp dispatch_result_events(_dispatch_result), do: []
 
   defp fail_updated_run(repo, updated_run, from_status, failure_attrs_fun, reason) do
     failure_attrs = failure_attrs_fun.(updated_run, reason)

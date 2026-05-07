@@ -17,16 +17,37 @@ defmodule SquidMesh.Runtime.Dispatcher do
   @type dispatch_error :: Ecto.Changeset.t() | term()
   @type dispatch_opts :: [schedule_in: pos_integer()]
   @type dispatch_target :: atom()
+  @type dispatch_event :: {:run_dispatched, Run.t(), Oban.Job.t(), atom(), pos_integer() | nil}
 
   @spec dispatch_run(Config.t(), Run.t(), dispatch_opts()) ::
           {:ok, Oban.Job.t() | [Oban.Job.t()]} | {:error, dispatch_error()}
   def dispatch_run(config, run, opts \\ [])
 
-  def dispatch_run(%Config{} = config, %Run{workflow: workflow, current_step: nil} = run, opts)
+  def dispatch_run(%Config{} = config, %Run{} = run, opts) do
+    case dispatch_run_with_events(config, run, opts) do
+      {:ok, jobs, events} ->
+        emit_dispatch_events(events)
+        {:ok, jobs}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @spec dispatch_run_with_events(Config.t(), Run.t(), dispatch_opts()) ::
+          {:ok, Oban.Job.t() | [Oban.Job.t()], [dispatch_event()]}
+          | {:error, dispatch_error()}
+  def dispatch_run_with_events(config, run, opts \\ [])
+
+  def dispatch_run_with_events(
+        %Config{} = config,
+        %Run{workflow: workflow, current_step: nil} = run,
+        opts
+      )
       when is_atom(workflow) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
          true <- WorkflowDefinition.dependency_mode?(definition) || {:error, {:invalid_step, nil}} do
-      dispatch_steps(
+      dispatch_steps_with_events(
         config,
         run,
         WorkflowDefinition.entry_steps(definition),
@@ -35,18 +56,33 @@ defmodule SquidMesh.Runtime.Dispatcher do
     end
   end
 
-  def dispatch_run(%Config{} = config, %Run{current_step: current_step} = run, opts)
+  def dispatch_run_with_events(%Config{} = config, %Run{current_step: current_step} = run, opts)
       when is_atom(current_step) do
-    dispatch_steps(config, run, [current_step], opts)
+    dispatch_steps_with_events(config, run, [current_step], opts)
   end
 
-  def dispatch_run(%Config{}, %Run{current_step: current_step}, _opts) do
+  def dispatch_run_with_events(%Config{}, %Run{current_step: current_step}, _opts) do
     {:error, {:invalid_step, current_step}}
   end
 
   @spec dispatch_steps(Config.t(), Run.t(), [dispatch_target()], keyword()) ::
           {:ok, Oban.Job.t() | [Oban.Job.t()]} | {:error, dispatch_error()}
   def dispatch_steps(%Config{} = config, %Run{} = run, steps, opts \\ []) when is_list(steps) do
+    case dispatch_steps_with_events(config, run, steps, opts) do
+      {:ok, jobs, events} ->
+        emit_dispatch_events(events)
+        {:ok, jobs}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @spec dispatch_steps_with_events(Config.t(), Run.t(), [dispatch_target()], keyword()) ::
+          {:ok, Oban.Job.t() | [Oban.Job.t()], [dispatch_event()]}
+          | {:error, dispatch_error()}
+  def dispatch_steps_with_events(%Config{} = config, %Run{} = run, steps, opts \\ [])
+      when is_list(steps) do
     schedule_in = Keyword.get(opts, :schedule_in)
     schedule_pending? = Keyword.get(opts, :schedule_pending, false)
 
@@ -56,15 +92,23 @@ defmodule SquidMesh.Runtime.Dispatcher do
 
     with {:ok, jobs} <-
            dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?) do
-      Enum.each(jobs, fn job ->
-        Observability.emit_run_dispatched(run, job, config.execution_queue, schedule_in)
-      end)
+      events = Enum.map(jobs, &run_dispatched_event(run, &1, config.execution_queue, schedule_in))
 
       case jobs do
-        [job] -> {:ok, job}
-        multiple_jobs -> {:ok, multiple_jobs}
+        [job] -> {:ok, job, events}
+        multiple_jobs -> {:ok, multiple_jobs, events}
       end
     end
+  end
+
+  defp emit_dispatch_events(events) do
+    Enum.each(events, fn {:run_dispatched, run, job, queue, schedule_in} ->
+      Observability.emit_run_dispatched(run, job, queue, schedule_in)
+    end)
+  end
+
+  defp run_dispatched_event(run, job, queue, schedule_in) do
+    {:run_dispatched, run, job, queue, schedule_in}
   end
 
   defp dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?) do

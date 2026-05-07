@@ -50,6 +50,50 @@ defmodule SquidMesh.ObservabilityTest do
     end
   end
 
+  defmodule DispatchWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:prepare_invoice, DispatchWorkflow.PrepareInvoice)
+      step(:deliver_invoice, DispatchWorkflow.DeliverInvoice)
+
+      transition(:prepare_invoice, on: :ok, to: :deliver_invoice)
+      transition(:deliver_invoice, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule DispatchWorkflow.PrepareInvoice do
+    use Jido.Action,
+      name: "prepare_invoice",
+      description: "Prepares an invoice",
+      schema: [account_id: [type: :string, required: true]]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{invoice: %{account_id: account_id}}}
+    end
+  end
+
+  defmodule DispatchWorkflow.DeliverInvoice do
+    use Jido.Action,
+      name: "deliver_invoice",
+      description: "Delivers an invoice",
+      schema: [invoice: [type: :map, required: true]]
+
+    @impl true
+    def run(%{invoice: invoice}, _context) do
+      {:ok, %{delivery: %{account_id: invoice.account_id, status: "sent"}}}
+    end
+  end
+
   defmodule RetryWorkflow do
     use SquidMesh.Workflow
 
@@ -172,6 +216,110 @@ defmodule SquidMesh.ObservabilityTest do
     assert metadata.run_id == run.id
     assert metadata.from_status == :running
     assert metadata.to_status == :completed
+  end
+
+  test "emits outcome telemetry after the outcome transaction commits" do
+    handler_id = "squid-mesh-outcome-transaction-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach_many(
+        handler_id,
+        [
+          [:squid_mesh, :run, :transition],
+          [:squid_mesh, :run, :dispatched],
+          [:squid_mesh, :step, :completed],
+          [:squid_mesh, :step, :failed],
+          [:squid_mesh, :step, :retry_scheduled]
+        ],
+        fn event, _measurements, _metadata, pid ->
+          send(pid, {:outcome_tx_event, event, Repo.in_transaction?()})
+        end,
+        test_pid
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    assert {:ok, config} = Config.load(repo: Repo)
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(SuccessfulWorkflow)
+    assert {:ok, run} = RunStore.create_run(Repo, SuccessfulWorkflow, %{account_id: "acct_123"})
+
+    assert {:ok, running_run} =
+             RunStore.transition_run(Repo, run.id, :running, %{current_step: :deliver_invoice})
+
+    assert {:ok, step_run, :execute} =
+             StepRunStore.begin_step(Repo, run.id, :deliver_invoice, %{account_id: "acct_123"})
+
+    assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+    flush_telemetry_events()
+    flush_outcome_tx_events()
+
+    assert :ok =
+             Outcome.apply_execution_result(
+               {:ok, %{delivery: %{account_id: "acct_123", status: "sent"}}, []},
+               config,
+               definition,
+               running_run,
+               :deliver_invoice,
+               step_run.id,
+               attempt.id,
+               attempt.attempt_number,
+               System.monotonic_time()
+             )
+
+    assert_receive {:outcome_tx_event, [:squid_mesh, :step, :completed], false}
+    assert_receive {:outcome_tx_event, [:squid_mesh, :run, :transition], false}
+    refute_receive {:outcome_tx_event, _event, true}
+  end
+
+  test "emits successor dispatch telemetry after the outcome transaction commits" do
+    handler_id = "squid-mesh-outcome-dispatch-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach_many(
+        handler_id,
+        [[:squid_mesh, :run, :dispatched], [:squid_mesh, :step, :completed]],
+        fn event, _measurements, _metadata, pid ->
+          send(pid, {:outcome_dispatch_event, event, Repo.in_transaction?()})
+        end,
+        test_pid
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    assert {:ok, config} = Config.load(repo: Repo)
+    assert {:ok, definition} = SquidMesh.Workflow.Definition.load(DispatchWorkflow)
+    assert {:ok, run} = RunStore.create_run(Repo, DispatchWorkflow, %{account_id: "acct_123"})
+
+    assert {:ok, running_run} =
+             RunStore.transition_run(Repo, run.id, :running, %{current_step: :prepare_invoice})
+
+    assert {:ok, step_run, :execute} =
+             StepRunStore.begin_step(Repo, run.id, :prepare_invoice, %{account_id: "acct_123"})
+
+    assert {:ok, attempt} = AttemptStore.begin_attempt(Repo, step_run.id)
+
+    flush_telemetry_events()
+    flush_outcome_dispatch_events()
+
+    assert :ok =
+             Outcome.apply_execution_result(
+               {:ok, %{invoice: %{account_id: "acct_123"}}, []},
+               config,
+               definition,
+               running_run,
+               :prepare_invoice,
+               step_run.id,
+               attempt.id,
+               attempt.attempt_number,
+               System.monotonic_time()
+             )
+
+    assert_receive {:outcome_dispatch_event, [:squid_mesh, :step, :completed], false}
+    assert_receive {:outcome_dispatch_event, [:squid_mesh, :run, :dispatched], false}
+    refute_receive {:outcome_dispatch_event, _event, true}
   end
 
   test "emits retry telemetry and logs workflow metadata on failure" do
@@ -370,6 +518,22 @@ defmodule SquidMesh.ObservabilityTest do
   defp flush_telemetry_events do
     receive do
       {:telemetry_event, _event, _measurements, _metadata} -> flush_telemetry_events()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp flush_outcome_tx_events do
+    receive do
+      {:outcome_tx_event, _event, _in_transaction?} -> flush_outcome_tx_events()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp flush_outcome_dispatch_events do
+    receive do
+      {:outcome_dispatch_event, _event, _in_transaction?} -> flush_outcome_dispatch_events()
     after
       0 -> :ok
     end

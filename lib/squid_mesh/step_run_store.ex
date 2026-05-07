@@ -143,7 +143,7 @@ defmodule SquidMesh.StepRunStore do
   Marks a step run as completed and persists its output.
   """
   @spec complete_step(module(), Ecto.UUID.t(), step_output()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found | stale_error()}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def complete_step(repo, step_run_id, output) when is_map(output) do
     update_running_step(repo, step_run_id, %{
       status: "completed",
@@ -159,7 +159,7 @@ defmodule SquidMesh.StepRunStore do
   durable manual action metadata.
   """
   @spec complete_manual_step(module(), Ecto.UUID.t(), step_output(), manual_event()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found | stale_error()}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def complete_manual_step(repo, step_run_id, output, manual)
       when is_map(output) and is_map(manual) do
     update_running_step(repo, step_run_id, %{
@@ -174,7 +174,7 @@ defmodule SquidMesh.StepRunStore do
   Marks a step run as failed and persists the last error.
   """
   @spec fail_step(module(), Ecto.UUID.t(), step_error()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found | stale_error()}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def fail_step(repo, step_run_id, error) when is_map(error) do
     update_running_step(repo, step_run_id, %{
       status: "failed",
@@ -188,7 +188,7 @@ defmodule SquidMesh.StepRunStore do
   Persists pause-resume metadata for a running pause step without completing it.
   """
   @spec persist_pause_resume(module(), Ecto.UUID.t(), step_output(), pause_target()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found | stale_error()}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def persist_pause_resume(repo, step_run_id, output, target)
       when is_map(output) and (target == :complete or is_atom(target)) do
     update_running_step(repo, step_run_id, %{
@@ -204,7 +204,7 @@ defmodule SquidMesh.StepRunStore do
   completing it.
   """
   @spec persist_approval_resume(module(), Ecto.UUID.t(), approval_targets(), atom() | nil) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found | stale_error()}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def persist_approval_resume(
         repo,
         step_run_id,
@@ -382,7 +382,7 @@ defmodule SquidMesh.StepRunStore do
   end
 
   @spec update_running_step(module(), Ecto.UUID.t(), map()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found | stale_error()}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   defp update_running_step(repo, step_run_id, attrs) do
     updates = attrs |> Map.put(:updated_at, now_utc()) |> Map.to_list()
 

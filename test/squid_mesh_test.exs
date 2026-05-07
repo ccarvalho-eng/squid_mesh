@@ -248,6 +248,22 @@ defmodule SquidMeshTest do
       assert config.stale_step_timeout == 60_000
     end
 
+    test "treats nil execution settings as defaults" do
+      assert {:ok, config} = SquidMesh.config(repo: SquidMeshTest.Repo, execution: nil)
+
+      assert config.execution_name == Oban
+      assert config.execution_queue == :squid_mesh
+      assert config.stale_step_timeout == 900_000
+    end
+
+    test "reports non-keyword execution settings" do
+      assert {:error, {:invalid_config, [execution: %{queue: :workflows}]}} =
+               SquidMesh.config(repo: SquidMeshTest.Repo, execution: %{queue: :workflows})
+
+      assert {:error, {:invalid_config, [execution: [:bad]]}} =
+               SquidMesh.config(repo: SquidMeshTest.Repo, execution: [:bad])
+    end
+
     test "reports missing required configuration keys" do
       original_repo = Application.get_env(:squid_mesh, :repo)
 

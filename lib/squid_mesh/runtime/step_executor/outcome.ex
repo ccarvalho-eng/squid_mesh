@@ -73,12 +73,16 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
                   attempt_number,
                   started_at
                 ) do
-             :ok -> :ok
+             {:ok, events} -> events
              {:error, reason} -> config.repo.rollback(reason)
            end
          end) do
-      {:ok, :ok} -> :ok
-      {:error, reason} -> {:error, reason}
+      {:ok, events} ->
+        emit_post_commit_events(events)
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -130,23 +134,27 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     duration = System.monotonic_time() - started_at
 
     with {:ok, _attempt} <- AttemptStore.fail_attempt(config.repo, attempt_id, error),
-         {:ok, _step_run} <- StepRunStore.fail_step(config.repo, step_run_id, error) do
-      Observability.emit_step_failed(run, step_name, attempt_number, duration, error)
+         {:ok, _step_run} <- StepRunStore.fail_step(config.repo, step_run_id, error),
+         {:ok, events} <-
+           apply_failure_progression(config, definition, run, step_name, attempt_number, error) do
+      {:ok, [step_failed_event(run, step_name, attempt_number, duration, error) | events]}
+    end
+  end
 
-      case RetryPolicy.resolve(run.workflow, step_name, attempt_number) do
-        {:retry, _next_attempt, delay_ms} ->
-          schedule_retry(config, run, step_name, attempt_number, error, delay_ms)
+  defp apply_failure_progression(config, definition, run, step_name, attempt_number, error) do
+    case RetryPolicy.resolve(run.workflow, step_name, attempt_number) do
+      {:retry, _next_attempt, delay_ms} ->
+        schedule_retry(config, run, step_name, attempt_number, error, delay_ms)
 
-        _no_retry ->
-          handle_terminal_or_routed_failure(config, definition, run, step_name, error)
-      end
+      _no_retry ->
+        handle_terminal_or_routed_failure(config, definition, run, step_name, error)
     end
   end
 
   defp schedule_retry(config, run, step_name, attempt_number, error, delay_ms) do
     dispatch_opts = retry_dispatch_opts(delay_ms)
 
-    case RunStore.progress_run_with(
+    case RunStore.progress_run_with_events(
            config.repo,
            run.id,
            fn _current_run ->
@@ -157,19 +165,17 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            end,
            {:transition_or_dispatch_or_fail, :retrying,
             fn retried_run ->
-              Dispatcher.dispatch_run(config, retried_run, dispatch_opts)
+              dispatch_run_events(config, retried_run, dispatch_opts)
             end,
             fn _current_run, reason ->
               retry_dispatch_failure_attrs(step_name, error, reason)
             end}
          ) do
-      {:ok, %Run{status: :retrying}} ->
-        Logger.warning("workflow step failed; scheduling retry")
-        Observability.emit_step_retry_scheduled(run, step_name, attempt_number, delay_ms)
-        :ok
+      {:ok, %Run{status: :retrying}, events} ->
+        {:ok, [step_retry_scheduled_event(run, step_name, attempt_number, delay_ms) | events]}
 
-      {:ok, _failed_or_noop} ->
-        :ok
+      {:ok, _failed_or_noop, events} ->
+        {:ok, events}
 
       {:error, reason} ->
         {:error, reason}
@@ -253,16 +259,17 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
        ) do
     with {:ok, _attempt} <- AttemptStore.complete_attempt(config.repo, attempt_id),
          {:ok, _step_run} <- StepRunStore.complete_step(config.repo, step_run_id, mapped_output) do
-      Observability.emit_step_completed(run, step_name, attempt_number, duration)
-
-      advance_after_completed_step(
-        config,
-        definition,
-        run,
-        step_name,
-        mapped_output,
-        execution_opts
-      )
+      with {:ok, events} <-
+             advance_after_completed_step(
+               config,
+               definition,
+               run,
+               step_name,
+               mapped_output,
+               execution_opts
+             ) do
+        {:ok, [step_completed_event(run, step_name, attempt_number, duration) | events]}
+      end
     end
   end
 
@@ -291,28 +298,26 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          from_status: from_status,
          to_status: to_status
        }} ->
-        Observability.emit_step_failed(
-          run,
-          step_name,
-          attempt_number,
-          duration,
-          RunStore.pause_cancellation_error()
-        )
-
-        Observability.emit_run_transition(cancelled_run, from_status, to_status)
-
-        :ok
+        {:ok,
+         [
+           step_failed_event(
+             run,
+             step_name,
+             attempt_number,
+             duration,
+             RunStore.pause_cancellation_error()
+           ),
+           run_transition_event(cancelled_run, from_status, to_status)
+         ]}
 
       {:ok, %{run: paused_run, from_status: from_status, to_status: to_status}} ->
-        Observability.emit_run_transition(paused_run, from_status, to_status)
-        :ok
+        {:ok, [run_transition_event(paused_run, from_status, to_status)]}
 
       {:ok, %{terminal_noop?: true, finalized_step?: true, error: error}} ->
-        Observability.emit_step_failed(run, step_name, attempt_number, duration, error)
-        :ok
+        {:ok, [step_failed_event(run, step_name, attempt_number, duration, error)]}
 
       {:ok, %{terminal_noop?: true}} ->
-        :ok
+        {:ok, []}
 
       {:error, reason} ->
         {:error, reason}
@@ -364,7 +369,12 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         %PreparedStep{step_name: step_name, step_run: %{output: output}}
       ) do
     mapped_output = SquidMesh.Runtime.StepInput.normalize_map_keys(output || %{})
-    advance_after_completed_step(config, definition, run, step_name, mapped_output, [])
+
+    with {:ok, events} <-
+           advance_after_completed_step(config, definition, run, step_name, mapped_output, []) do
+      emit_post_commit_events(events)
+      :ok
+    end
   end
 
   defp advance_after_completed_step(
@@ -391,10 +401,10 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         apply_progression(config, latest_run.id, progression)
 
       :already_terminal ->
-        :ok
+        {:ok, []}
 
       {:retrying, _latest_run} ->
-        RunStore.progress_run_with(
+        RunStore.progress_run_with_events(
           config.repo,
           run.id,
           fn current_run ->
@@ -402,7 +412,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
           end,
           :update
         )
-        |> normalize_progress_result()
+        |> progress_events_result()
 
       {:error, latest_run, reason} ->
         mark_failed_after_success_resolution_error(
@@ -522,13 +532,13 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   defp apply_progression(%Config{} = config, run_id, %Complete{attrs_fun: attrs_fun}) do
-    RunStore.progress_run_with(config.repo, run_id, attrs_fun, {:transition, :completed})
-    |> normalize_progress_result()
+    RunStore.progress_run_with_events(config.repo, run_id, attrs_fun, {:transition, :completed})
+    |> progress_events_result()
   end
 
   defp apply_progression(%Config{} = config, run_id, %Update{attrs_fun: attrs_fun}) do
-    RunStore.progress_run_with(config.repo, run_id, attrs_fun, :update)
-    |> normalize_progress_result()
+    RunStore.progress_run_with_events(config.repo, run_id, attrs_fun, :update)
+    |> progress_events_result()
   end
 
   defp apply_progression(
@@ -541,13 +551,13 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            dispatch_error_handler: failure_attrs_fun
          }
        ) do
-    RunStore.progress_run_with(
+    RunStore.progress_run_with_events(
       config.repo,
       run_id,
       attrs_fun,
       {:dispatch_or_fail,
        fn updated_run ->
-         Dispatcher.dispatch_steps(
+         dispatch_steps_events(
            config,
            updated_run,
            steps,
@@ -555,7 +565,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          )
        end, failure_attrs_fun}
     )
-    |> normalize_progress_result()
+    |> progress_events_result()
   end
 
   defp apply_progression(
@@ -567,22 +577,22 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
            dispatch_error_handler: failure_attrs_fun
          }
        ) do
-    RunStore.progress_run_with(
+    RunStore.progress_run_with_events(
       config.repo,
       run_id,
       attrs_fun,
       {:dispatch_or_fail,
-       fn updated_run -> Dispatcher.dispatch_run(config, updated_run, dispatch_opts) end,
+       fn updated_run -> dispatch_run_events(config, updated_run, dispatch_opts) end,
        failure_attrs_fun}
     )
-    |> normalize_progress_result()
+    |> progress_events_result()
   end
 
   defp handle_terminal_or_routed_failure(config, definition, run, step_name, error) do
     if WorkflowDefinition.dependency_mode?(definition) do
       Logger.error("workflow step failed")
 
-      case RunStore.progress_run_with(
+      case RunStore.progress_run_with_events(
              config.repo,
              run.id,
              fn _current_run ->
@@ -593,8 +603,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
              end,
              {:transition, :failed}
            ) do
-        {:ok, _result} ->
-          :ok
+        {:ok, _result, events} ->
+          {:ok, events}
 
         {:error, reason} ->
           {:error, reason}
@@ -608,7 +618,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         {:error, {:unknown_transition, _from_step, :error}} ->
           Logger.error("workflow step failed")
 
-          case RunStore.progress_run_with(
+          case RunStore.progress_run_with_events(
                  config.repo,
                  run.id,
                  fn _current_run ->
@@ -619,8 +629,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
                  end,
                  {:transition, :failed}
                ) do
-            {:ok, _result} ->
-              :ok
+            {:ok, _result, events} ->
+              {:ok, events}
 
             {:error, reason} ->
               {:error, reason}
@@ -664,8 +674,61 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     )
   end
 
-  defp normalize_progress_result({:ok, _result}), do: :ok
-  defp normalize_progress_result({:error, reason}), do: {:error, reason}
+  defp progress_events_result({:ok, _result, events}), do: {:ok, events}
+  defp progress_events_result({:error, reason}), do: {:error, reason}
+
+  defp emit_post_commit_events(events) do
+    Enum.each(events, &emit_post_commit_event/1)
+  end
+
+  defp emit_post_commit_event({:step_completed, run, step_name, attempt_number, duration}) do
+    Observability.emit_step_completed(run, step_name, attempt_number, duration)
+  end
+
+  defp emit_post_commit_event({:step_failed, run, step_name, attempt_number, duration, error}) do
+    Observability.emit_step_failed(run, step_name, attempt_number, duration, error)
+  end
+
+  defp emit_post_commit_event({:step_retry_scheduled, run, step_name, attempt_number, delay_ms}) do
+    Logger.warning("workflow step failed; scheduling retry")
+    Observability.emit_step_retry_scheduled(run, step_name, attempt_number, delay_ms)
+  end
+
+  defp emit_post_commit_event({:run_transition, run, from_status, to_status}) do
+    Observability.emit_run_transition(run, from_status, to_status)
+  end
+
+  defp emit_post_commit_event({:run_dispatched, run, job, queue, schedule_in}) do
+    Observability.emit_run_dispatched(run, job, queue, schedule_in)
+  end
+
+  defp step_completed_event(run, step_name, attempt_number, duration) do
+    {:step_completed, run, step_name, attempt_number, duration}
+  end
+
+  defp step_failed_event(run, step_name, attempt_number, duration, error) do
+    {:step_failed, run, step_name, attempt_number, duration, error}
+  end
+
+  defp step_retry_scheduled_event(run, step_name, attempt_number, delay_ms) do
+    {:step_retry_scheduled, run, step_name, attempt_number, delay_ms}
+  end
+
+  defp run_transition_event(run, from_status, to_status) do
+    {:run_transition, run, from_status, to_status}
+  end
+
+  defp dispatch_run_events(config, run, opts) do
+    with {:ok, _jobs, events} <- Dispatcher.dispatch_run_with_events(config, run, opts) do
+      {:ok, {:dispatch_events, events}}
+    end
+  end
+
+  defp dispatch_steps_events(config, run, steps, opts) do
+    with {:ok, _jobs, events} <- Dispatcher.dispatch_steps_with_events(config, run, steps, opts) do
+      {:ok, {:dispatch_events, events}}
+    end
+  end
 
   defp normalize_error(%{__struct__: module} = error) do
     details =
@@ -695,7 +758,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          context,
          {:no_runnable_step, pending_steps}
        ) do
-    case RunStore.transition_run(repo, run.id, :failed, %{
+    case RunStore.transition_run_silent(repo, run.id, :failed, %{
            context: context,
            current_step: step_name,
            last_error: %{
@@ -704,13 +767,16 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
              pending_steps: pending_steps
            }
          }) do
-      {:ok, _failed_run} -> :ok
-      {:error, transition_reason} -> {:error, transition_reason}
+      {:ok, {failed_run, from_status, to_status}} ->
+        {:ok, [run_transition_event(failed_run, from_status, to_status)]}
+
+      {:error, transition_reason} ->
+        {:error, transition_reason}
     end
   end
 
   defp mark_failed_after_success_resolution_error(repo, run, step_name, context, reason) do
-    case RunStore.transition_run(repo, run.id, :failed, %{
+    case RunStore.transition_run_silent(repo, run.id, :failed, %{
            context: context,
            current_step: step_name,
            last_error: %{
@@ -719,8 +785,11 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
              cause: normalize_success_resolution_error(reason)
            }
          }) do
-      {:ok, _failed_run} -> :ok
-      {:error, transition_reason} -> {:error, transition_reason}
+      {:ok, {failed_run, from_status, to_status}} ->
+        {:ok, [run_transition_event(failed_run, from_status, to_status)]}
+
+      {:error, transition_reason} ->
+        {:error, transition_reason}
     end
   end
 

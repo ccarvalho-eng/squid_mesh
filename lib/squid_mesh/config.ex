@@ -9,7 +9,7 @@ defmodule SquidMesh.Config do
 
   @type execution_option ::
           {:name, module() | atom()} | {:queue, atom()} | {:stale_step_timeout, non_neg_integer()}
-  @type raw_config :: [repo: module(), execution: [execution_option()]]
+  @type raw_config :: [repo: module(), execution: [execution_option()] | nil]
   @type t :: %__MODULE__{
           repo: module(),
           execution_name: module() | atom(),
@@ -36,10 +36,9 @@ defmodule SquidMesh.Config do
       |> Keyword.merge(overrides)
 
     with :ok <- validate_required_keys(config),
+         {:ok, execution_overrides} <- execution_config(config),
          {:ok, execution} <-
-           validate_execution(
-             Keyword.merge(@default_execution, Keyword.get(config, :execution, []))
-           ) do
+           validate_execution(Keyword.merge(@default_execution, execution_overrides)) do
       {:ok,
        %__MODULE__{
          repo: Keyword.fetch!(config, :repo),
@@ -82,6 +81,23 @@ defmodule SquidMesh.Config do
     case missing_keys do
       [] -> :ok
       keys -> {:error, {:missing_config, keys}}
+    end
+  end
+
+  defp execution_config(config) do
+    case Keyword.get(config, :execution, []) do
+      nil ->
+        {:ok, []}
+
+      execution when is_list(execution) ->
+        if Keyword.keyword?(execution) do
+          {:ok, execution}
+        else
+          {:error, {:invalid_config, [execution: execution]}}
+        end
+
+      invalid ->
+        {:error, {:invalid_config, [execution: invalid]}}
     end
   end
 
