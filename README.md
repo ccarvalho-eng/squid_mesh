@@ -22,32 +22,32 @@
   </p>
 </div>
 
-Squid Mesh lets Phoenix and OTP applications model operational workflows as
-code: retries, waits, approval gates, dependency joins, failure routes, replay,
-and inspectable history live in one embedded runtime instead of being rebuilt
-inside each host app.
+Squid Mesh is an embedded workflow runtime for Phoenix and OTP applications.
+Workflow definitions cover retries, waits, approval gates, dependency joins,
+failure routes, replay, and inspection. Runtime state is persisted in Postgres,
+and execution is queued through Oban.
 
-## What You Get
+## Capabilities
 
 - declarative workflows with manual and cron triggers
 - durable run, step, and attempt history in Postgres
 - step-level retries, delays, replay, and inspection on top of your existing `Oban`
 - transition, dependency, and approval-style workflow shapes
-- explicit step input and output mapping for clearer data flow
-- graph-aware inspection plus manual audit events for pause, resume, approval, and rejection
+- explicit step input and output mapping
+- inspection of declared step state plus manual audit events for pause, resume, approval, and rejection
 - built-in steps like `:log`, `:wait`, `:pause`, and `:approval`, plus custom steps with `Jido.Action`
 
-## Use It When
+## Fit
 
 - a workflow should survive app restarts, deploys, retries, and Oban redelivery
 - a Phoenix context needs a durable approval, recovery, notification, or back-office flow
-- step history and manual decisions need to be inspectable after the fact
+- step history and manual decisions need to be inspectable later
 - you want workflow state in your app's Postgres database, not in a separate service
 
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for
 > evaluation, local development, and integration work, but it is not yet
-> positioned as production-ready. See
+> documented as production-ready. See
 > [Production Readiness](docs/production_readiness.md) for the current
 > checklist and remaining bar.
 
@@ -120,9 +120,9 @@ mix ecto.migrate
 
 ## Example: Daily RSS To Discord
 
-This kind of workflow is where Squid Mesh gets interesting: one cron trigger,
-typed payload defaults, built-in steps, custom steps, explicit failure routing,
-and step-level retry on the side effect that actually needs it.
+This example shows the core runtime shape: one cron trigger, typed payload
+defaults, built-in steps, custom steps, explicit failure routing, and
+step-level retry on the external side-effect step.
 
 ```elixir
 defmodule Content.Workflows.PostDailyDigest do
@@ -162,9 +162,9 @@ defmodule Content.Workflows.PostDailyDigest do
 end
 ```
 
-The step modules can stay small and domain-focused, while Squid Mesh handles
-durable state, scheduling through Oban, retries, failure routing after retry
-exhaustion, and run inspection.
+Step modules implement domain work. Squid Mesh records durable state, schedules
+jobs through Oban, applies step retry policy, routes failures after retry
+exhaustion, and exposes run inspection.
 
 For approval or manual-review gates, use `approval_step/2` in transition-based
 workflows and resume the paused run through `SquidMesh.approve_run/3` or
@@ -189,9 +189,9 @@ Start the workflow through the public API and inspect the result with history:
 SquidMesh.inspect_run(run.id, include_history: true)
 ```
 
-With history enabled, the inspected run includes chronological `step_runs`, a
-graph-aware `steps` view, and durable `audit_events` for pause, resume,
-approval, and rejection actions.
+With history enabled, the inspected run includes chronological `step_runs`,
+declared `steps` state, and durable `audit_events` for pause, resume, approval,
+and rejection actions.
 
 ## Documentation
 

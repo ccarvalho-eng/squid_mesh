@@ -12,23 +12,51 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.StepExecutor.PreparedStep
   alias SquidMesh.Runtime.StepInput
+  alias SquidMesh.Runtime.StepRecovery
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type prepare_result ::
           {:execute, PreparedStep.t()}
+          | {:reconcile, PreparedStep.t()}
           | {:skip, PreparedStep.t()}
+          | {:cancel, Run.t()}
           | :skip
           | {:error, term()}
-
   @spec prepare(Config.t(), WorkflowDefinition.t(), Run.t(), atom() | nil) :: prepare_result()
   def prepare(%Config{} = config, definition, %Run{} = run, expected_step) do
+    # Lock the run before claiming a step so stale workers cannot start side
+    # effects after cancellation or another terminal transition wins the race.
+    case config.repo.transaction(fn ->
+           with {:ok, locked_run} <- RunStore.get_run_for_update(config.repo, run.id) do
+             {result, events} = do_prepare(config, definition, locked_run, expected_step)
+             {:prepared, result, events}
+           else
+             {:error, reason} -> config.repo.rollback(reason)
+           end
+         end) do
+      {:ok, {:prepared, {:recover_stale, prepared}, events}} ->
+        emit_post_commit_events(events)
+        recover_existing_step(config, prepared)
+
+      {:ok, {:prepared, result, events}} ->
+        emit_post_commit_events(events)
+        result
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_prepare(%Config{} = config, definition, %Run{status: status} = run, expected_step)
+       when status in [:pending, :running, :retrying] do
     case resolve_execution_step(config.repo, definition, run, expected_step) do
       {:ok, execution_step} ->
         with {:ok, step} <- WorkflowDefinition.step(definition, execution_step),
              {:ok, input_mapping} <-
                WorkflowDefinition.step_input_mapping(definition, execution_step),
-             {:ok, running_run} <- ensure_running(config.repo, run, definition, execution_step),
+             {:ok, running_run, events} <-
+               ensure_running(config.repo, run, definition, execution_step),
              candidate_input = StepInput.build_step_input(running_run, input_mapping),
              {:ok, step_run, execution_mode} <-
                StepRunStore.begin_step(
@@ -48,35 +76,41 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
           }
 
           case execution_mode do
-            :execute -> {:execute, prepared}
-            :skip -> {:skip, prepared}
+            :execute -> {{:execute, prepared}, events}
+            :skip -> {prepare_existing_step(config, prepared), events}
           end
         end
 
       :skip ->
-        :skip
+        {:skip, []}
 
       {:error, _reason} = error ->
-        error
+        {error, []}
     end
   end
 
+  defp do_prepare(_config, _definition, %Run{status: :cancelling} = run, _expected_step) do
+    {{:cancel, run}, []}
+  end
+
+  defp do_prepare(_config, _definition, %Run{}, _expected_step), do: {:skip, []}
+
   @spec ensure_running(module(), Run.t(), WorkflowDefinition.t(), atom()) ::
-          {:ok, Run.t()} | {:error, term()}
+          {:ok, Run.t(), [tuple()]} | {:error, term()}
   defp ensure_running(
          repo,
          %Run{status: :pending, id: run_id},
          definition,
          execution_step
        ) do
-    case RunStore.transition_run(repo, run_id, :running, %{
+    case RunStore.transition_run_silent(repo, run_id, :running, %{
            current_step: running_step(definition, execution_step)
          }) do
-      {:ok, running_run} ->
-        {:ok, running_run}
+      {:ok, {running_run, from_status, to_status}} ->
+        {:ok, running_run, [run_transition_event(running_run, from_status, to_status)]}
 
       {:error, {:invalid_transition, :running, :running}} ->
-        RunStore.get_run(repo, run_id)
+        get_already_running_run(repo, run_id)
 
       {:error, reason} ->
         {:error, reason}
@@ -89,21 +123,21 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
          definition,
          execution_step
        ) do
-    case RunStore.transition_run(repo, run_id, :running, %{
+    case RunStore.transition_run_silent(repo, run_id, :running, %{
            current_step: running_step(definition, execution_step)
          }) do
-      {:ok, running_run} ->
-        {:ok, running_run}
+      {:ok, {running_run, from_status, to_status}} ->
+        {:ok, running_run, [run_transition_event(running_run, from_status, to_status)]}
 
       {:error, {:invalid_transition, :running, :running}} ->
-        RunStore.get_run(repo, run_id)
+        get_already_running_run(repo, run_id)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp ensure_running(_repo, %Run{} = run, _definition, _execution_step), do: {:ok, run}
+  defp ensure_running(_repo, %Run{} = run, _definition, _execution_step), do: {:ok, run, []}
 
   @spec resolve_execution_step(module(), WorkflowDefinition.t(), Run.t(), atom() | nil) ::
           {:ok, atom()} | :skip | {:error, term()}
@@ -149,5 +183,64 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
     step_run.input
     |> Kernel.||(fallback_input)
     |> StepInput.normalize_map_keys()
+  end
+
+  defp get_already_running_run(repo, run_id) do
+    with {:ok, run} <- RunStore.get_run(repo, run_id) do
+      {:ok, run, []}
+    end
+  end
+
+  defp emit_post_commit_events(events) do
+    Enum.each(events, fn {:run_transition, run, from_status, to_status} ->
+      SquidMesh.Observability.emit_run_transition(run, from_status, to_status)
+    end)
+  end
+
+  defp run_transition_event(run, from_status, to_status) do
+    {:run_transition, run, from_status, to_status}
+  end
+
+  defp prepare_existing_step(_config, %PreparedStep{step_run: %{status: "completed"}} = prepared) do
+    {:reconcile, prepared}
+  end
+
+  defp prepare_existing_step(
+         _config,
+         %PreparedStep{step_run: %{status: "running"}} = prepared
+       ) do
+    {:recover_stale, prepared}
+  end
+
+  defp prepare_existing_step(_config, prepared), do: {:skip, prepared}
+
+  defp recover_existing_step(
+         %Config{stale_step_timeout: :disabled},
+         %PreparedStep{} = prepared
+       ) do
+    {:skip, prepared}
+  end
+
+  defp recover_existing_step(
+         %Config{stale_step_timeout: stale_step_timeout} = config,
+         %PreparedStep{} = prepared
+       ) do
+    # A duplicate delivery normally skips a running step. If the previous worker
+    # died, reclaim outside the run lock, then re-enter preparation. This keeps
+    # the lock order compatible with normal completion: attempt/step before run.
+    case StepRecovery.reclaim_stale_running_step(
+           config.repo,
+           prepared.step_run,
+           stale_step_timeout
+         ) do
+      {:ok, :reclaimed} ->
+        prepare(config, prepared.definition, prepared.run, prepared.step_name)
+
+      {:ok, _not_reclaimed} ->
+        {:skip, prepared}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 end

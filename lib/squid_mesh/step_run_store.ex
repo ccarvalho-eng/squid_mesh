@@ -18,8 +18,10 @@ defmodule SquidMesh.StepRunStore do
   @type approval_targets :: %{ok: pause_target(), error: pause_target()}
   @type manual_event :: map()
   @type step_status :: :pending | :running | :completed | :failed
-  @type begin_result :: {:ok, StepRun.t(), :execute | :skip} | {:error, Ecto.Changeset.t()}
+  @type stale_error :: {:stale_step_run, String.t()}
+  @type begin_result :: {:ok, StepRun.t(), :execute | :skip}
   @type schedule_result :: {:ok, StepRun.t(), :schedule | :skip} | {:error, Ecto.Changeset.t()}
+  @type step_schedule_input :: {step_identifier(), step_input()}
 
   @doc """
   Marks a step as ready for execution if it has not already completed or been
@@ -43,12 +45,8 @@ defmodule SquidMesh.StepRunStore do
       {:ok, step_run} ->
         {:ok, step_run, :execute}
 
-      {:error, %Ecto.Changeset{} = changeset} ->
-        if duplicate_step_claim?(changeset) do
-          claim_existing_step(repo, run_id, serialized_step, attrs)
-        else
-          {:error, changeset}
-        end
+      :duplicate ->
+        claim_existing_step(repo, run_id, serialized_step, attrs)
     end
   end
 
@@ -90,13 +88,64 @@ defmodule SquidMesh.StepRunStore do
     end
   end
 
+  @doc false
+  @spec schedule_steps(module(), Ecto.UUID.t(), [step_schedule_input()]) ::
+          {:ok, [step_identifier()]} | {:error, term()}
+  def schedule_steps(_repo, _run_id, []), do: {:ok, []}
+
+  def schedule_steps(repo, run_id, step_inputs) when is_list(step_inputs) do
+    attrs = Enum.map(step_inputs, &scheduled_step_attrs(run_id, &1))
+
+    # Bulk scheduling is used before fan-out job dispatch. It avoids committing
+    # a prefix of pending step rows if a later step in the same fan-out is bad.
+    try do
+      case repo.insert_all(
+             StepRun,
+             attrs,
+             on_conflict: :nothing,
+             conflict_target: [:run_id, :step],
+             returning: [:step]
+           ) do
+        {_count, inserted_rows} ->
+          inserted_steps = MapSet.new(inserted_rows, & &1.step)
+
+          scheduled_steps =
+            step_inputs
+            |> Enum.map(fn {step, _input} -> step end)
+            |> Enum.filter(&(serialize_step(&1) in inserted_steps))
+
+          {:ok, scheduled_steps}
+      end
+    rescue
+      exception -> {:error, exception}
+    end
+  end
+
+  @doc false
+  @spec delete_pending_steps(module(), Ecto.UUID.t(), [step_identifier()]) :: :ok
+  def delete_pending_steps(_repo, _run_id, []), do: :ok
+
+  def delete_pending_steps(repo, run_id, steps) when is_list(steps) do
+    serialized_steps = Enum.map(steps, &serialize_step/1)
+
+    StepRun
+    |> where(
+      [step_run],
+      step_run.run_id == ^run_id and step_run.step in ^serialized_steps and
+        step_run.status == "pending"
+    )
+    |> repo.delete_all()
+
+    :ok
+  end
+
   @doc """
   Marks a step run as completed and persists its output.
   """
   @spec complete_step(module(), Ecto.UUID.t(), step_output()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def complete_step(repo, step_run_id, output) when is_map(output) do
-    update_step(repo, step_run_id, %{
+    update_running_step(repo, step_run_id, %{
       status: "completed",
       output: output,
       manual: nil,
@@ -110,10 +159,10 @@ defmodule SquidMesh.StepRunStore do
   durable manual action metadata.
   """
   @spec complete_manual_step(module(), Ecto.UUID.t(), step_output(), manual_event()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def complete_manual_step(repo, step_run_id, output, manual)
       when is_map(output) and is_map(manual) do
-    update_step(repo, step_run_id, %{
+    update_running_step(repo, step_run_id, %{
       status: "completed",
       output: output,
       manual: manual,
@@ -125,9 +174,9 @@ defmodule SquidMesh.StepRunStore do
   Marks a step run as failed and persists the last error.
   """
   @spec fail_step(module(), Ecto.UUID.t(), step_error()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def fail_step(repo, step_run_id, error) when is_map(error) do
-    update_step(repo, step_run_id, %{
+    update_running_step(repo, step_run_id, %{
       status: "failed",
       manual: nil,
       resume: nil,
@@ -139,10 +188,10 @@ defmodule SquidMesh.StepRunStore do
   Persists pause-resume metadata for a running pause step without completing it.
   """
   @spec persist_pause_resume(module(), Ecto.UUID.t(), step_output(), pause_target()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def persist_pause_resume(repo, step_run_id, output, target)
       when is_map(output) and (target == :complete or is_atom(target)) do
-    update_step(repo, step_run_id, %{
+    update_running_step(repo, step_run_id, %{
       resume: %{
         "output" => output,
         "target" => serialize_pause_target(target)
@@ -155,7 +204,7 @@ defmodule SquidMesh.StepRunStore do
   completing it.
   """
   @spec persist_approval_resume(module(), Ecto.UUID.t(), approval_targets(), atom() | nil) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
   def persist_approval_resume(
         repo,
         step_run_id,
@@ -165,7 +214,7 @@ defmodule SquidMesh.StepRunStore do
       when (ok_target == :complete or is_atom(ok_target)) and
              (error_target == :complete or is_atom(error_target)) and
              (is_atom(output_key) or is_nil(output_key)) do
-    update_step(repo, step_run_id, %{
+    update_running_step(repo, step_run_id, %{
       resume: %{
         "kind" => "approval",
         "ok_target" => serialize_pause_target(ok_target),
@@ -224,11 +273,40 @@ defmodule SquidMesh.StepRunStore do
     |> Map.new(fn {step, status} -> {step, deserialize_status(status)} end)
   end
 
-  @spec insert_step_run(module(), map()) :: {:ok, StepRun.t()} | {:error, Ecto.Changeset.t()}
+  @spec insert_step_run(module(), map()) :: {:ok, StepRun.t()} | :duplicate
   defp insert_step_run(repo, attrs) do
-    %StepRun{}
-    |> StepRun.changeset(attrs)
-    |> repo.insert()
+    timestamps = %{id: Ecto.UUID.generate(), inserted_at: now_utc(), updated_at: now_utc()}
+    attrs = Map.merge(timestamps, attrs)
+
+    # This function is called inside locked preparation transactions. Use
+    # `ON CONFLICT` instead of relying on a unique-constraint error because a
+    # PostgreSQL error would abort the whole transaction before recovery logic.
+    case repo.insert_all(
+           StepRun,
+           [attrs],
+           on_conflict: :nothing,
+           conflict_target: [:run_id, :step]
+         ) do
+      {1, _rows} -> {:ok, get_step_run(repo, attrs.run_id, attrs.step)}
+      {0, _rows} -> :duplicate
+    end
+  end
+
+  defp scheduled_step_attrs(run_id, {step, input}) do
+    now = now_utc()
+
+    %{
+      id: Ecto.UUID.generate(),
+      run_id: run_id,
+      step: serialize_step(step),
+      status: "pending",
+      input: input,
+      output: nil,
+      resume: nil,
+      last_error: nil,
+      inserted_at: now,
+      updated_at: now
+    }
   end
 
   @spec claim_existing_step(module(), Ecto.UUID.t(), String.t(), map()) :: begin_result()
@@ -251,7 +329,7 @@ defmodule SquidMesh.StepRunStore do
                 insert_step_run(repo, attrs)
                 |> case do
                   {:ok, step_run} -> {:ok, step_run, :execute}
-                  {:error, changeset} -> {:error, changeset}
+                  :duplicate -> claim_existing_step(repo, run_id, step, attrs)
                 end
             end
         end
@@ -303,28 +381,29 @@ defmodule SquidMesh.StepRunStore do
     end
   end
 
-  @spec duplicate_step_claim?(Ecto.Changeset.t()) :: boolean()
-  defp duplicate_step_claim?(%Ecto.Changeset{errors: errors}) do
-    Enum.any?(errors, fn
-      {field, {"has already been taken", opts}} when field in [:run_id, :step] ->
-        Keyword.get(opts, :constraint) == :unique
+  @spec update_running_step(module(), Ecto.UUID.t(), map()) ::
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
+  defp update_running_step(repo, step_run_id, attrs) do
+    updates = attrs |> Map.put(:updated_at, now_utc()) |> Map.to_list()
 
-      _other ->
-        false
-    end)
+    {count, _rows} =
+      StepRun
+      |> where([step_run], step_run.id == ^step_run_id and step_run.status == "running")
+      |> repo.update_all(set: updates)
+
+    case count do
+      1 ->
+        {:ok, repo.get!(StepRun, step_run_id)}
+
+      0 ->
+        stale_step_run_error(repo, step_run_id)
+    end
   end
 
-  @spec update_step(module(), Ecto.UUID.t(), map()) ::
-          {:ok, StepRun.t()} | {:error, Ecto.Changeset.t() | :not_found}
-  defp update_step(repo, step_run_id, attrs) do
+  defp stale_step_run_error(repo, step_run_id) do
     case repo.get(StepRun, step_run_id) do
-      %StepRun{} = step_run ->
-        step_run
-        |> StepRun.changeset(attrs)
-        |> repo.update()
-
-      nil ->
-        {:error, :not_found}
+      %StepRun{status: status} -> {:error, {:stale_step_run, status}}
+      nil -> {:error, :not_found}
     end
   end
 

@@ -12,6 +12,7 @@ defmodule SquidMesh.AttemptStore do
   alias SquidMesh.Persistence.StepAttempt
 
   @type attempt_attrs :: %{optional(:error) => map() | nil}
+  @type stale_error :: {:stale_attempt, String.t()}
   @max_allocation_retries 5
 
   @doc """
@@ -27,18 +28,18 @@ defmodule SquidMesh.AttemptStore do
   Marks one attempt as completed.
   """
   @spec complete_attempt(module(), Ecto.UUID.t()) ::
-          {:ok, StepAttempt.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
   def complete_attempt(repo, attempt_id) do
-    update_attempt(repo, attempt_id, %{status: "completed", error: nil})
+    update_running_attempt(repo, attempt_id, %{status: "completed", error: nil})
   end
 
   @doc """
   Marks one attempt as failed and stores the normalized error payload.
   """
   @spec fail_attempt(module(), Ecto.UUID.t(), map()) ::
-          {:ok, StepAttempt.t()} | {:error, Ecto.Changeset.t() | :not_found}
+          {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
   def fail_attempt(repo, attempt_id, error) when is_map(error) do
-    update_attempt(repo, attempt_id, %{status: "failed", error: error})
+    update_running_attempt(repo, attempt_id, %{status: "failed", error: error})
   end
 
   @doc """
@@ -134,17 +135,29 @@ defmodule SquidMesh.AttemptStore do
     }
   end
 
-  @spec update_attempt(module(), Ecto.UUID.t(), map()) ::
-          {:ok, StepAttempt.t()} | {:error, Ecto.Changeset.t() | :not_found}
-  defp update_attempt(repo, attempt_id, attrs) do
-    case repo.get(StepAttempt, attempt_id) do
-      %StepAttempt{} = attempt ->
-        attempt
-        |> StepAttempt.changeset(attrs)
-        |> repo.update()
+  @spec update_running_attempt(module(), Ecto.UUID.t(), map()) ::
+          {:ok, StepAttempt.t()} | {:error, :not_found | stale_error()}
+  defp update_running_attempt(repo, attempt_id, attrs) do
+    updates = attrs |> Map.put(:updated_at, now_utc()) |> Map.to_list()
 
-      nil ->
-        {:error, :not_found}
+    {count, _rows} =
+      StepAttempt
+      |> where([attempt], attempt.id == ^attempt_id and attempt.status == "running")
+      |> repo.update_all(set: updates)
+
+    case count do
+      1 ->
+        {:ok, repo.get!(StepAttempt, attempt_id)}
+
+      0 ->
+        stale_attempt_error(repo, attempt_id)
+    end
+  end
+
+  defp stale_attempt_error(repo, attempt_id) do
+    case repo.get(StepAttempt, attempt_id) do
+      %StepAttempt{status: status} -> {:error, {:stale_attempt, status}}
+      nil -> {:error, :not_found}
     end
   end
 
@@ -157,5 +170,9 @@ defmodule SquidMesh.AttemptStore do
       _other ->
         false
     end)
+  end
+
+  defp now_utc do
+    DateTime.utc_now() |> DateTime.truncate(:microsecond)
   end
 end

@@ -33,10 +33,9 @@ defmodule SquidMesh.Runtime.StepExecutor do
   @spec execute(Ecto.UUID.t(), expected_step(), keyword()) ::
           :ok | {:error, execution_error() | term()}
   def execute(run_id, expected_step \\ nil, overrides \\ []) when is_binary(run_id) do
-    with {:ok, normalized_expected_step} <- StepInput.deserialize_expected_step(expected_step),
-         {:ok, config} <- Config.load(overrides),
+    with {:ok, config} <- Config.load(overrides),
          {:ok, run} <- RunStore.get_run(config.repo, run_id) do
-      execute_run(config, run, normalized_expected_step)
+      execute_run(config, run, expected_step)
     end
   end
 
@@ -59,21 +58,9 @@ defmodule SquidMesh.Runtime.StepExecutor do
   defp execute_run(config, %Run{workflow: workflow} = run, expected_step)
        when is_atom(workflow) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow) do
-      case Preparation.prepare(config, definition, run, expected_step) do
-        {:execute, prepared} ->
-          execute_prepared_step(prepared)
-
-        {:skip, prepared} ->
-          Observability.emit_step_skipped(
-            prepared.run,
-            prepared.step_name,
-            "already_#{prepared.step_run.status}"
-          )
-
-          :ok
-
-        :skip ->
-          :ok
+      case StepInput.deserialize_expected_step(expected_step, definition) do
+        {:ok, normalized_expected_step} ->
+          prepare_and_execute(config, definition, run, normalized_expected_step)
 
         {:error, _reason} = error ->
           error
@@ -84,6 +71,48 @@ defmodule SquidMesh.Runtime.StepExecutor do
   defp execute_run(_config, %Run{current_step: current_step}, _expected_step) do
     {:error, {:invalid_step, current_step}}
   end
+
+  defp prepare_and_execute(config, definition, run, expected_step) do
+    case Preparation.prepare(config, definition, run, expected_step) do
+      {:execute, prepared} ->
+        execute_prepared_step(prepared)
+
+      {:reconcile, prepared} ->
+        Outcome.reconcile_completed_step(
+          prepared.config,
+          prepared.definition,
+          prepared.run,
+          prepared
+        )
+
+      {:cancel, locked_run} ->
+        converge_cancellation(config, locked_run)
+
+      {:skip, prepared} ->
+        Observability.emit_step_skipped(
+          prepared.run,
+          prepared.step_name,
+          "already_#{prepared.step_run.status}"
+        )
+
+        :ok
+
+      :skip ->
+        :ok
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp converge_cancellation(config, %Run{status: :cancelling} = run) do
+    case RunStore.transition_run(config.repo, run.id, :cancelled, %{current_step: nil}) do
+      {:ok, _cancelled_run} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp converge_cancellation(_config, %Run{}), do: :ok
 
   defp execute_prepared_step(prepared) do
     with {:ok, attempt} <- AttemptStore.begin_attempt(prepared.config.repo, prepared.step_run.id) do

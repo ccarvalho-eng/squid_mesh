@@ -97,6 +97,9 @@ Optional keys:
 - `:execution` - execution system settings
 - `:execution[:name]` - the background job system name to target
 - `:execution[:queue]` - queue used for Squid Mesh jobs, defaults to `:squid_mesh`
+- `:execution[:stale_step_timeout]` - `:disabled` by default; set a
+  non-negative millisecond timeout to let redelivered jobs reclaim stale
+  `running` steps after worker interruption
 
 ## First Run Checklist
 
@@ -224,7 +227,7 @@ Enum.map(completed_run.audit_events, &{&1.type, &1.actor, &1.comment})
 ```
 
 `include_history: true` is the public audit boundary. With history enabled, the
-run includes chronological `step_runs`, graph-aware `steps`, and durable
+run includes chronological `step_runs`, declared `steps` state, and durable
 `audit_events` for pause, resume, approval, and rejection actions.
 
 ## Minimal Phoenix Host Skeleton
@@ -345,5 +348,5 @@ That returns the top-level run plus:
 - `step_runs`: persisted execution history
 - `attempts`: persisted retry history for each step run
 
-This split lets host apps render both a graph-oriented status view and the raw
-execution timeline from one inspection call.
+This split gives host apps both declared per-step state and the raw execution
+timeline from one inspection call.

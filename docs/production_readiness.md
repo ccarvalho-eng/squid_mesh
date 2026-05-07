@@ -2,9 +2,9 @@
 
 Squid Mesh is still marked as early development.
 
-That warning remains intentionally until the checklist below is satisfied and
-reviewed as a whole. The goal is to keep the public contract honest even when
-the runtime is already useful for internal adoption.
+That warning remains until the checklist below is satisfied and reviewed as a
+whole. The goal is to keep the public contract aligned with the verification
+that has actually been run.
 
 ## Current Status
 
@@ -56,7 +56,7 @@ The warning should be removed only when:
 
 1. the checklist above is complete,
 2. the verification paths are green on the supported baseline,
-3. the team is comfortable supporting the documented contract in production host apps.
+3. maintainers are ready to support the documented contract in production host apps.
 
 Until then, Squid Mesh should continue to describe itself as suitable for:
 

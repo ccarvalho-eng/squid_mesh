@@ -25,6 +25,18 @@ defmodule SquidMesh.Runtime.StepInput do
     end
   end
 
+  @spec deserialize_expected_step(expected_step(), map()) ::
+          {:ok, atom() | nil} | {:error, {:invalid_step, String.t()}}
+  def deserialize_expected_step(nil, _definition), do: {:ok, nil}
+  def deserialize_expected_step(step, _definition) when is_atom(step), do: {:ok, step}
+
+  def deserialize_expected_step(step, definition) when is_binary(step) do
+    case SquidMesh.Workflow.Definition.deserialize_step(definition, step) do
+      resolved_step when is_atom(resolved_step) -> {:ok, resolved_step}
+      _other -> {:error, {:invalid_step, step}}
+    end
+  end
+
   @spec build_step_input(Run.t(), input_mapping()) :: map()
   def build_step_input(%Run{payload: payload, context: context}, input_mapping \\ nil) do
     payload

@@ -7,33 +7,47 @@ defmodule SquidMesh.Config do
   workflow definitions and public API usage.
   """
 
-  @type execution_option :: {:name, module() | atom()} | {:queue, atom()}
-  @type raw_config :: [repo: module(), execution: [execution_option()]]
+  @type stale_step_timeout :: non_neg_integer() | :disabled
+  @type execution_option ::
+          {:name, module() | atom()}
+          | {:queue, atom()}
+          | {:stale_step_timeout, stale_step_timeout()}
+  @type raw_config :: [repo: module(), execution: [execution_option()] | nil]
   @type t :: %__MODULE__{
           repo: module(),
           execution_name: module() | atom(),
-          execution_queue: atom()
+          execution_queue: atom(),
+          stale_step_timeout: stale_step_timeout()
         }
 
-  defstruct [:repo, execution_name: Oban, execution_queue: :squid_mesh]
+  defstruct [
+    :repo,
+    execution_name: Oban,
+    execution_queue: :squid_mesh,
+    stale_step_timeout: :disabled
+  ]
 
-  @default_execution [name: Oban, queue: :squid_mesh]
+  @default_execution [name: Oban, queue: :squid_mesh, stale_step_timeout: :disabled]
 
-  @spec load(keyword()) :: {:ok, t()} | {:error, {:missing_config, [atom()]}}
+  @type config_error :: {:missing_config, [atom()]} | {:invalid_config, keyword()}
+
+  @spec load(keyword()) :: {:ok, t()} | {:error, config_error()}
   def load(overrides \\ []) do
     config =
       :squid_mesh
       |> Application.get_all_env()
       |> Keyword.merge(overrides)
 
-    with :ok <- validate_required_keys(config) do
-      execution = Keyword.merge(@default_execution, Keyword.get(config, :execution, []))
-
+    with :ok <- validate_required_keys(config),
+         {:ok, execution_overrides} <- execution_config(config),
+         {:ok, execution} <-
+           validate_execution(Keyword.merge(@default_execution, execution_overrides)) do
       {:ok,
        %__MODULE__{
          repo: Keyword.fetch!(config, :repo),
          execution_name: Keyword.fetch!(execution, :name),
-         execution_queue: Keyword.fetch!(execution, :queue)
+         execution_queue: Keyword.fetch!(execution, :queue),
+         stale_step_timeout: Keyword.fetch!(execution, :stale_step_timeout)
        }}
     end
   end
@@ -51,6 +65,14 @@ defmodule SquidMesh.Config do
 
         raise ArgumentError,
               "missing Squid Mesh configuration keys: #{keys}"
+
+      {:error, {:invalid_config, details}} ->
+        details =
+          details
+          |> Enum.map_join(", ", fn {key, value} -> "#{inspect(key)}=#{inspect(value)}" end)
+
+        raise ArgumentError,
+              "invalid Squid Mesh configuration: #{details}"
     end
   end
 
@@ -62,6 +84,36 @@ defmodule SquidMesh.Config do
     case missing_keys do
       [] -> :ok
       keys -> {:error, {:missing_config, keys}}
+    end
+  end
+
+  defp execution_config(config) do
+    case Keyword.get(config, :execution, []) do
+      nil ->
+        {:ok, []}
+
+      execution when is_list(execution) ->
+        if Keyword.keyword?(execution) do
+          {:ok, execution}
+        else
+          {:error, {:invalid_config, [execution: execution]}}
+        end
+
+      invalid ->
+        {:error, {:invalid_config, [execution: invalid]}}
+    end
+  end
+
+  defp validate_execution(execution) do
+    case Keyword.fetch!(execution, :stale_step_timeout) do
+      :disabled ->
+        {:ok, execution}
+
+      timeout when is_integer(timeout) and timeout >= 0 ->
+        {:ok, execution}
+
+      invalid ->
+        {:error, {:invalid_config, [stale_step_timeout: invalid]}}
     end
   end
 end

@@ -75,4 +75,34 @@ defmodule SquidMesh.StepRunStoreTest do
     assert duplicate_claim.id == scheduled_step_run.id
     assert duplicate_claim.status == "running"
   end
+
+  test "rejects stale terminal updates after a step is finalized" do
+    {:ok, run} =
+      %RunRecord{}
+      |> RunRecord.changeset(%{
+        workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
+        trigger: "manual",
+        status: "running",
+        input: %{}
+      })
+      |> Repo.insert()
+
+    assert {:ok, step_run, :execute} =
+             StepRunStore.begin_step(Repo, run.id, :load_invoice, %{account_id: "acct_123"})
+
+    assert {:ok, completed_step} =
+             StepRunStore.complete_step(Repo, step_run.id, %{invoice: %{id: "inv_456"}})
+
+    assert completed_step.status == "completed"
+
+    assert {:error, {:stale_step_run, "completed"}} =
+             StepRunStore.fail_step(Repo, step_run.id, %{message: "late failure"})
+
+    assert {:error, {:stale_step_run, "completed"}} =
+             StepRunStore.complete_step(Repo, step_run.id, %{invoice: %{id: "inv_999"}})
+
+    assert Repo.get!(SquidMesh.Persistence.StepRun, step_run.id).output == %{
+             "invoice" => %{"id" => "inv_456"}
+           }
+  end
 end
