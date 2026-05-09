@@ -1,24 +1,27 @@
-<h1>🦑 Squid Mesh</h1>
+<div align="center">
 
-<p><strong>Workflow automation runtime for Elixir apps.</strong></p>
+  <img width="300" alt="squid-mesh-logo" src="https://github.com/user-attachments/assets/274ff13a-25d4-4d94-84ff-637176c91d4e" />
 
-<p>
-  <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
-    <img alt="CI" src="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg" />
-  </a>
-  <a href="https://hex.pm/packages/squid_mesh">
-    <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh" />
-  </a>
-  <a href="https://hexdocs.pm/squid_mesh">
-    <img alt="HexDocs" src="https://img.shields.io/badge/docs-hexdocs-purple" />
-  </a>
-  <a href="https://elixirforum.com/t/squid-mesh-workflow-automation-runtime-for-elixir-applications/75162">
-    <img alt="Elixir Forum" src="https://img.shields.io/badge/Elixir_Forum-Join_Discussion-4B275F?logo=elixir&logoColor=white" />
-  </a>
-  <a href="https://github.com/ccarvalho-eng/squid_mesh/blob/main/LICENSE">
-    <img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" />
-  </a>
-</p>
+  <p><strong>Workflow automation runtime for Elixir apps.</strong></p>
+  
+  <p>
+    <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
+      <img alt="CI" src="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg" />
+    </a>
+    <a href="https://hex.pm/packages/squid_mesh">
+      <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh" />
+    </a>
+    <a href="https://hexdocs.pm/squid_mesh">
+      <img alt="HexDocs" src="https://img.shields.io/badge/docs-hexdocs-purple" />
+    </a>
+    <a href="https://elixirforum.com/t/squid-mesh-workflow-automation-runtime-for-elixir-applications/75162">
+      <img alt="Elixir Forum" src="https://img.shields.io/badge/Elixir_Forum-Join_Discussion-4B275F?logo=elixir&logoColor=white" />
+    </a>
+    <a href="https://github.com/ccarvalho-eng/squid_mesh/blob/main/LICENSE">
+      <img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" />
+    </a>
+  </p>
+</div>
 
 Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications. It persists run, step, attempt, and audit state in Postgres and schedules execution through Oban. Workflows can model retries, waits, HITL approval gates, dependency joins, failure routes, replay, and inspection without running a separate workflow service.
 
