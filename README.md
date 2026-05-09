@@ -1,5 +1,5 @@
 <div align="center">
-  <img width="300" alt="squid-logo" src="https://github.com/user-attachments/assets/a9dc2537-281c-4f67-b3f0-b880bd3f5bcf" />
+  <h2>Squid Mesh</h2>
 
   <p><strong>Durable workflow runtime for Elixir applications, running on top of Postgres and Oban.</strong></p>
 
