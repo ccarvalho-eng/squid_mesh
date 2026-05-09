@@ -1,6 +1,6 @@
 <h1>🦑 Squid Mesh</h1>
 
-<p><strong>Workflow automation runtime for Elixir apps</strong></p>
+<p><strong>Workflow automation runtime for Elixir apps.</strong></p>
 
 <p>
   <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
@@ -20,27 +20,28 @@
   </a>
 </p>
 
-Squid Mesh is an embedded workflow runtime for Phoenix and OTP applications.
-Workflow definitions cover retries, waits, approval gates, dependency joins,
-failure routes, replay, and inspection. Runtime state is persisted in Postgres,
-and execution is queued through Oban.
+Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP
+applications. It persists run, step, attempt, and audit state in Postgres and
+schedules execution through Oban. Workflows can model retries, waits, HITL
+approval gates, dependency joins, failure routes, replay, and inspection without
+running a separate workflow service.
 
 ## Capabilities
 
-- declarative workflows with manual and cron triggers
-- durable run, step, and attempt history in Postgres
-- step-level retries, delays, replay, and inspection on top of your existing `Oban`
-- transition, dependency, and approval-style workflow shapes
-- explicit step input and output mapping
-- inspection of declared step state plus manual audit events for pause, resume, approval, and rejection
+- workflow DSL with manual and cron triggers
+- Postgres-backed run, step, attempt, and audit history
+- Oban-based step execution, delayed scheduling, redelivery, and retries
+- retries, waits, failure routes, dependency joins, and HITL approval gates
+- explicit step input selection and output mapping
+- runtime inspection through declared step state, audit events, and `SquidMesh.explain_run/2`
 - built-in steps like `:log`, `:wait`, `:pause`, and `:approval`, plus custom steps with `Jido.Action`
 
 ## Fit
 
-- a workflow should survive app restarts, deploys, retries, and Oban redelivery
-- a Phoenix context needs a durable approval, recovery, notification, or back-office flow
-- step history and manual decisions need to be inspectable later
-- you want workflow state in your app's Postgres database, not in a separate service
+- workflow state should survive app restarts, deploys, retries, and Oban redelivery
+- a Phoenix context needs durable approval, recovery, notification, or back-office flow state
+- step history and manual decisions need to be inspectable after execution
+- workflow state belongs in the host app's Postgres database, not a separate service
 
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for
