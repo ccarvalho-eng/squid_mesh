@@ -1,6 +1,6 @@
 <h1>🦑 Squid Mesh</h1>
 
-<p><strong>Workflow DSL and runtime for Elixir apps</strong></p>
+<p><strong>Workflow automation runtime for Elixir apps</strong></p>
 
 <p>
   <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
