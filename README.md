@@ -20,11 +20,7 @@
   </a>
 </p>
 
-Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP
-applications. It persists run, step, attempt, and audit state in Postgres and
-schedules execution through Oban. Workflows can model retries, waits, HITL
-approval gates, dependency joins, failure routes, replay, and inspection without
-running a separate workflow service.
+Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications. It persists run, step, attempt, and audit state in Postgres and schedules execution through Oban. Workflows can model retries, waits, HITL approval gates, dependency joins, failure routes, replay, and inspection without running a separate workflow service.
 
 ## Capabilities
 
@@ -44,11 +40,8 @@ running a separate workflow service.
 - workflow state belongs in the host app's Postgres database, not a separate service
 
 > [!WARNING]
-> Squid Mesh is still in early development. The runtime is suitable for
-> evaluation, local development, and integration work, but it is not yet
-> documented as production-ready. See
-> [Production Readiness](docs/production_readiness.md) for the current
-> checklist and remaining bar.
+> Squid Mesh is still in early development. The runtime is suitable for evaluation, local development, and integration work, but it is not yet documented as production-ready.
+> See [Production Readiness](docs/production_readiness.md) for the current checklist and remaining bar.
 
 ## Runtime Shape
 
@@ -119,9 +112,7 @@ mix ecto.migrate
 
 ## Example: Daily RSS To Discord
 
-This example shows the core runtime shape: one cron trigger, typed payload
-defaults, built-in steps, custom steps, explicit failure routing, and
-step-level retry on the external side-effect step.
+This example shows the core runtime shape: one cron trigger, typed payload defaults, built-in steps, custom steps, explicit failure routing, and step-level retry on the external side-effect step.
 
 ```elixir
 defmodule Content.Workflows.PostDailyDigest do
@@ -161,21 +152,12 @@ defmodule Content.Workflows.PostDailyDigest do
 end
 ```
 
-Step modules implement domain work. Squid Mesh records durable state, schedules
-jobs through Oban, applies step retry policy, routes failures after retry
+Step modules implement domain work. Squid Mesh records durable state, schedules jobs through Oban, applies step retry policy, routes failures after retry
 exhaustion, and exposes run inspection.
 
-For approval or manual-review gates, use `approval_step/2` in transition-based
-workflows and resume the paused run through `SquidMesh.approve_run/3` or
-`SquidMesh.reject_run/3`. Approval steps persist their resolved `:ok` and
-`:error` targets plus output-mapping metadata, so already-paused review runs
-keep the same decision semantics across restarts and deploys. Generic
-`SquidMesh.unblock_run/2` remains available for lower-level `:pause` steps when
-you need manual intervention without an explicit approve/reject contract.
+For approval or manual-review gates, use `approval_step/2` in transition-based workflows and resume the paused run through `SquidMesh.approve_run/3` or `SquidMesh.reject_run/3`. Approval steps persist their resolved `:ok` and `:error` targets plus output-mapping metadata, so already-paused review runs keep the same decision semantics across restarts and deploys. Generic `SquidMesh.unblock_run/2` remains available for lower-level `:pause` steps when you need manual intervention without an explicit approve/reject contract.
 
-When a step needs a narrower contract than the whole payload plus accumulated
-context, use `input: [...]` to select keys and `output: :key` to namespace the
-returned map for downstream steps.
+When a step needs a narrower contract than the whole payload plus accumulated context, use `input: [...]` to select keys and `output: :key` to namespace the returned map for downstream steps.
 
 Start the workflow through the public API and inspect the result with history:
 
@@ -188,8 +170,7 @@ Start the workflow through the public API and inspect the result with history:
 SquidMesh.inspect_run(run.id, include_history: true)
 ```
 
-With history enabled, the inspected run includes chronological `step_runs`,
-declared `steps` state, and durable `audit_events` for pause, resume, approval,
+With history enabled, the inspected run includes chronological `step_runs`, declared `steps` state, and durable `audit_events` for pause, resume, approval,
 and rejection actions.
 
 Use `SquidMesh.explain_run/2` when a host app needs operator-facing diagnostics:
@@ -201,8 +182,7 @@ explanation.reason
 #=> :waiting_for_retry
 ```
 
-`inspect_run/2` returns the persisted runtime facts. `explain_run/2` summarizes
-the current reason, valid next actions, and evidence in a structured shape that
+`inspect_run/2` returns the persisted runtime facts. `explain_run/2` summarizes the current reason, valid next actions, and evidence in a structured shape that
 dashboards and CLIs can render themselves.
 
 ## Documentation
