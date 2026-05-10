@@ -495,7 +495,7 @@ defmodule SquidMesh.WorkflowTest do
         end
       end
       """,
-      "exactly one trigger is required"
+      "at least one trigger is required"
     )
   end
 
@@ -520,26 +520,87 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
-  test "fails when a workflow declares more than one trigger" do
-    assert_compile_error(
-      """
+  test "supports multiple triggers with independent payload contracts" do
+    module =
+      compile_module("""
       defmodule WorkflowWithMultipleTriggers do
         use SquidMesh.Workflow
 
         workflow do
-          trigger :manual do
+          trigger :manual_digest do
             manual()
+
+            payload do
+              field(:chat_id, :integer)
+            end
           end
 
-          trigger :daily do
+          trigger :scheduled_digest do
             cron("0 9 * * *", timezone: "UTC")
+
+            payload do
+              field(:window_start_at, :string, default: {:today, :iso8601})
+            end
           end
 
           step(:load_invoice, WorkflowWithMultipleTriggers.LoadInvoice)
+          transition(:load_invoice, on: :ok, to: :complete)
+        end
+      end
+      """)
+
+    assert module.workflow_definition().triggers == [
+             %{
+               name: :manual_digest,
+               type: :manual,
+               config: %{},
+               payload: [%{name: :chat_id, type: :integer, opts: []}]
+             },
+             %{
+               name: :scheduled_digest,
+               type: :cron,
+               config: %{expression: "0 9 * * *", timezone: "UTC"},
+               payload: [
+                 %{name: :window_start_at, type: :string, opts: [default: {:today, :iso8601}]}
+               ]
+             }
+           ]
+
+    assert module.workflow_definition().payload == [
+             %{name: :chat_id, type: :integer, opts: []},
+             %{name: :window_start_at, type: :string, opts: [default: {:today, :iso8601}]}
+           ]
+  end
+
+  test "fails when triggers declare incompatible payload field types" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithConflictingTriggerPayloads do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual_digest do
+            manual()
+
+            payload do
+              field(:chat_id, :integer)
+            end
+          end
+
+          trigger :scheduled_digest do
+            cron("0 9 * * *", timezone: "UTC")
+
+            payload do
+              field(:chat_id, :string)
+            end
+          end
+
+          step(:load_invoice, WorkflowWithConflictingTriggerPayloads.LoadInvoice)
+          transition(:load_invoice, on: :ok, to: :complete)
         end
       end
       """,
-      "exactly one trigger is required"
+      "payload field :chat_id defines conflicting types across triggers"
     )
   end
 

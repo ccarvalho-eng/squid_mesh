@@ -130,6 +130,65 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            ]
   end
 
+  test "runs the daily digest workflow through its manual trigger" do
+    attrs = %{channel: "ops-manual", digest_date: "2026-05-10"}
+
+    assert {:ok, run} = WorkflowRuns.start_manual_digest(attrs)
+
+    assert run.workflow == MinimalHostApp.Workflows.DailyDigest
+    assert run.trigger == :manual_digest
+    assert run.payload == attrs
+
+    assert_enqueued(
+      worker: SquidMesh.Workers.StepWorker,
+      queue: "squid_mesh",
+      args: %{"run_id" => run.id, "step" => "announce_digest"}
+    )
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+
+    assert completed_run.status == :completed
+    assert completed_run.context.digest_delivery.channel == "ops-manual"
+    assert completed_run.context.digest_delivery.digest_date == "2026-05-10"
+
+    assert {:ok, inspected_run} = WorkflowRuns.inspect_run(run.id)
+    assert inspected_run.payload == attrs
+  end
+
+  test "runs the daily digest workflow through its cron trigger" do
+    existing_run_ids =
+      case WorkflowRuns.list_daily_digest_runs() do
+        {:ok, runs} -> MapSet.new(runs, & &1.id)
+        {:error, _reason} -> MapSet.new()
+      end
+
+    job = %Oban.Job{
+      args: %{
+        "workflow" => "Elixir.MinimalHostApp.Workflows.DailyDigest",
+        "trigger" => "daily_digest"
+      }
+    }
+
+    assert :ok = SquidMesh.Workers.CronTriggerWorker.perform(job)
+
+    assert_enqueued(
+      worker: SquidMesh.Workers.StepWorker,
+      queue: "squid_mesh",
+      args: %{"step" => "announce_digest"}
+    )
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+
+    assert {:ok, runs} = WorkflowRuns.list_daily_digest_runs()
+    run = Enum.find(runs, fn run -> not MapSet.member?(existing_run_ids, run.id) end)
+
+    assert %SquidMesh.Run{} = run
+    assert run.trigger == :daily_digest
+    assert is_binary(run.payload.digest_date)
+    assert run.payload.channel == "ops"
+  end
+
   test "rejects a manual approval workflow through the host boundary" do
     assert {:ok, run} = WorkflowRuns.start_manual_approval(%{account_id: "acct_review_123"})
 
@@ -166,7 +225,9 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert %{
              payment_recovery: payment_recovery,
              dependency_recovery: dependency_recovery,
-             manual_approval: manual_approval
+             manual_approval: manual_approval,
+             manual_digest: manual_digest,
+             daily_digest: daily_digest
            } =
              Smoke.run_all!()
 
@@ -179,6 +240,12 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert manual_approval.status == :completed
     assert manual_approval.context.approval.status == "approved"
+
+    assert manual_digest.status == :completed
+    assert manual_digest.trigger == :manual_digest
+
+    assert daily_digest.status == :completed
+    assert daily_digest.trigger == :daily_digest
   end
 
   test "runs the cancellation smoke path" do

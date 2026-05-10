@@ -20,6 +20,11 @@ defmodule SquidMesh.RunExplanationTest do
                SquidMesh.explain_run(Ecto.UUID.generate(), repo: Repo)
     end
 
+    test "returns a structured error for malformed run ids" do
+      assert {:error, :invalid_run_id} =
+               SquidMesh.explain_run("not-a-uuid", repo: Repo)
+    end
+
     test "returns invalid configuration errors from the public API" do
       assert {:error, {:invalid_config, [stale_step_timeout: -1]}} =
                SquidMesh.explain_run(Ecto.UUID.generate(),

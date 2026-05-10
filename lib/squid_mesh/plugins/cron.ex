@@ -93,24 +93,37 @@ defmodule SquidMesh.Plugins.Cron do
   end
 
   defp validate_workflow(workflow, :ok) do
-    with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         %{type: :cron, name: trigger_name, config: %{expression: expression, timezone: timezone}} <-
-           List.first(definition.triggers),
-         {:ok, _payload} <- WorkflowDefinition.resolve_payload(definition, %{}),
-         :ok <- validate_crontab_entry(workflow, trigger_name, expression, timezone) do
-      {:cont, :ok}
+    with {:ok, definition} <- WorkflowDefinition.load(workflow) do
+      case cron_triggers(definition) do
+        [] ->
+          {:halt, {:error, "workflow #{inspect(workflow)} must define a cron trigger"}}
+
+        triggers ->
+          validate_cron_triggers(workflow, triggers)
+      end
     else
       {:error, {:invalid_workflow, _reason}} ->
         {:halt, {:error, "invalid workflow #{inspect(workflow)}"}}
+    end
+  end
 
+  defp validate_cron_triggers(workflow, triggers) do
+    case Enum.reduce_while(triggers, :ok, &validate_cron_trigger(workflow, &1, &2)) do
+      :ok -> {:cont, :ok}
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
+
+  defp validate_cron_trigger(workflow, trigger, :ok) do
+    %{name: trigger_name, config: %{expression: expression, timezone: timezone}} = trigger
+
+    with {:ok, _payload} <- WorkflowDefinition.resolve_payload(trigger, %{}),
+         :ok <- validate_crontab_entry(workflow, trigger_name, expression, timezone) do
+      {:cont, :ok}
+    else
       {:error, {:invalid_payload, _details}} ->
         {:halt,
          {:error, "cron workflow #{inspect(workflow)} must resolve its payload from defaults"}}
-
-      %{type: type} ->
-        {:halt,
-         {:error,
-          "workflow #{inspect(workflow)} must define a cron trigger, got #{inspect(type)}"}}
 
       _other ->
         {:halt, {:error, "workflow #{inspect(workflow)} must define one valid cron trigger"}}
@@ -131,22 +144,27 @@ defmodule SquidMesh.Plugins.Cron do
 
   defp build_crontabs(workflows, queue) do
     workflows
-    |> Enum.map(&build_entry(&1, queue))
+    |> Enum.flat_map(&build_entries(&1, queue))
     |> Enum.group_by(fn {timezone, _entry} -> timezone end, fn {_timezone, entry} -> entry end)
     |> Enum.sort_by(fn {timezone, _entries} -> timezone end)
   end
 
-  defp build_entry(workflow, queue) do
+  defp build_entries(workflow, queue) do
     {:ok, definition} = WorkflowDefinition.load(workflow)
-    trigger = List.first(definition.triggers)
 
-    entry = {
-      trigger.config.expression,
-      CronTriggerWorker,
-      [args: cron_args(workflow, trigger.name), queue: queue]
-    }
+    Enum.map(cron_triggers(definition), fn trigger ->
+      entry = {
+        trigger.config.expression,
+        CronTriggerWorker,
+        [args: cron_args(workflow, trigger.name), queue: queue]
+      }
 
-    {trigger.config.timezone, entry}
+      {trigger.config.timezone, entry}
+    end)
+  end
+
+  defp cron_triggers(definition) do
+    Enum.filter(definition.triggers, &(&1.type == :cron))
   end
 
   defp cron_args(workflow, trigger_name) do

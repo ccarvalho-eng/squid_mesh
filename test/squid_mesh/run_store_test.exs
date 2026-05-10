@@ -96,6 +96,31 @@ defmodule SquidMesh.RunStoreTest do
     end
   end
 
+  defmodule MultiTriggerWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_digest do
+        manual()
+
+        payload do
+          field(:chat_id, :integer)
+        end
+      end
+
+      trigger :scheduled_digest do
+        cron("0 9 * * *", timezone: "UTC")
+
+        payload do
+          field(:window_start_at, :string, default: {:today, :iso8601})
+        end
+      end
+
+      step(:deliver_digest, MultiTriggerWorkflow.DeliverDigest)
+      transition(:deliver_digest, on: :ok, to: :complete)
+    end
+  end
+
   describe "transition_run/4" do
     test "persists a valid transition" do
       assert {:ok, run} =
@@ -155,6 +180,26 @@ defmodule SquidMesh.RunStoreTest do
                )
 
       assert run.trigger == :invoice_delivery
+    end
+
+    test "validates payload against the selected trigger" do
+      assert {:ok, manual_run} =
+               RunStore.create_run(Repo, MultiTriggerWorkflow, :manual_digest, %{chat_id: 123})
+
+      assert manual_run.trigger == :manual_digest
+      assert manual_run.payload == %{chat_id: 123}
+
+      assert {:ok, scheduled_run} =
+               RunStore.create_run(Repo, MultiTriggerWorkflow, :scheduled_digest, %{})
+
+      assert scheduled_run.trigger == :scheduled_digest
+      assert is_binary(scheduled_run.payload.window_start_at)
+
+      assert {:ok, reloaded_scheduled_run} = RunStore.get_run(Repo, scheduled_run.id)
+      assert reloaded_scheduled_run.payload == scheduled_run.payload
+
+      assert {:error, {:invalid_payload, %{missing_fields: [:chat_id]}}} =
+               RunStore.create_run(Repo, MultiTriggerWorkflow, :manual_digest, %{})
     end
   end
 
@@ -286,6 +331,10 @@ defmodule SquidMesh.RunStoreTest do
       assert loaded_run.trigger == :invoice_delivery
       assert loaded_run.current_step == :load_invoice
     end
+
+    test "returns a structured error for malformed run ids" do
+      assert {:error, :invalid_run_id} = RunStore.get_run(Repo, "not-a-uuid")
+    end
   end
 
   describe "replay_run/2" do
@@ -327,6 +376,10 @@ defmodule SquidMesh.RunStoreTest do
 
     test "returns not found when the source run does not exist" do
       assert {:error, :not_found} = RunStore.replay_run(Repo, Ecto.UUID.generate())
+    end
+
+    test "returns a structured error for malformed run ids" do
+      assert {:error, :invalid_run_id} = RunStore.replay_run(Repo, "not-a-uuid")
     end
   end
 

@@ -31,6 +31,11 @@ defmodule MinimalHostApp.WorkflowRuns do
           required(:account_id) => String.t()
         }
 
+  @type manual_digest_attrs :: %{
+          required(:channel) => String.t(),
+          required(:digest_date) => String.t()
+        }
+
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
@@ -59,6 +64,12 @@ defmodule MinimalHostApp.WorkflowRuns do
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_manual_approval(attrs) when is_map(attrs) do
     SquidMesh.start_run(MinimalHostApp.Workflows.ManualApproval, :manual_approval, attrs)
+  end
+
+  @spec start_manual_digest(manual_digest_attrs()) ::
+          {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def start_manual_digest(attrs) when is_map(attrs) do
+    SquidMesh.start_run(MinimalHostApp.Workflows.DailyDigest, :manual_digest, attrs)
   end
 
   @spec inspect_payment_recovery(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}

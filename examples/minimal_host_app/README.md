@@ -67,10 +67,12 @@ The smoke task:
   `MinimalHostApp.WorkflowRuns.start_manual_approval/1`
 - explains the paused approval run through `MinimalHostApp.WorkflowRuns.explain_run/1`
 - approves the paused run through `MinimalHostApp.WorkflowRuns.approve_run/2`
-- waits for execution, inspects all three completed manual workflows, and
+- starts a manual digest run through
+  `MinimalHostApp.WorkflowRuns.start_manual_digest/1`
+- waits for execution, inspects all completed manual workflows, and
   verifies the paused approval run's durable audit history
-- activates the example cron workflow through the host app's Oban-backed cron plugin
-- verifies the cron-triggered run completes as well
+- activates the same digest workflow through the host app's Oban-backed cron plugin
+- verifies both digest triggers complete through the same workflow graph
 
 ## Restart Resilience
 
@@ -133,6 +135,35 @@ The reference workflow and step modules live in:
 - `lib/minimal_host_app/workflows/manual_approval.ex`
 - `lib/minimal_host_app/workflows/daily_digest.ex`
 - `lib/minimal_host_app/steps/`
+
+## Multi-Trigger Workflow Example
+
+`MinimalHostApp.Workflows.DailyDigest` demonstrates one workflow graph with two
+entrypoints:
+
+```elixir
+trigger :manual_digest do
+  manual()
+
+  payload do
+    field(:channel, :string)
+    field(:digest_date, :string)
+  end
+end
+
+trigger :daily_digest do
+  cron("@reboot", timezone: "Etc/UTC")
+
+  payload do
+    field(:channel, :string, default: "ops")
+    field(:digest_date, :string, default: {:today, :iso8601})
+  end
+end
+```
+
+Both triggers run `:announce_digest` and `:record_digest_delivery`. The host app
+can start the manual entrypoint through `WorkflowRuns.start_manual_digest/1`,
+while the cron plugin starts the same workflow through `:daily_digest`.
 
 ## Dependency Workflow Example
 
