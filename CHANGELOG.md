@@ -6,6 +6,30 @@ The format is based on Keep a Changelog and the project follows Semantic
 Versioning, including prerelease tags while the runtime remains in early
 development.
 
+## [0.1.0-alpha.4] - 2026-05-10
+
+### Added
+- Run explanation diagnostics through `SquidMesh.explain_run/2`, including
+  current reason, valid next actions, and supporting evidence for host app
+  dashboards or CLIs.
+- Multiple workflow triggers per workflow, with any mix of manual and cron
+  entrypoints and per-trigger payload validation.
+- Minimal host app documentation and smoke coverage for a workflow that can be
+  started manually or by cron.
+
+### Changed
+- `mix squid_mesh.install` now installs one fresh current-schema Squid Mesh
+  migration instead of copying the historical split migration set.
+
+### Fixed
+- Public run APIs now return structured `:invalid_run_id` errors for malformed
+  run IDs.
+
+### Notes
+- This release intentionally does not provide a compatibility path for older
+  split Squid Mesh migrations. Existing evaluation apps should reinstall from
+  the current schema while the project remains in alpha.
+
 ## [0.1.0-alpha.3] - 2026-05-07
 
 ### Added
