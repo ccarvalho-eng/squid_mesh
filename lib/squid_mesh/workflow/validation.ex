@@ -118,7 +118,12 @@ defmodule SquidMesh.Workflow.Validation do
   Returns the canonical workflow payload contract derived from the trigger set.
   """
   @spec workflow_payload!([map()]) :: [map()]
-  def workflow_payload!([trigger | _other_triggers]), do: trigger.payload
+  def workflow_payload!(triggers) when is_list(triggers) do
+    triggers
+    |> Enum.flat_map(& &1.payload)
+    |> Enum.uniq_by(& &1.name)
+  end
+
   def workflow_payload!([]), do: []
 
   @doc """
@@ -210,10 +215,11 @@ defmodule SquidMesh.Workflow.Validation do
     errors
     |> validate_trigger_count(triggers)
     |> validate_unique_trigger_names(triggers)
+    |> validate_trigger_payload_conflicts(triggers)
     |> validate_trigger_definitions(triggers)
   end
 
-  defp validate_trigger_count(errors, []), do: ["exactly one trigger is required" | errors]
+  defp validate_trigger_count(errors, []), do: ["at least one trigger is required" | errors]
   defp validate_trigger_count(errors, _triggers), do: errors
 
   defp validate_unique_trigger_names(errors, triggers) do
@@ -228,6 +234,27 @@ defmodule SquidMesh.Workflow.Validation do
       "" -> errors
       names -> ["duplicate trigger names: #{names}" | errors]
     end
+  end
+
+  defp validate_trigger_payload_conflicts(errors, triggers) do
+    triggers
+    |> Enum.flat_map(& &1.payload)
+    |> Enum.group_by(& &1.name)
+    |> Enum.reduce(errors, fn {name, fields}, acc ->
+      fields
+      |> Enum.map(& &1.type)
+      |> Enum.uniq()
+      |> case do
+        [_single_type] ->
+          acc
+
+        types ->
+          [
+            "payload field #{inspect(name)} defines conflicting types across triggers: #{inspect(types)}"
+            | acc
+          ]
+      end
+    end)
   end
 
   defp validate_trigger_definitions(errors, triggers) do

@@ -195,6 +195,9 @@ defmodule SquidMesh.RunStoreTest do
       assert scheduled_run.trigger == :scheduled_digest
       assert is_binary(scheduled_run.payload.window_start_at)
 
+      assert {:ok, reloaded_scheduled_run} = RunStore.get_run(Repo, scheduled_run.id)
+      assert reloaded_scheduled_run.payload == scheduled_run.payload
+
       assert {:error, {:invalid_payload, %{missing_fields: [:chat_id]}}} =
                RunStore.create_run(Repo, MultiTriggerWorkflow, :manual_digest, %{})
     end
