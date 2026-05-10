@@ -1,11 +1,20 @@
 defmodule MinimalHostApp.Workflows.DailyDigest do
   @moduledoc """
-  Example cron-triggered workflow for the host app.
+  Example workflow with manual and cron triggers sharing one graph.
   """
 
   use SquidMesh.Workflow
 
   workflow do
+    trigger :manual_digest do
+      manual()
+
+      payload do
+        field(:channel, :string)
+        field(:digest_date, :string)
+      end
+    end
+
     trigger :daily_digest do
       cron("@reboot", timezone: "Etc/UTC")
 

@@ -49,12 +49,14 @@ defmodule MinimalHostApp.Smoke do
           payment_recovery: SquidMesh.Run.t(),
           dependency_recovery: SquidMesh.Run.t(),
           manual_approval: SquidMesh.Run.t(),
+          manual_digest: SquidMesh.Run.t(),
           daily_digest: SquidMesh.Run.t()
         }
   def run_all! do
     payment_recovery = run!()
     dependency_recovery = run_dependency_recovery!()
     manual_approval = run_manual_approval!()
+    manual_digest = run_manual_digest!()
     existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
@@ -68,6 +70,7 @@ defmodule MinimalHostApp.Smoke do
         payment_recovery: payment_recovery,
         dependency_recovery: dependency_recovery,
         manual_approval: manual_approval,
+        manual_digest: manual_digest,
         daily_digest: cron_run
       }
     else
@@ -148,6 +151,30 @@ defmodule MinimalHostApp.Smoke do
     else
       {:error, reason} ->
         raise "manual approval smoke test failed: #{inspect(reason)}"
+    end
+  end
+
+  @spec run_manual_digest!() :: SquidMesh.Run.t()
+  def run_manual_digest! do
+    attrs = %{channel: "ops-manual", digest_date: Date.utc_today() |> Date.to_iso8601()}
+
+    with {:ok, run} <- WorkflowRuns.start_manual_digest(attrs),
+         :ok <- RuntimeHarness.wait_for_execution(),
+         {:ok, inspected_run} <-
+           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts) do
+      unless inspected_run.status == :completed and inspected_run.trigger == :manual_digest do
+        raise "unexpected manual digest smoke result"
+      end
+
+      unless inspected_run.context.digest_delivery.channel == attrs.channel and
+               inspected_run.context.digest_delivery.digest_date == attrs.digest_date do
+        raise "unexpected manual digest payload"
+      end
+
+      inspected_run
+    else
+      {:error, reason} ->
+        raise "manual digest smoke test failed: #{inspect(reason)}"
     end
   end
 

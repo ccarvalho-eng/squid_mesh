@@ -1,6 +1,6 @@
 defmodule MinimalHostApp.Steps.RecordDigestDelivery do
   @moduledoc """
-  Example step that records a cron-triggered digest delivery.
+  Example step that records digest delivery metadata.
   """
 
   use Jido.Action,
