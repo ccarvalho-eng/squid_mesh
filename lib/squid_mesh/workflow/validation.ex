@@ -118,8 +118,8 @@ defmodule SquidMesh.Workflow.Validation do
   Returns the canonical workflow payload contract derived from the trigger set.
   """
   @spec workflow_payload!([map()]) :: [map()]
-  def workflow_payload!([trigger]), do: trigger.payload
-  def workflow_payload!(_other), do: []
+  def workflow_payload!([trigger | _other_triggers]), do: trigger.payload
+  def workflow_payload!([]), do: []
 
   @doc """
   Derives workflow retry declarations from per-step retry configuration.
@@ -209,11 +209,26 @@ defmodule SquidMesh.Workflow.Validation do
   defp validate_triggers(errors, triggers) do
     errors
     |> validate_trigger_count(triggers)
+    |> validate_unique_trigger_names(triggers)
     |> validate_trigger_definitions(triggers)
   end
 
-  defp validate_trigger_count(errors, [_trigger]), do: errors
-  defp validate_trigger_count(errors, _other), do: ["exactly one trigger is required" | errors]
+  defp validate_trigger_count(errors, []), do: ["exactly one trigger is required" | errors]
+  defp validate_trigger_count(errors, _triggers), do: errors
+
+  defp validate_unique_trigger_names(errors, triggers) do
+    duplicates =
+      triggers
+      |> Enum.map(& &1.name)
+      |> Enum.frequencies()
+      |> Enum.filter(fn {_name, count} -> count > 1 end)
+      |> Enum.map_join(", ", fn {name, _count} -> inspect(name) end)
+
+    case duplicates do
+      "" -> errors
+      names -> ["duplicate trigger names: #{names}" | errors]
+    end
+  end
 
   defp validate_trigger_definitions(errors, triggers) do
     Enum.reduce(triggers, errors, fn trigger, acc ->
@@ -551,8 +566,8 @@ defmodule SquidMesh.Workflow.Validation do
 
   defp workflow_payload_fields(%{payload: payload}) when is_list(payload), do: payload
 
-  defp workflow_payload_fields(%{triggers: [trigger]}) when is_map(trigger) do
-    Map.get(trigger, :payload, [])
+  defp workflow_payload_fields(%{triggers: triggers}) when is_list(triggers) do
+    Enum.flat_map(triggers, &Map.get(&1, :payload, []))
   end
 
   defp workflow_payload_fields(_definition), do: []

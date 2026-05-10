@@ -171,6 +171,31 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule ManualAndScheduledDigestWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual_digest do
+        manual()
+
+        payload do
+          field(:chat_id, :integer)
+        end
+      end
+
+      trigger :scheduled_digest do
+        cron("@reboot", timezone: "Etc/UTC")
+
+        payload do
+          field(:window_start_at, :string, default: {:today, :iso8601})
+        end
+      end
+
+      step(:announce_prompt, :log, message: "posting digest")
+      transition(:announce_prompt, on: :ok, to: :complete)
+    end
+  end
+
   defmodule PauseWorkflow do
     use SquidMesh.Workflow
 
@@ -430,6 +455,7 @@ defmodule SquidMeshTest do
   describe "cron trigger activation" do
     test "validates cron plugin workflows before startup" do
       assert :ok = SquidMesh.Plugins.Cron.validate(workflows: [DailyStandupWorkflow])
+      assert :ok = SquidMesh.Plugins.Cron.validate(workflows: [ManualAndScheduledDigestWorkflow])
 
       assert {:error, message} =
                SquidMesh.Plugins.Cron.validate(workflows: [InvoiceReminderWorkflow])
@@ -460,6 +486,26 @@ defmodule SquidMeshTest do
       assert persisted_run.input["team_id"] == "backend"
       assert is_binary(persisted_run.input["prompt_date"])
     end
+
+    test "starts a selected cron trigger from a multi-trigger workflow" do
+      job = %Oban.Job{
+        args: %{
+          "workflow" => "Elixir.SquidMeshTest.ManualAndScheduledDigestWorkflow",
+          "trigger" => "scheduled_digest"
+        }
+      }
+
+      assert :ok = CronTriggerWorker.perform(job)
+
+      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+
+      assert persisted_run.workflow ==
+               "Elixir.SquidMeshTest.ManualAndScheduledDigestWorkflow"
+
+      assert persisted_run.trigger == "scheduled_digest"
+      assert is_binary(persisted_run.input["window_start_at"])
+      refute Map.has_key?(persisted_run.input, "chat_id")
+    end
   end
 
   describe "inspect_run/2" do
@@ -479,6 +525,10 @@ defmodule SquidMeshTest do
     test "returns not found when the run does not exist" do
       assert {:error, :not_found} =
                SquidMesh.inspect_run(Ecto.UUID.generate(), repo: Repo)
+    end
+
+    test "returns a structured error for malformed run ids" do
+      assert {:error, :invalid_run_id} = SquidMesh.inspect_run("not-a-uuid", repo: Repo)
     end
 
     test "returns stable workflow and step identifiers from persisted runs" do
@@ -850,6 +900,10 @@ defmodule SquidMeshTest do
       assert {:error, :not_found} = SquidMesh.cancel_run(Ecto.UUID.generate(), repo: Repo)
     end
 
+    test "returns a structured error for malformed run ids" do
+      assert {:error, :invalid_run_id} = SquidMesh.cancel_run("not-a-uuid", repo: Repo)
+    end
+
     test "finalizes paused step history when cancelling a paused run" do
       assert {:ok, run} =
                SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
@@ -903,6 +957,10 @@ defmodule SquidMeshTest do
 
     test "returns not found when replaying a missing run" do
       assert {:error, :not_found} = SquidMesh.replay_run(Ecto.UUID.generate(), repo: Repo)
+    end
+
+    test "returns a structured error for malformed run ids" do
+      assert {:error, :invalid_run_id} = SquidMesh.replay_run("not-a-uuid", repo: Repo)
     end
 
     test "rolls back replay creation when dispatching the replayed run fails" do
@@ -972,6 +1030,10 @@ defmodule SquidMeshTest do
 
     test "returns not found for missing runs" do
       assert {:error, :not_found} = SquidMesh.unblock_run(Ecto.UUID.generate(), repo: Repo)
+    end
+
+    test "returns a structured error for malformed run ids" do
+      assert {:error, :invalid_run_id} = SquidMesh.unblock_run("not-a-uuid", repo: Repo)
     end
 
     test "returns a structured error when the paused run workflow can no longer be loaded" do
@@ -1106,6 +1168,16 @@ defmodule SquidMeshTest do
 
       assert {:error, {:invalid_workflow, "Elixir.Missing.Workflow"}} =
                SquidMesh.approve_run(run.id, %{actor: "ops_123"}, repo: Repo)
+    end
+
+    test "returns a structured error for malformed approval run ids" do
+      assert {:error, :invalid_run_id} =
+               SquidMesh.approve_run("not-a-uuid", %{actor: "ops_123"}, repo: Repo)
+    end
+
+    test "returns a structured error for malformed rejection run ids" do
+      assert {:error, :invalid_run_id} =
+               SquidMesh.reject_run("not-a-uuid", %{actor: "ops_123"}, repo: Repo)
     end
 
     test "rejects empty actor maps for approval decisions" do

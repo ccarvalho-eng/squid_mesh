@@ -1,29 +1,33 @@
 defmodule Mix.Tasks.SquidMesh.Install do
   @moduledoc """
-  Installs Squid Mesh by copying its migrations into the host application.
+  Installs Squid Mesh by creating its migration in the host application.
 
   ## Usage
 
       $ mix squid_mesh.install
 
-  This task copies Squid Mesh-owned migrations into `priv/repo/migrations` so
-  the host application can run them through its normal Ecto migration flow.
+  This task creates one current-schema Squid Mesh migration in
+  `priv/repo/migrations` so the host application can run it through its normal
+  Ecto migration flow.
 
   `Oban` migrations are intentionally not copied. Squid Mesh assumes the host
   application already manages its own `oban_jobs` table.
   """
 
   @shortdoc "Installs Squid Mesh migrations into the host application"
+  @schema_migration_name "create_squid_mesh_schema.exs"
 
   use Mix.Task
 
   @impl Mix.Task
   def run(_args) do
-    source_dir = Application.app_dir(:squid_mesh, ["priv", "repo", "migrations"])
+    source_file =
+      Application.app_dir(:squid_mesh, ["priv", "repo", "migrations", source_filename()])
+
     dest_dir = Path.join(["priv", "repo", "migrations"])
 
-    unless File.dir?(source_dir) do
-      Mix.raise("Could not find Squid Mesh migrations directory at #{source_dir}")
+    unless File.regular?(source_file) do
+      Mix.raise("Could not find Squid Mesh migration at #{source_file}")
     end
 
     unless File.dir?(dest_dir) do
@@ -35,15 +39,13 @@ defmodule Mix.Tasks.SquidMesh.Install do
 
     base_timestamp = timestamp()
 
-    source_dir
-    |> File.ls!()
-    |> Enum.filter(&String.ends_with?(&1, ".exs"))
-    |> Enum.reject(&String.starts_with?(&1, "."))
-    |> Enum.sort()
-    |> Enum.with_index()
-    |> Enum.each(fn {filename, index} ->
-      copy_migration(filename, source_dir, dest_dir, base_timestamp, index)
-    end)
+    if migration_installed?(dest_dir) do
+      Mix.shell().info("* skipping #{@schema_migration_name} (already installed)")
+    else
+      new_filename = "#{base_timestamp}_#{@schema_migration_name}"
+      File.cp!(source_file, Path.join(dest_dir, new_filename))
+      Mix.shell().info("* creating #{new_filename}")
+    end
 
     Mix.shell().info("""
 
@@ -59,45 +61,14 @@ defmodule Mix.Tasks.SquidMesh.Install do
     """)
   end
 
-  defp copy_migration(filename, source_dir, dest_dir, base_timestamp, index) do
-    migration_name =
-      filename
-      |> String.split("_", parts: 2)
-      |> List.last()
-
-    existing_migration =
-      dest_dir
-      |> File.ls!()
-      |> Enum.find(fn file -> String.ends_with?(file, migration_name) end)
-
-    if existing_migration do
-      Mix.shell().info("* skipping #{migration_name} (already exists as #{existing_migration})")
-    else
-      migration_timestamp = add_seconds_to_timestamp(base_timestamp, index)
-      new_filename = "#{migration_timestamp}_#{migration_name}"
-
-      File.cp!(Path.join(source_dir, filename), Path.join(dest_dir, new_filename))
-      Mix.shell().info("* copying #{new_filename}")
-    end
+  defp migration_installed?(dest_dir) do
+    dest_dir
+    |> File.ls!()
+    |> Enum.any?(&String.ends_with?(&1, @schema_migration_name))
   end
 
-  defp add_seconds_to_timestamp(timestamp, seconds) do
-    <<year::binary-4, month::binary-2, day::binary-2, hour::binary-2, minute::binary-2,
-      second::binary-2>> = timestamp
-
-    base_datetime =
-      NaiveDateTime.new!(
-        String.to_integer(year),
-        String.to_integer(month),
-        String.to_integer(day),
-        String.to_integer(hour),
-        String.to_integer(minute),
-        String.to_integer(second)
-      )
-
-    new_datetime = NaiveDateTime.add(base_datetime, seconds, :second)
-
-    "#{new_datetime.year |> Integer.to_string() |> String.pad_leading(4, "0")}#{new_datetime.month |> Integer.to_string() |> String.pad_leading(2, "0")}#{new_datetime.day |> Integer.to_string() |> String.pad_leading(2, "0")}#{new_datetime.hour |> Integer.to_string() |> String.pad_leading(2, "0")}#{new_datetime.minute |> Integer.to_string() |> String.pad_leading(2, "0")}#{new_datetime.second |> Integer.to_string() |> String.pad_leading(2, "0")}"
+  defp source_filename do
+    "20260428000000_#{@schema_migration_name}"
   end
 
   defp timestamp do

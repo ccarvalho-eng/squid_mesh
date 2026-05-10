@@ -32,7 +32,7 @@ defmodule SquidMesh.RunStore do
           | {:invalid_workflow, module() | String.t()}
           | {:invalid_run, Ecto.Changeset.t()}
 
-  @type get_error :: :not_found
+  @type get_error :: :not_found | :invalid_run_id
   @type transition_attrs :: %{
           optional(:context) => map(),
           optional(:current_step) => String.t() | atom() | nil,
@@ -120,12 +120,14 @@ defmodule SquidMesh.RunStore do
   def create_and_dispatch_run(repo, workflow, payload, dispatch_fun)
       when is_map(payload) and is_function(dispatch_fun, 1) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         {:ok, trigger} <-
-           WorkflowDefinition.resolve_trigger(
+         {:ok, trigger_definition} <-
+           WorkflowDefinition.trigger(
              definition,
              WorkflowDefinition.default_trigger(definition)
            ),
-         {:ok, resolved_payload} <- WorkflowDefinition.resolve_payload(definition, payload) do
+         {:ok, resolved_payload} <-
+           WorkflowDefinition.resolve_payload(trigger_definition, payload) do
+      trigger = Map.fetch!(trigger_definition, :name)
       attrs = Persistence.build_run_attrs(workflow, trigger, definition, resolved_payload)
       Persistence.insert_run_with_dispatch(repo, attrs, dispatch_fun)
     end
@@ -137,8 +139,10 @@ defmodule SquidMesh.RunStore do
   def create_and_dispatch_run(repo, workflow, trigger_name, payload, dispatch_fun)
       when is_atom(trigger_name) and is_map(payload) and is_function(dispatch_fun, 1) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         {:ok, trigger} <- WorkflowDefinition.resolve_trigger(definition, trigger_name),
-         {:ok, resolved_payload} <- WorkflowDefinition.resolve_payload(definition, payload) do
+         {:ok, trigger_definition} <- WorkflowDefinition.trigger(definition, trigger_name),
+         {:ok, resolved_payload} <-
+           WorkflowDefinition.resolve_payload(trigger_definition, payload) do
+      trigger = Map.fetch!(trigger_definition, :name)
       attrs = Persistence.build_run_attrs(workflow, trigger, definition, resolved_payload)
       Persistence.insert_run_with_dispatch(repo, attrs, dispatch_fun)
     end
@@ -148,17 +152,19 @@ defmodule SquidMesh.RunStore do
   @spec replay_and_dispatch_run(module(), Ecto.UUID.t(), dispatch_fun()) ::
           {:ok, Run.t()} | {:error, replay_error() | term()}
   def replay_and_dispatch_run(repo, run_id, dispatch_fun) when is_function(dispatch_fun, 1) do
-    case repo.get(RunRecord, run_id) do
-      %RunRecord{} = source_run ->
-        with {:ok, _workflow, definition} <-
-               WorkflowDefinition.load_serialized(source_run.workflow) do
-          attrs = Persistence.replay_run_attrs(source_run, definition)
-          Persistence.insert_run_with_dispatch(repo, attrs, dispatch_fun)
-        end
+    with_valid_run_id(run_id, fn valid_run_id ->
+      case repo.get(RunRecord, valid_run_id) do
+        %RunRecord{} = source_run ->
+          with {:ok, _workflow, definition} <-
+                 WorkflowDefinition.load_serialized(source_run.workflow) do
+            attrs = Persistence.replay_run_attrs(source_run, definition)
+            Persistence.insert_run_with_dispatch(repo, attrs, dispatch_fun)
+          end
 
-      nil ->
-        {:error, :not_found}
-    end
+        nil ->
+          {:error, :not_found}
+      end
+    end)
   end
 
   @doc """
@@ -166,29 +172,33 @@ defmodule SquidMesh.RunStore do
   """
   @spec get_run(module(), Ecto.UUID.t(), [get_option()]) :: {:ok, Run.t()} | {:error, get_error()}
   def get_run(repo, run_id, opts \\ []) do
-    include_history? = Keyword.get(opts, :include_history, false)
+    with_valid_run_id(run_id, fn valid_run_id ->
+      include_history? = Keyword.get(opts, :include_history, false)
 
-    query =
-      RunRecord
-      |> where([run], run.id == ^run_id)
-      |> Serialization.maybe_preload_history(include_history?)
+      query =
+        RunRecord
+        |> where([run], run.id == ^valid_run_id)
+        |> Serialization.maybe_preload_history(include_history?)
 
-    case repo.one(query) do
-      %RunRecord{} = run ->
-        {:ok, Serialization.to_public_run(run)}
+      case repo.one(query) do
+        %RunRecord{} = run ->
+          {:ok, Serialization.to_public_run(run)}
 
-      nil ->
-        {:error, :not_found}
-    end
+        nil ->
+          {:error, :not_found}
+      end
+    end)
   end
 
   @doc false
   @spec get_run_for_update(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, get_error()}
   def get_run_for_update(repo, run_id) do
-    case get_run_record_for_update(repo, run_id) do
-      %RunRecord{} = run -> {:ok, Serialization.to_public_run(run)}
-      nil -> {:error, :not_found}
-    end
+    with_valid_run_id(run_id, fn valid_run_id ->
+      case get_run_record_for_update(repo, valid_run_id) do
+        %RunRecord{} = run -> {:ok, Serialization.to_public_run(run)}
+        nil -> {:error, :not_found}
+      end
+    end)
   end
 
   @doc """
@@ -305,51 +315,53 @@ defmodule SquidMesh.RunStore do
   def cancel_run(repo, run_id) do
     cancellation_error = pause_cancellation_error()
 
-    case repo.transaction(fn ->
-           case get_run_record_for_update(repo, run_id) do
-             %RunRecord{} = run ->
-               current_run = Serialization.to_public_run(run)
+    with_valid_run_id(run_id, fn valid_run_id ->
+      case repo.transaction(fn ->
+             case get_run_record_for_update(repo, valid_run_id) do
+               %RunRecord{} = run ->
+                 current_run = Serialization.to_public_run(run)
 
-               case current_run.status do
-                 :paused ->
-                   cancel_locked_paused_run(
-                     repo,
-                     run,
-                     current_run,
-                     cancellation_error
-                   )
+                 case current_run.status do
+                   :paused ->
+                     cancel_locked_paused_run(
+                       repo,
+                       run,
+                       current_run,
+                       cancellation_error
+                     )
 
-                 status ->
-                   with {:ok, target_status} <- Persistence.cancellation_target_status(status),
-                        {:ok, _next_status} <- StateMachine.transition(status, target_status),
-                        {:ok, updated_run} <-
-                          Persistence.update_run_record(
-                            repo,
-                            run,
-                            Persistence.transition_changeset_attrs(target_status, %{})
-                          ) do
-                     {:transition, updated_run, status, target_status}
-                   else
-                     {:error, reason} -> repo.rollback(reason)
-                   end
-               end
+                   status ->
+                     with {:ok, target_status} <- Persistence.cancellation_target_status(status),
+                          {:ok, _next_status} <- StateMachine.transition(status, target_status),
+                          {:ok, updated_run} <-
+                            Persistence.update_run_record(
+                              repo,
+                              run,
+                              Persistence.transition_changeset_attrs(target_status, %{})
+                            ) do
+                       {:transition, updated_run, status, target_status}
+                     else
+                       {:error, reason} -> repo.rollback(reason)
+                     end
+                 end
 
-             nil ->
-               repo.rollback(:not_found)
-           end
-         end) do
-      {:ok, {:transition, updated_run, from_status, to_status}} ->
-        Observability.emit_run_transition(updated_run, from_status, to_status)
-        {:ok, updated_run}
+               nil ->
+                 repo.rollback(:not_found)
+             end
+           end) do
+        {:ok, {:transition, updated_run, from_status, to_status}} ->
+          Observability.emit_run_transition(updated_run, from_status, to_status)
+          {:ok, updated_run}
 
-      {:ok, {:paused_cancelled, updated_run, paused_run, failure_event}} ->
-        emit_paused_cancellation_failure(paused_run, failure_event, cancellation_error)
-        Observability.emit_run_transition(updated_run, :paused, :cancelled)
-        {:ok, updated_run}
+        {:ok, {:paused_cancelled, updated_run, paused_run, failure_event}} ->
+          emit_paused_cancellation_failure(paused_run, failure_event, cancellation_error)
+          Observability.emit_run_transition(updated_run, :paused, :cancelled)
+          {:ok, updated_run}
 
-      {:error, _reason} = error ->
-        error
-    end
+        {:error, _reason} = error ->
+          error
+      end
+    end)
   end
 
   @doc """
@@ -1034,6 +1046,15 @@ defmodule SquidMesh.RunStore do
     |> Map.take([:context])
     |> Map.put(:current_step, nil)
     |> Map.put(:last_error, nil)
+  end
+
+  @spec with_valid_run_id(term(), (Ecto.UUID.t() -> result)) :: result | {:error, :invalid_run_id}
+        when result: term()
+  defp with_valid_run_id(run_id, fun) when is_function(fun, 1) do
+    case Ecto.UUID.cast(run_id) do
+      {:ok, valid_run_id} -> fun.(valid_run_id)
+      :error -> {:error, :invalid_run_id}
+    end
   end
 
   @spec get_run_record_for_update(module(), Ecto.UUID.t()) :: RunRecord.t() | nil

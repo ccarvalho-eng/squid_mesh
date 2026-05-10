@@ -129,7 +129,7 @@ defmodule SquidMesh do
   Fetches one workflow run by id.
   """
   @spec inspect_run(Ecto.UUID.t(), keyword()) ::
-          {:ok, Run.t()} | {:error, :not_found | {:missing_config, [atom()]}}
+          {:ok, Run.t()} | {:error, :not_found | :invalid_run_id | {:missing_config, [atom()]}}
   def inspect_run(run_id, overrides \\ []) do
     {inspect_opts, config_overrides} = Keyword.split(overrides, [:include_history])
 
@@ -148,7 +148,7 @@ defmodule SquidMesh do
   """
   @spec explain_run(Ecto.UUID.t(), keyword()) ::
           {:ok, RunExplanation.t()}
-          | {:error, :not_found | Config.config_error()}
+          | {:error, :not_found | :invalid_run_id | Config.config_error()}
   def explain_run(run_id, overrides \\ []) do
     with {:ok, config} <- Config.load(overrides) do
       RunExplanation.explain(config, run_id)
@@ -171,7 +171,11 @@ defmodule SquidMesh do
   """
   @spec cancel_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()}
-          | {:error, :not_found | {:missing_config, [atom()]} | RunStore.transition_error()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | RunStore.transition_error()}
   def cancel_run(run_id, overrides \\ []) do
     with {:ok, config} <- Config.load(overrides) do
       RunStore.cancel_run(config.repo, run_id)
@@ -184,13 +188,21 @@ defmodule SquidMesh do
   @spec unblock_run(Ecto.UUID.t()) ::
           {:ok, Run.t()}
           | {:error,
-             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | RunStore.transition_error()
+             | term()}
   def unblock_run(run_id), do: unblock_run(run_id, %{}, [])
 
   @spec unblock_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()}
           | {:error,
-             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | RunStore.transition_error()
+             | term()}
   def unblock_run(run_id, overrides) when is_list(overrides) do
     unblock_run(run_id, %{}, overrides)
   end
@@ -198,7 +210,11 @@ defmodule SquidMesh do
   @spec unblock_run(Ecto.UUID.t(), map()) ::
           {:ok, Run.t()}
           | {:error,
-             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | RunStore.transition_error()
+             | term()}
   def unblock_run(run_id, attrs) when is_map(attrs) do
     unblock_run(run_id, attrs, [])
   end
@@ -206,7 +222,11 @@ defmodule SquidMesh do
   @spec unblock_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error,
-             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | RunStore.transition_error()
+             | term()}
   def unblock_run(run_id, attrs, overrides) when is_map(attrs) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
          {:ok, run} <- RunStore.get_run(config.repo, run_id),
@@ -221,7 +241,11 @@ defmodule SquidMesh do
   @spec approve_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error,
-             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | RunStore.transition_error()
+             | term()}
   def approve_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
          {:ok, run} <- RunStore.get_run(config.repo, run_id),
@@ -236,7 +260,11 @@ defmodule SquidMesh do
   @spec reject_run(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error,
-             :not_found | {:missing_config, [atom()]} | RunStore.transition_error() | term()}
+             :not_found
+             | :invalid_run_id
+             | {:missing_config, [atom()]}
+             | RunStore.transition_error()
+             | term()}
   def reject_run(run_id, attrs, overrides \\ []) when is_map(attrs) and is_list(overrides) do
     with {:ok, config} <- Config.load(overrides),
          {:ok, run} <- RunStore.get_run(config.repo, run_id),
@@ -250,7 +278,8 @@ defmodule SquidMesh do
   """
   @spec replay_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()}
-          | {:error, :not_found | {:missing_config, [atom()]} | RunStore.replay_error()}
+          | {:error,
+             :not_found | :invalid_run_id | {:missing_config, [atom()]} | RunStore.replay_error()}
           | {:error, {:dispatch_failed, term()}}
   def replay_run(run_id, overrides \\ []) do
     with {:ok, config} <- Config.load(overrides),

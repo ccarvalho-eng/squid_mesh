@@ -50,8 +50,8 @@ mix squid_mesh.install
 mix ecto.migrate
 ```
 
-`mix squid_mesh.install` copies Squid Mesh migrations into the host
-application's `priv/repo/migrations` directory. It does not install or run
+`mix squid_mesh.install` creates one current-schema Squid Mesh migration in the
+host application's `priv/repo/migrations` directory. It does not install or run
 `Oban` migrations.
 
 For a fresh host app, add the host app's own `Oban` migration before running

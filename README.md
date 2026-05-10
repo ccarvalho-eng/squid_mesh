@@ -112,8 +112,8 @@ mix squid_mesh.install
 mix ecto.migrate
 ```
 
-`mix squid_mesh.install` copies only Squid Mesh tables into the host app's
-`priv/repo/migrations`. The host app still owns its `Oban` setup and
+`mix squid_mesh.install` creates one current-schema Squid Mesh migration in the
+host app's `priv/repo/migrations`. The host app still owns its `Oban` setup and
 `oban_jobs` migration.
 
 ## Example: Daily RSS To Discord

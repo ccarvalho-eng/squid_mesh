@@ -19,12 +19,33 @@ defmodule Mix.Tasks.SquidMesh.InstallTest do
     {:ok, tmp_dir: tmp_dir}
   end
 
-  test "copies new migrations and skips ones already installed", %{tmp_dir: tmp_dir} do
-    [existing_migration | _rest] = source_migrations()
-    migration_name = migration_name(existing_migration)
+  test "creates one current-schema migration", %{tmp_dir: tmp_dir} do
+    output =
+      File.cd!(tmp_dir, fn ->
+        capture_io(fn ->
+          Mix.Tasks.SquidMesh.Install.run([])
+        end)
+      end)
 
+    installed_migrations = File.ls!(Path.join(tmp_dir, "priv/repo/migrations"))
+
+    assert [migration] = installed_migrations
+    assert String.ends_with?(migration, "create_squid_mesh_schema.exs")
+    assert output =~ "creating"
+
+    migration_body = File.read!(Path.join([tmp_dir, "priv/repo/migrations", migration]))
+
+    assert migration_body =~ "create table(:squid_mesh_runs"
+    assert migration_body =~ "add :trigger, :string, null: false"
+    assert migration_body =~ "create table(:squid_mesh_step_runs"
+    assert migration_body =~ "add :resume, :map"
+    assert migration_body =~ "add :manual, :map"
+    assert migration_body =~ "create table(:squid_mesh_step_attempts"
+  end
+
+  test "skips the current-schema migration when it already exists", %{tmp_dir: tmp_dir} do
     File.write!(
-      Path.join(tmp_dir, "priv/repo/migrations/20260101000000_#{migration_name}"),
+      Path.join(tmp_dir, "priv/repo/migrations/20260101000000_create_squid_mesh_schema.exs"),
       "# existing migration\n"
     )
 
@@ -35,31 +56,10 @@ defmodule Mix.Tasks.SquidMesh.InstallTest do
         end)
       end)
 
-    installed_migrations = File.ls!(Path.join(tmp_dir, "priv/repo/migrations"))
+    assert File.ls!(Path.join(tmp_dir, "priv/repo/migrations")) == [
+             "20260101000000_create_squid_mesh_schema.exs"
+           ]
 
-    assert Enum.count(installed_migrations, &String.ends_with?(&1, migration_name)) == 1
-
-    assert Enum.any?(
-             installed_migrations,
-             &String.ends_with?(&1, "add_manual_to_squid_mesh_step_runs.exs")
-           )
-
-    assert output =~ "skipping #{migration_name}"
-    assert output =~ "add_manual_to_squid_mesh_step_runs.exs"
-  end
-
-  defp source_migrations do
-    :squid_mesh
-    |> Application.app_dir(["priv", "repo", "migrations"])
-    |> File.ls!()
-    |> Enum.filter(&String.ends_with?(&1, ".exs"))
-    |> Enum.reject(&String.starts_with?(&1, "."))
-    |> Enum.sort()
-  end
-
-  defp migration_name(filename) do
-    filename
-    |> String.split("_", parts: 2)
-    |> List.last()
+    assert output =~ "skipping create_squid_mesh_schema.exs"
   end
 end

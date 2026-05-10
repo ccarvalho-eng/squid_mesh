@@ -196,8 +196,18 @@ defmodule SquidMesh.Workflow.Definition do
   """
   @spec resolve_trigger(t(), atom()) :: {:ok, atom()} | {:error, trigger_error()}
   def resolve_trigger(definition, trigger_name) when is_atom(trigger_name) do
+    with {:ok, trigger} <- trigger(definition, trigger_name) do
+      {:ok, trigger.name}
+    end
+  end
+
+  @doc """
+  Fetches one declared workflow trigger by name.
+  """
+  @spec trigger(t(), atom()) :: {:ok, trigger()} | {:error, trigger_error()}
+  def trigger(definition, trigger_name) when is_atom(trigger_name) do
     case Enum.find(definition.triggers, &(&1.name == trigger_name)) do
-      %{name: name} -> {:ok, name}
+      %{} = trigger -> {:ok, trigger}
       nil -> {:error, {:invalid_trigger, trigger_name}}
     end
   end
