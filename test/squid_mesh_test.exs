@@ -21,16 +21,16 @@ defmodule SquidMeshTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice)
-      step(:send_email, InvoiceReminderWorkflow.SendEmail, retry: [max_attempts: 3])
+      step :load_invoice, InvoiceReminderWorkflow.LoadInvoice
+      step :send_email, InvoiceReminderWorkflow.SendEmail, retry: [max_attempts: 3]
 
-      transition(:load_invoice, on: :ok, to: :send_email)
-      transition(:send_email, on: :ok, to: :complete)
+      transition :load_invoice, on: :ok, to: :send_email
+      transition :send_email, on: :ok, to: :complete
     end
   end
 
@@ -42,12 +42,12 @@ defmodule SquidMeshTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:check_gateway, PaymentRecoveryWorkflow.CheckGateway, retry: [max_attempts: 2])
-      transition(:check_gateway, on: :ok, to: :complete)
+      step :check_gateway, PaymentRecoveryWorkflow.CheckGateway, retry: [max_attempts: 2]
+      transition :check_gateway, on: :ok, to: :complete
     end
   end
 
@@ -59,15 +59,15 @@ defmodule SquidMeshTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:send_email, ReorderedWorkflow.SendEmail)
-      step(:load_invoice, ReorderedWorkflow.LoadInvoice)
+      step :send_email, ReorderedWorkflow.SendEmail
+      step :load_invoice, ReorderedWorkflow.LoadInvoice
 
-      transition(:load_invoice, on: :ok, to: :send_email)
-      transition(:send_email, on: :ok, to: :complete)
+      transition :load_invoice, on: :ok, to: :send_email
+      transition :send_email, on: :ok, to: :complete
     end
   end
 
@@ -142,14 +142,14 @@ defmodule SquidMeshTest do
         manual()
 
         payload do
-          field(:team_id, :string, default: "backend")
-          field(:prompt_date, :string, default: {:today, :iso8601})
-          field(:invoice_id, :string)
+          field :team_id, :string, default: "backend"
+          field :prompt_date, :string, default: {:today, :iso8601}
+          field :invoice_id, :string
         end
       end
 
-      step(:deliver_invoice, WorkflowWithPayloadDefaults.DeliverInvoice)
-      transition(:deliver_invoice, on: :ok, to: :complete)
+      step :deliver_invoice, WorkflowWithPayloadDefaults.DeliverInvoice
+      transition :deliver_invoice, on: :ok, to: :complete
     end
   end
 
@@ -158,16 +158,16 @@ defmodule SquidMeshTest do
 
     workflow do
       trigger :daily_standup do
-        cron("@reboot", timezone: "Etc/UTC")
+        cron "@reboot", timezone: "Etc/UTC"
 
         payload do
-          field(:team_id, :string, default: "backend")
-          field(:prompt_date, :string, default: {:today, :iso8601})
+          field :team_id, :string, default: "backend"
+          field :prompt_date, :string, default: {:today, :iso8601}
         end
       end
 
-      step(:announce_prompt, :log, message: "posting daily standup")
-      transition(:announce_prompt, on: :ok, to: :complete)
+      step :announce_prompt, :log, message: "posting daily standup"
+      transition :announce_prompt, on: :ok, to: :complete
     end
   end
 
@@ -179,20 +179,20 @@ defmodule SquidMeshTest do
         manual()
 
         payload do
-          field(:chat_id, :integer)
+          field :chat_id, :integer
         end
       end
 
       trigger :scheduled_digest do
-        cron("@reboot", timezone: "Etc/UTC")
+        cron "@reboot", timezone: "Etc/UTC"
 
         payload do
-          field(:window_start_at, :string, default: {:today, :iso8601})
+          field :window_start_at, :string, default: {:today, :iso8601}
         end
       end
 
-      step(:announce_prompt, :log, message: "posting digest")
-      transition(:announce_prompt, on: :ok, to: :complete)
+      step :announce_prompt, :log, message: "posting digest"
+      transition :announce_prompt, on: :ok, to: :complete
     end
   end
 
@@ -204,15 +204,15 @@ defmodule SquidMeshTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:wait_for_approval, :pause)
-      step(:record_delivery, :log, message: "delivery recorded", level: :info)
+      step :wait_for_approval, :pause
+      step :record_delivery, :log, message: "delivery recorded", level: :info
 
-      transition(:wait_for_approval, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
+      transition :wait_for_approval, on: :ok, to: :record_delivery
+      transition :record_delivery, on: :ok, to: :complete
     end
   end
 
@@ -224,18 +224,18 @@ defmodule SquidMeshTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      approval_step(:wait_for_review, output: :approval)
-      step(:record_approval, :log, message: "approval recorded", level: :info)
-      step(:record_rejection, :log, message: "rejection recorded", level: :warning)
+      approval_step :wait_for_review, output: :approval
+      step :record_approval, :log, message: "approval recorded", level: :info
+      step :record_rejection, :log, message: "rejection recorded", level: :warning
 
-      transition(:wait_for_review, on: :ok, to: :record_approval)
-      transition(:wait_for_review, on: :error, to: :record_rejection)
-      transition(:record_approval, on: :ok, to: :complete)
-      transition(:record_rejection, on: :ok, to: :complete)
+      transition :wait_for_review, on: :ok, to: :record_approval
+      transition :wait_for_review, on: :error, to: :record_rejection
+      transition :record_approval, on: :ok, to: :complete
+      transition :record_rejection, on: :ok, to: :complete
     end
   end
 

@@ -87,12 +87,12 @@ defmodule SquidMesh.RunStoreTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice, retry: [max_attempts: 1])
-      transition(:load_invoice, on: :ok, to: :complete)
+      step :load_invoice, InvoiceReminderWorkflow.LoadInvoice, retry: [max_attempts: 1]
+      transition :load_invoice, on: :ok, to: :complete
     end
   end
 
@@ -104,20 +104,20 @@ defmodule SquidMesh.RunStoreTest do
         manual()
 
         payload do
-          field(:chat_id, :integer)
+          field :chat_id, :integer
         end
       end
 
       trigger :scheduled_digest do
-        cron("0 9 * * *", timezone: "UTC")
+        cron "0 9 * * *", timezone: "UTC"
 
         payload do
-          field(:window_start_at, :string, default: {:today, :iso8601})
+          field :window_start_at, :string, default: {:today, :iso8601}
         end
       end
 
-      step(:deliver_digest, MultiTriggerWorkflow.DeliverDigest)
-      transition(:deliver_digest, on: :ok, to: :complete)
+      step :deliver_digest, MultiTriggerWorkflow.DeliverDigest
+      transition :deliver_digest, on: :ok, to: :complete
     end
   end
 

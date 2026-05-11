@@ -2,6 +2,18 @@
 
 This guide covers the workflow contract that Squid Mesh supports today.
 
+## Formatter Setup
+
+Squid Mesh exports formatter rules for workflow DSL calls. Host apps can import
+them from their `.formatter.exs`:
+
+```elixir
+[
+  import_deps: [:squid_mesh],
+  inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
+]
+```
+
 ## Define A Workflow
 
 Workflows are Elixir modules that `use SquidMesh.Workflow` and declare:
@@ -22,29 +34,27 @@ defmodule Billing.Workflows.PaymentRecovery do
       manual()
 
       payload do
-        field(:account_id, :string)
-        field(:invoice_id, :string)
-        field(:attempt_id, :string)
-        field(:gateway_url, :string)
+        field :account_id, :string
+        field :invoice_id, :string
+        field :attempt_id, :string
+        field :gateway_url, :string
       end
     end
 
-    step(:load_invoice, Billing.Steps.LoadInvoice)
-    step(:wait_for_settlement, :wait, duration: 5_000)
-    step(:log_recovery_attempt, :log,
+    step :load_invoice, Billing.Steps.LoadInvoice
+    step :wait_for_settlement, :wait, duration: 5_000
+    step :log_recovery_attempt, :log,
       message: "Invoice loaded, checking gateway status",
       level: :info
-    )
-    step(:check_gateway_status, Billing.Steps.CheckGatewayStatus,
+    step :check_gateway_status, Billing.Steps.CheckGatewayStatus,
       retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
-    )
-    step(:notify_customer, Billing.Steps.NotifyCustomer)
+    step :notify_customer, Billing.Steps.NotifyCustomer
 
-    transition(:load_invoice, on: :ok, to: :wait_for_settlement)
-    transition(:wait_for_settlement, on: :ok, to: :log_recovery_attempt)
-    transition(:log_recovery_attempt, on: :ok, to: :check_gateway_status)
-    transition(:check_gateway_status, on: :ok, to: :notify_customer)
-    transition(:notify_customer, on: :ok, to: :complete)
+    transition :load_invoice, on: :ok, to: :wait_for_settlement
+    transition :wait_for_settlement, on: :ok, to: :log_recovery_attempt
+    transition :log_recovery_attempt, on: :ok, to: :check_gateway_status
+    transition :check_gateway_status, on: :ok, to: :notify_customer
+    transition :notify_customer, on: :ok, to: :complete
   end
 end
 ```
@@ -56,7 +66,7 @@ Triggers define how a workflow run starts.
 Supported trigger types:
 
 - `manual()`
-- `cron(expression, timezone: "Etc/UTC")`
+- `cron expression, timezone: "Etc/UTC"`
 
 Trigger names are business-oriented entrypoints such as `:payment_recovery` or
 `:invoice_delivery`. The trigger type describes how that entrypoint is invoked.
@@ -75,24 +85,23 @@ defmodule Content.Workflows.PostDailyDigest do
 
   workflow do
     trigger :daily_digest do
-      cron("0 9 * * 1-5", timezone: "Etc/UTC")
+      cron "0 9 * * 1-5", timezone: "Etc/UTC"
 
       payload do
-        field(:feed_url, :string, default: "https://example.com/feed.xml")
-        field(:discord_webhook_url, :string)
-        field(:posted_on, :string, default: {:today, :iso8601})
+        field :feed_url, :string, default: "https://example.com/feed.xml"
+        field :discord_webhook_url, :string
+        field :posted_on, :string, default: {:today, :iso8601}
       end
     end
 
-    step(:fetch_feed, Content.Steps.FetchFeed)
-    step(:build_digest, Content.Steps.BuildDigest)
-    step(:post_to_discord, Content.Steps.PostToDiscord,
+    step :fetch_feed, Content.Steps.FetchFeed
+    step :build_digest, Content.Steps.BuildDigest
+    step :post_to_discord, Content.Steps.PostToDiscord,
       retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
-    )
 
-    transition(:fetch_feed, on: :ok, to: :build_digest)
-    transition(:build_digest, on: :ok, to: :post_to_discord)
-    transition(:post_to_discord, on: :ok, to: :complete)
+    transition :fetch_feed, on: :ok, to: :build_digest
+    transition :build_digest, on: :ok, to: :post_to_discord
+    transition :post_to_discord, on: :ok, to: :complete
   end
 end
 ```
@@ -123,9 +132,9 @@ The trigger `payload` block defines the run input contract.
 
 ```elixir
 payload do
-  field(:account_id, :string)
-  field(:invoice_id, :string)
-  field(:prompt_date, :string, default: {:today, :iso8601})
+  field :account_id, :string
+  field :invoice_id, :string
+  field :prompt_date, :string, default: {:today, :iso8601}
 end
 ```
 
@@ -156,16 +165,16 @@ Each `step` is either:
 Module step:
 
 ```elixir
-step(:load_invoice, Billing.Steps.LoadInvoice)
+step :load_invoice, Billing.Steps.LoadInvoice
 ```
 
 Built-in steps:
 
 ```elixir
-step(:wait_for_settlement, :wait, duration: 5_000)
-step(:log_recovery_attempt, :log, message: "Checking gateway status", level: :info)
-step(:wait_for_approval, :pause)
-approval_step(:wait_for_review, output: :approval)
+step :wait_for_settlement, :wait, duration: 5_000
+step :log_recovery_attempt, :log, message: "Checking gateway status", level: :info
+step :wait_for_approval, :pause
+approval_step :wait_for_review, output: :approval
 ```
 
 Built-in step options supported today:
@@ -181,21 +190,19 @@ Built-in step options supported today:
 Manual approval example:
 
 ```elixir
-approval_step(:wait_for_approval, output: :approval)
-step(:record_approval, Billing.Steps.RecordApproval,
+approval_step :wait_for_approval, output: :approval
+step :record_approval, Billing.Steps.RecordApproval,
   input: [:account_id, :approval],
   output: :approval
-)
 
-step(:record_rejection, Billing.Steps.RecordRejection,
+step :record_rejection, Billing.Steps.RecordRejection,
   input: [:account_id, :approval],
   output: :approval
-)
 
-transition(:wait_for_approval, on: :ok, to: :record_approval)
-transition(:wait_for_approval, on: :error, to: :record_rejection)
-transition(:record_approval, on: :ok, to: :complete)
-transition(:record_rejection, on: :ok, to: :complete)
+transition :wait_for_approval, on: :ok, to: :record_approval
+transition :wait_for_approval, on: :error, to: :record_rejection
+transition :record_approval, on: :ok, to: :complete
+transition :record_rejection, on: :ok, to: :complete
 ```
 
 When a run is paused at an approval step, inspect it as usual and then approve
@@ -275,8 +282,8 @@ If you want a step to consume only a subset of the available data, declare an
 explicit input mapping:
 
 ```elixir
-step(:load_account, Billing.Steps.LoadAccount, input: [:account_id], output: :account)
-step(:send_email, Billing.Steps.SendEmail, input: [:account, :invoice_id], output: :delivery)
+step :load_account, Billing.Steps.LoadAccount, input: [:account_id], output: :account
+step :send_email, Billing.Steps.SendEmail, input: [:account, :invoice_id], output: :delivery
 ```
 
 In that example:
@@ -299,11 +306,10 @@ Current boundary:
 Steps can also wait on explicit dependencies instead of success transitions:
 
 ```elixir
-step(:load_account, Billing.Steps.LoadAccount)
-step(:load_invoice, Billing.Steps.LoadInvoice)
-step(:prepare_notification, Billing.Steps.PrepareNotification,
+step :load_account, Billing.Steps.LoadAccount
+step :load_invoice, Billing.Steps.LoadInvoice
+step :prepare_notification, Billing.Steps.PrepareNotification,
   after: [:load_account, :load_invoice]
-)
 ```
 
 Choose dependency-based steps when you want to model prerequisites and joins.
@@ -347,9 +353,9 @@ Current execution boundary:
 Transitions define the path through the workflow.
 
 ```elixir
-transition(:check_gateway_status, on: :ok, to: :notify_customer)
-transition(:check_gateway_status, on: :error, to: :notify_operator)
-transition(:notify_customer, on: :ok, to: :complete)
+transition :check_gateway_status, on: :ok, to: :notify_customer
+transition :check_gateway_status, on: :error, to: :notify_operator
+transition :notify_customer, on: :ok, to: :complete
 ```
 
 Current workflow validation requires:
@@ -367,9 +373,8 @@ Current workflow validation requires:
 Retry policy lives on the step that owns the work:
 
 ```elixir
-step(:check_gateway_status, Billing.Steps.CheckGatewayStatus,
+step :check_gateway_status, Billing.Steps.CheckGatewayStatus,
   retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
-)
 ```
 
 Supported retry options today:

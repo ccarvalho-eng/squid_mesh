@@ -30,12 +30,12 @@ defmodule SquidMesh.ObservabilityTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:deliver_invoice, SuccessfulWorkflow.DeliverInvoice)
-      transition(:deliver_invoice, on: :ok, to: :complete)
+      step :deliver_invoice, SuccessfulWorkflow.DeliverInvoice
+      transition :deliver_invoice, on: :ok, to: :complete
     end
   end
 
@@ -59,15 +59,15 @@ defmodule SquidMesh.ObservabilityTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:prepare_invoice, DispatchWorkflow.PrepareInvoice)
-      step(:deliver_invoice, DispatchWorkflow.DeliverInvoice)
+      step :prepare_invoice, DispatchWorkflow.PrepareInvoice
+      step :deliver_invoice, DispatchWorkflow.DeliverInvoice
 
-      transition(:prepare_invoice, on: :ok, to: :deliver_invoice)
-      transition(:deliver_invoice, on: :ok, to: :complete)
+      transition :prepare_invoice, on: :ok, to: :deliver_invoice
+      transition :deliver_invoice, on: :ok, to: :complete
     end
   end
 
@@ -103,15 +103,14 @@ defmodule SquidMesh.ObservabilityTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:check_gateway, RetryWorkflow.CheckGateway,
+      step :check_gateway, RetryWorkflow.CheckGateway,
         retry: [max_attempts: 2, backoff: [type: :exponential, min: 1_000, max: 1_000]]
-      )
 
-      transition(:check_gateway, on: :ok, to: :complete)
+      transition :check_gateway, on: :ok, to: :complete
     end
   end
 
@@ -138,15 +137,15 @@ defmodule SquidMesh.ObservabilityTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:wait_for_approval, :pause)
-      step(:record_delivery, :log, message: "delivery recorded", level: :info)
+      step :wait_for_approval, :pause
+      step :record_delivery, :log, message: "delivery recorded", level: :info
 
-      transition(:wait_for_approval, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
+      transition :wait_for_approval, on: :ok, to: :record_delivery
+      transition :record_delivery, on: :ok, to: :complete
     end
   end
 

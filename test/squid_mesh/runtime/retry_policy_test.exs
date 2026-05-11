@@ -11,15 +11,15 @@ defmodule SquidMesh.Runtime.RetryPolicyTest do
         manual()
 
         payload do
-          field(:invoice_id, :string)
+          field :invoice_id, :string
         end
       end
 
-      step(:load_invoice, InvoiceReminderWorkflow.LoadInvoice)
-      step(:send_email, InvoiceReminderWorkflow.SendEmail, retry: [max_attempts: 3])
+      step :load_invoice, InvoiceReminderWorkflow.LoadInvoice
+      step :send_email, InvoiceReminderWorkflow.SendEmail, retry: [max_attempts: 3]
 
-      transition(:load_invoice, on: :ok, to: :send_email)
-      transition(:send_email, on: :ok, to: :complete)
+      transition :load_invoice, on: :ok, to: :send_email
+      transition :send_email, on: :ok, to: :complete
     end
   end
 
@@ -31,15 +31,14 @@ defmodule SquidMesh.Runtime.RetryPolicyTest do
         manual()
 
         payload do
-          field(:invoice_id, :string)
+          field :invoice_id, :string
         end
       end
 
-      step(:send_email, BackoffWorkflow.SendEmail,
+      step :send_email, BackoffWorkflow.SendEmail,
         retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 5_000]]
-      )
 
-      transition(:send_email, on: :ok, to: :complete)
+      transition :send_email, on: :ok, to: :complete
     end
   end
 
@@ -51,12 +50,12 @@ defmodule SquidMesh.Runtime.RetryPolicyTest do
         manual()
 
         payload do
-          field(:notification_id, :string)
+          field :notification_id, :string
         end
       end
 
-      step(:notify_customer, NoRetryWorkflow.NotifyCustomer)
-      transition(:notify_customer, on: :ok, to: :complete)
+      step :notify_customer, NoRetryWorkflow.NotifyCustomer
+      transition :notify_customer, on: :ok, to: :complete
     end
   end
 

@@ -72,9 +72,8 @@ Recommended practice:
 Example:
 
 ```elixir
-step(:check_gateway_status, MyApp.Steps.CheckGatewayStatus,
+step :check_gateway_status, MyApp.Steps.CheckGatewayStatus,
   retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
-)
 ```
 
 ## Stale Running Steps

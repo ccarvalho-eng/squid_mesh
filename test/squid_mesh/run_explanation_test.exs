@@ -313,15 +313,15 @@ defmodule SquidMesh.RunExplanationTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:load_account, SuccessfulWorkflow.LoadAccount)
-      step(:send_email, SuccessfulWorkflow.SendEmail)
+      step :load_account, SuccessfulWorkflow.LoadAccount
+      step :send_email, SuccessfulWorkflow.SendEmail
 
-      transition(:load_account, on: :ok, to: :send_email)
-      transition(:send_email, on: :ok, to: :complete)
+      transition :load_account, on: :ok, to: :send_email
+      transition :send_email, on: :ok, to: :complete
     end
   end
 
@@ -357,12 +357,12 @@ defmodule SquidMesh.RunExplanationTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:check_gateway, RetryExhaustedWorkflow.CheckGateway, retry: [max_attempts: 2])
-      transition(:check_gateway, on: :ok, to: :complete)
+      step :check_gateway, RetryExhaustedWorkflow.CheckGateway, retry: [max_attempts: 2]
+      transition :check_gateway, on: :ok, to: :complete
     end
   end
 
@@ -386,15 +386,14 @@ defmodule SquidMesh.RunExplanationTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:check_gateway, BackoffWorkflow.CheckGateway,
+      step :check_gateway, BackoffWorkflow.CheckGateway,
         retry: [max_attempts: 3, backoff: [type: :exponential, min: 1_000, max: 5_000]]
-      )
 
-      transition(:check_gateway, on: :ok, to: :complete)
+      transition :check_gateway, on: :ok, to: :complete
     end
   end
 
@@ -418,15 +417,15 @@ defmodule SquidMesh.RunExplanationTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:wait_for_approval, :pause)
-      step(:record_delivery, :log, message: "delivery recorded", level: :info)
+      step :wait_for_approval, :pause
+      step :record_delivery, :log, message: "delivery recorded", level: :info
 
-      transition(:wait_for_approval, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
+      transition :wait_for_approval, on: :ok, to: :record_delivery
+      transition :record_delivery, on: :ok, to: :complete
     end
   end
 
@@ -438,18 +437,18 @@ defmodule SquidMesh.RunExplanationTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      approval_step(:wait_for_review, output: :approval)
-      step(:record_approval, :log, message: "approval recorded", level: :info)
-      step(:record_rejection, :log, message: "rejection recorded", level: :warning)
+      approval_step :wait_for_review, output: :approval
+      step :record_approval, :log, message: "approval recorded", level: :info
+      step :record_rejection, :log, message: "rejection recorded", level: :warning
 
-      transition(:wait_for_review, on: :ok, to: :record_approval)
-      transition(:wait_for_review, on: :error, to: :record_rejection)
-      transition(:record_approval, on: :ok, to: :complete)
-      transition(:record_rejection, on: :ok, to: :complete)
+      transition :wait_for_review, on: :ok, to: :record_approval
+      transition :wait_for_review, on: :error, to: :record_rejection
+      transition :record_approval, on: :ok, to: :complete
+      transition :record_rejection, on: :ok, to: :complete
     end
   end
 
@@ -461,13 +460,13 @@ defmodule SquidMesh.RunExplanationTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:load_account, DependencyWorkflow.LoadAccount)
-      step(:load_invoice, DependencyWorkflow.LoadInvoice)
-      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+      step :load_account, DependencyWorkflow.LoadAccount
+      step :load_invoice, DependencyWorkflow.LoadInvoice
+      step :send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice]
     end
   end
 

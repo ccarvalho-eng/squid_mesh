@@ -10,25 +10,23 @@ defmodule MinimalHostApp.Workflows.ManualApproval do
       manual()
 
       payload do
-        field(:account_id, :string)
+        field :account_id, :string
       end
     end
 
-    approval_step(:wait_for_approval, output: :approval)
+    approval_step :wait_for_approval, output: :approval
 
-    step(:record_approval, MinimalHostApp.Steps.RecordApproval,
+    step :record_approval, MinimalHostApp.Steps.RecordApproval,
       input: [:account_id, :approval],
       output: :approval
-    )
 
-    step(:record_rejection, MinimalHostApp.Steps.RecordRejection,
+    step :record_rejection, MinimalHostApp.Steps.RecordRejection,
       input: [:account_id, :approval],
       output: :approval
-    )
 
-    transition(:wait_for_approval, on: :ok, to: :record_approval)
-    transition(:wait_for_approval, on: :error, to: :record_rejection)
-    transition(:record_approval, on: :ok, to: :complete)
-    transition(:record_rejection, on: :ok, to: :complete)
+    transition :wait_for_approval, on: :ok, to: :record_approval
+    transition :wait_for_approval, on: :error, to: :record_rejection
+    transition :record_approval, on: :ok, to: :complete
+    transition :record_rejection, on: :ok, to: :complete
   end
 end
