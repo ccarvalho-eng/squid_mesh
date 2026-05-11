@@ -6,6 +6,38 @@ The format is based on Keep a Changelog and the project follows Semantic
 Versioning, including prerelease tags while the runtime remains in early
 development.
 
+## [0.1.0-alpha.5] - 2026-05-11
+
+### Added
+- Step recovery markers with `irreversible: true` and `compensatable: false`
+  for workflows that perform side effects which cannot be safely replayed by
+  default.
+- Persisted recovery policy on step runs, exposed through run inspection,
+  declared step state, and run explanations.
+- Replay safety checks that block `SquidMesh.replay_run/2` after completed
+  irreversible or non-compensatable steps unless the caller passes
+  `allow_irreversible: true`.
+- Exported formatter rules for Squid Mesh workflow DSL calls, plus host app
+  setup guidance for importing them.
+
+### Changed
+- Workflow examples and documentation now use the exported DSL formatter style
+  without unnecessary parentheses.
+- The minimal host app marks its notification step as non-compensatable.
+
+### Fixed
+- Recovery marker validation no longer emits a misleading conflict error for
+  non-boolean marker values.
+- Persisted recovery policy normalization now preserves the invariant that
+  irreversible steps are non-compensatable.
+- Replay approval requires `allow_irreversible: true` exactly; other truthy
+  values no longer bypass the unsafe replay guard.
+
+### Notes
+- This remains an alpha release. Existing alpha host apps that already installed
+  earlier Squid Mesh migrations should reinstall from the current schema or
+  apply an equivalent local migration before writing new step runs.
+
 ## [0.1.0-alpha.4] - 2026-05-10
 
 ### Added
