@@ -275,6 +275,10 @@ defmodule SquidMesh do
 
   @doc """
   Creates a new run from a prior run and links it to the original run.
+
+  Replays are blocked by default once the source run completed an irreversible
+  or non-compensatable step. Pass `allow_irreversible: true` only after an
+  operator has reviewed the side effect and accepted re-execution.
   """
   @spec replay_run(Ecto.UUID.t(), keyword()) ::
           {:ok, Run.t()}
@@ -282,11 +286,18 @@ defmodule SquidMesh do
              :not_found | :invalid_run_id | {:missing_config, [atom()]} | RunStore.replay_error()}
           | {:error, {:dispatch_failed, term()}}
   def replay_run(run_id, overrides \\ []) do
-    with {:ok, config} <- Config.load(overrides),
+    {replay_opts, config_overrides} = Keyword.split(overrides, [:allow_irreversible])
+
+    with {:ok, config} <- Config.load(config_overrides),
          {:ok, run} <-
-           RunStore.replay_and_dispatch_run(config.repo, run_id, fn run ->
-             Dispatcher.dispatch_run(config, run)
-           end) do
+           RunStore.replay_and_dispatch_run(
+             config.repo,
+             run_id,
+             fn run ->
+               Dispatcher.dispatch_run(config, run)
+             end,
+             replay_opts
+           ) do
       SquidMesh.Observability.emit_run_replayed(run)
       {:ok, run}
     else

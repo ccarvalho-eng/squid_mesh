@@ -175,6 +175,12 @@ For approval or manual-review gates, use `approval_step/2` in transition-based w
 
 When a step needs a narrower contract than the whole payload plus accumulated context, use `input: [...]` to select keys and `output: :key` to namespace the returned map for downstream steps.
 
+For external side effects that cannot be honestly undone, mark the step with
+`irreversible: true` or `compensatable: false`. Squid Mesh exposes that recovery
+policy in inspection and blocks replay by default after such a step completes;
+operators can still replay with `allow_irreversible: true` after reviewing the
+side effect.
+
 Start the workflow through the public API and inspect the result with history:
 
 ```elixir

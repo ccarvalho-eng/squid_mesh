@@ -38,6 +38,7 @@ defmodule Mix.Tasks.SquidMesh.InstallTest do
     assert migration_body =~ "create table(:squid_mesh_runs"
     assert migration_body =~ "add :trigger, :string, null: false"
     assert migration_body =~ "create table(:squid_mesh_step_runs"
+    assert migration_body =~ "add :recovery, :map"
     assert migration_body =~ "add :resume, :map"
     assert migration_body =~ "add :manual, :map"
     assert migration_body =~ "create table(:squid_mesh_step_attempts"

@@ -14,6 +14,7 @@ defmodule SquidMesh.StepRunStore do
   @type step_input :: map()
   @type step_output :: map()
   @type step_error :: map()
+  @type recovery_policy :: map() | nil
   @type pause_target :: :complete | atom()
   @type approval_targets :: %{ok: pause_target(), error: pause_target()}
   @type manual_event :: map()
@@ -21,7 +22,8 @@ defmodule SquidMesh.StepRunStore do
   @type stale_error :: {:stale_step_run, String.t()}
   @type begin_result :: {:ok, StepRun.t(), :execute | :skip}
   @type schedule_result :: {:ok, StepRun.t(), :schedule | :skip} | {:error, Ecto.Changeset.t()}
-  @type step_schedule_input :: {step_identifier(), step_input()}
+  @type step_schedule_input ::
+          {step_identifier(), step_input()} | {step_identifier(), step_input(), recovery_policy()}
 
   @doc """
   Marks a step as ready for execution if it has not already completed or been
@@ -29,6 +31,13 @@ defmodule SquidMesh.StepRunStore do
   """
   @spec begin_step(module(), Ecto.UUID.t(), step_identifier(), step_input()) :: begin_result()
   def begin_step(repo, run_id, step, input) when is_map(input) do
+    begin_step(repo, run_id, step, input, nil)
+  end
+
+  @doc false
+  @spec begin_step(module(), Ecto.UUID.t(), step_identifier(), step_input(), recovery_policy()) ::
+          begin_result()
+  def begin_step(repo, run_id, step, input, recovery) when is_map(input) do
     serialized_step = serialize_step(step)
 
     attrs = %{
@@ -37,6 +46,7 @@ defmodule SquidMesh.StepRunStore do
       status: "running",
       input: input,
       output: nil,
+      recovery: serialize_recovery(recovery),
       resume: nil,
       last_error: nil
     }
@@ -56,6 +66,13 @@ defmodule SquidMesh.StepRunStore do
   @spec schedule_step(module(), Ecto.UUID.t(), step_identifier(), step_input()) ::
           schedule_result()
   def schedule_step(repo, run_id, step, input) when is_map(input) do
+    schedule_step(repo, run_id, step, input, nil)
+  end
+
+  @doc false
+  @spec schedule_step(module(), Ecto.UUID.t(), step_identifier(), step_input(), recovery_policy()) ::
+          schedule_result()
+  def schedule_step(repo, run_id, step, input, recovery) when is_map(input) do
     serialized_step = serialize_step(step)
 
     attrs = %{
@@ -65,6 +82,7 @@ defmodule SquidMesh.StepRunStore do
       status: "pending",
       input: input,
       output: nil,
+      recovery: serialize_recovery(recovery),
       resume: nil,
       last_error: nil,
       inserted_at: DateTime.utc_now(),
@@ -111,7 +129,10 @@ defmodule SquidMesh.StepRunStore do
 
           scheduled_steps =
             step_inputs
-            |> Enum.map(fn {step, _input} -> step end)
+            |> Enum.map(fn
+              {step, _input} -> step
+              {step, _input, _recovery} -> step
+            end)
             |> Enum.filter(&(serialize_step(&1) in inserted_steps))
 
           {:ok, scheduled_steps}
@@ -293,6 +314,10 @@ defmodule SquidMesh.StepRunStore do
   end
 
   defp scheduled_step_attrs(run_id, {step, input}) do
+    scheduled_step_attrs(run_id, {step, input, nil})
+  end
+
+  defp scheduled_step_attrs(run_id, {step, input, recovery}) do
     now = now_utc()
 
     %{
@@ -302,6 +327,7 @@ defmodule SquidMesh.StepRunStore do
       status: "pending",
       input: input,
       output: nil,
+      recovery: serialize_recovery(recovery),
       resume: nil,
       last_error: nil,
       inserted_at: now,
@@ -424,6 +450,15 @@ defmodule SquidMesh.StepRunStore do
   @spec serialize_step(step_identifier()) :: String.t()
   defp serialize_step(step) when is_atom(step), do: Atom.to_string(step)
   defp serialize_step(step) when is_binary(step), do: step
+
+  defp serialize_recovery(nil), do: nil
+
+  defp serialize_recovery(recovery) when is_map(recovery) do
+    Map.new(recovery, fn {key, value} -> {serialize_recovery_key(key), value} end)
+  end
+
+  defp serialize_recovery_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp serialize_recovery_key(key), do: key
 
   defp now_utc do
     DateTime.utc_now() |> DateTime.truncate(:microsecond)

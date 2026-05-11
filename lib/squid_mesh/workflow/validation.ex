@@ -155,6 +155,7 @@ defmodule SquidMesh.Workflow.Validation do
     |> require_steps(step_names)
     |> validate_built_in_steps(definition.steps, definition.transitions)
     |> validate_step_mappings(definition.steps)
+    |> validate_step_recovery_markers(definition.steps)
     |> validate_unique_step_names(step_names)
     |> validate_dependency_graph(definition.steps, step_names)
     |> validate_transitions(definition.transitions, step_names)
@@ -407,6 +408,36 @@ defmodule SquidMesh.Workflow.Validation do
 
       _other ->
         ["step #{inspect(name)} defines an invalid :output mapping" | errors]
+    end
+  end
+
+  defp validate_step_recovery_markers(errors, steps) do
+    Enum.reduce(steps, errors, fn %{name: name, opts: opts}, acc ->
+      acc
+      |> validate_boolean_step_option(name, opts, :irreversible)
+      |> validate_boolean_step_option(name, opts, :compensatable)
+      |> validate_recovery_marker_conflict(name, opts)
+    end)
+  end
+
+  defp validate_boolean_step_option(errors, name, opts, option) do
+    case Keyword.fetch(opts, option) do
+      {:ok, value} when is_boolean(value) ->
+        errors
+
+      {:ok, _value} ->
+        ["step #{inspect(name)} defines an invalid #{inspect(option)} marker" | errors]
+
+      :error ->
+        errors
+    end
+  end
+
+  defp validate_recovery_marker_conflict(errors, name, opts) do
+    if Keyword.get(opts, :irreversible, false) and Keyword.get(opts, :compensatable) == true do
+      ["step #{inspect(name)} cannot be both irreversible and compensatable" | errors]
+    else
+      errors
     end
   end
 

@@ -3,11 +3,13 @@ defmodule SquidMeshTest do
 
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.Persistence.Run, as: PersistedRun
+  alias SquidMesh.Persistence.StepRun, as: StepRunRecord
   alias SquidMesh.Run
   alias SquidMesh.RunStore
   alias SquidMesh.Runtime.Unblocker
   alias SquidMesh.StepAttempt, as: PublicStepAttempt
   alias SquidMesh.StepRun, as: PublicStepRun
+  alias SquidMesh.RunStepState
   alias SquidMesh.TestSupport.LazyWorkflow
   alias SquidMesh.Workers.CronTriggerWorker
   alias SquidMesh.Workers.StepWorker
@@ -71,6 +73,26 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule IrreversibleWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :payment_capture do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:load_account, IrreversibleWorkflow.LoadAccount)
+      step(:capture_payment, IrreversibleWorkflow.CapturePayment, irreversible: true)
+
+      transition(:load_account, on: :ok, to: :capture_payment)
+      transition(:capture_payment, on: :ok, to: :complete)
+    end
+  end
+
   defmodule InvoiceReminderWorkflow.LoadInvoice do
     use Jido.Action,
       name: "load_invoice",
@@ -128,6 +150,30 @@ defmodule SquidMeshTest do
 
   defmodule ReorderedWorkflow.LoadInvoice do
     defdelegate run(params, context), to: InvoiceReminderWorkflow.LoadInvoice
+  end
+
+  defmodule IrreversibleWorkflow.LoadAccount do
+    use Jido.Action,
+      name: "load_account",
+      description: "Loads account details",
+      schema: [account_id: [type: :string, required: true]]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{account: %{id: account_id}}}
+    end
+  end
+
+  defmodule IrreversibleWorkflow.CapturePayment do
+    use Jido.Action,
+      name: "capture_payment",
+      description: "Captures a payment",
+      schema: [account: [type: :map, required: true]]
+
+    @impl true
+    def run(%{account: account}, _context) do
+      {:ok, %{payment: %{account_id: account.id, status: "captured"}}}
+    end
   end
 
   defmodule ReorderedWorkflow.SendEmail do
@@ -641,6 +687,27 @@ defmodule SquidMeshTest do
              ]
     end
 
+    test "surfaces irreversible recovery policy in step history" do
+      assert {:ok, created_run} =
+               SquidMesh.start_run(
+                 IrreversibleWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, inspected_run} =
+               SquidMesh.inspect_run(created_run.id, include_history: true, repo: Repo)
+
+      assert %RunStepState{recovery: %{replay: :manual_review_required}} =
+               Enum.find(inspected_run.steps, &(&1.step == :capture_payment))
+
+      assert %PublicStepRun{recovery: %{irreversible?: true, compensatable?: false}} =
+               Enum.find(inspected_run.step_runs, &(&1.step == :capture_payment))
+    end
+
     test "surfaces paused audit events even when the workflow definition can no longer load" do
       assert {:ok, run} =
                SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
@@ -981,6 +1048,87 @@ defmodule SquidMeshTest do
                )
 
       assert Repo.aggregate(RunRecord, :count, :id) == before_count
+    end
+
+    test "blocks replay by default after completed irreversible steps" do
+      assert {:ok, source_run} =
+               SquidMesh.start_run(
+                 IrreversibleWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      before_count = Repo.aggregate(RunRecord, :count, :id)
+
+      assert {:error,
+              {:unsafe_replay,
+               %{
+                 message: "replay requires explicit approval after irreversible steps",
+                 steps: [
+                   %{
+                     step: :capture_payment,
+                     irreversible?: true,
+                     compensatable?: false,
+                     replay: :manual_review_required,
+                     recovery: :manual_intervention
+                   }
+                 ]
+               }}} = SquidMesh.replay_run(source_run.id, repo: Repo)
+
+      assert Repo.aggregate(RunRecord, :count, :id) == before_count
+    end
+
+    test "uses persisted recovery policy when checking replay safety" do
+      assert {:ok, source_run} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123", invoice_id: "inv_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {1, _rows} =
+               Repo.update_all(
+                 from(step_run in StepRunRecord,
+                   where:
+                     step_run.run_id == ^source_run.id and step_run.step == "send_email" and
+                       step_run.status == "completed"
+                 ),
+                 set: [
+                   recovery: %{
+                     "irreversible?" => false,
+                     "compensatable?" => false,
+                     "replay" => "manual_review_required",
+                     "recovery" => "manual_intervention"
+                   }
+                 ]
+               )
+
+      assert {:error, {:unsafe_replay, %{steps: [%{step: :send_email}]}}} =
+               SquidMesh.replay_run(source_run.id, repo: Repo)
+    end
+
+    test "allows replay after irreversible steps only when explicitly requested" do
+      assert {:ok, source_run} =
+               SquidMesh.start_run(
+                 IrreversibleWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, replay_run} =
+               SquidMesh.replay_run(source_run.id, repo: Repo, allow_irreversible: true)
+
+      assert replay_run.replayed_from_run_id == source_run.id
+      assert replay_run.current_step == :load_account
     end
   end
 

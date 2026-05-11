@@ -17,6 +17,7 @@ defmodule SquidMesh.StepRun do
     :input,
     :output,
     :last_error,
+    :recovery,
     :attempts,
     :inserted_at,
     :updated_at

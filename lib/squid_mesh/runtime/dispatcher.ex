@@ -169,7 +169,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
   defp build_scheduled_step_inputs(steps, config, run) do
     Enum.reduce_while(steps, {:ok, []}, fn step, {:ok, step_inputs} ->
       case scheduled_step_input(config, run, step) do
-        {:ok, input} -> {:cont, {:ok, [{step, input} | step_inputs]}}
+        {:ok, input, recovery} -> {:cont, {:ok, [{step, input, recovery} | step_inputs]}}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
@@ -224,13 +224,14 @@ defmodule SquidMesh.Runtime.Dispatcher do
   defp scheduled_step_input(%Config{repo: repo}, %Run{workflow: workflow} = run, step_name)
        when is_atom(workflow) do
     with {:ok, definition} <- WorkflowDefinition.load(workflow),
-         {:ok, input_mapping} <- WorkflowDefinition.step_input_mapping(definition, step_name) do
-      {:ok, build_scheduled_step_input(definition, repo, run, input_mapping)}
+         {:ok, input_mapping} <- WorkflowDefinition.step_input_mapping(definition, step_name),
+         {:ok, recovery} <- WorkflowDefinition.step_recovery_policy(definition, step_name) do
+      {:ok, build_scheduled_step_input(definition, repo, run, input_mapping), recovery}
     end
   end
 
   defp scheduled_step_input(_config, %Run{} = run, _step_name),
-    do: {:ok, StepInput.build_step_input(run)}
+    do: {:ok, StepInput.build_step_input(run), nil}
 
   defp build_scheduled_step_input(definition, repo, run, input_mapping) do
     if WorkflowDefinition.dependency_mode?(definition) do
