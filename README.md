@@ -146,9 +146,11 @@ defmodule Content.Workflows.PostDailyDigest do
     end
 
     step :fetch_feed, Content.Steps.FetchFeed, output: :feed
+    
     step :build_digest, Content.Steps.BuildDigest,
       input: [:feed, :posted_on],
       output: :digest
+    
     step :announce_post, :log, message: "Posting digest to Discord", level: :info
     step :record_failed_delivery, Content.Steps.RecordFailedDelivery
 
