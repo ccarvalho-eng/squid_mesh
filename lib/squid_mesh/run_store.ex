@@ -40,7 +40,8 @@ defmodule SquidMesh.RunStore do
         }
   @type transition_error ::
           get_error() | StateMachine.transition_error() | {:invalid_run, Ecto.Changeset.t()}
-  @type replay_error :: get_error() | create_error()
+  @type replay_error :: get_error() | create_error() | {:unsafe_replay, map()}
+  @type replay_option :: {:allow_irreversible, boolean()}
   @type update_error :: get_error() | {:invalid_run, Ecto.Changeset.t()}
   @type get_option :: {:include_history, boolean()}
   @type dispatch_fun :: (Run.t() -> {:ok, term()} | {:error, term()})
@@ -102,9 +103,10 @@ defmodule SquidMesh.RunStore do
   @doc """
   Creates a new pending run from a prior run while preserving replay lineage.
   """
-  @spec replay_run(module(), Ecto.UUID.t()) :: {:ok, Run.t()} | {:error, replay_error()}
-  def replay_run(repo, run_id) do
-    case replay_and_dispatch_run(repo, run_id, &Persistence.noop_dispatch/1) do
+  @spec replay_run(module(), Ecto.UUID.t(), [replay_option()]) ::
+          {:ok, Run.t()} | {:error, replay_error()}
+  def replay_run(repo, run_id, opts \\ []) do
+    case replay_and_dispatch_run(repo, run_id, &Persistence.noop_dispatch/1, opts) do
       {:ok, replay_run} ->
         Observability.emit_run_replayed(replay_run)
         {:ok, replay_run}
@@ -149,11 +151,12 @@ defmodule SquidMesh.RunStore do
   end
 
   @doc false
-  @spec replay_and_dispatch_run(module(), Ecto.UUID.t(), dispatch_fun()) ::
+  @spec replay_and_dispatch_run(module(), Ecto.UUID.t(), dispatch_fun(), [replay_option()]) ::
           {:ok, Run.t()} | {:error, replay_error() | term()}
-  def replay_and_dispatch_run(repo, run_id, dispatch_fun) when is_function(dispatch_fun, 1) do
+  def replay_and_dispatch_run(repo, run_id, dispatch_fun, opts \\ [])
+      when is_function(dispatch_fun, 1) and is_list(opts) do
     with {:ok, valid_run_id} <- cast_run_id(run_id) do
-      replay_valid_run(repo, valid_run_id, dispatch_fun)
+      replay_valid_run(repo, valid_run_id, dispatch_fun, opts)
     end
   end
 
@@ -1036,13 +1039,14 @@ defmodule SquidMesh.RunStore do
     end
   end
 
-  @spec replay_valid_run(module(), Ecto.UUID.t(), dispatch_fun()) ::
+  @spec replay_valid_run(module(), Ecto.UUID.t(), dispatch_fun(), [replay_option()]) ::
           {:ok, Run.t()} | {:error, replay_error() | term()}
-  defp replay_valid_run(repo, run_id, dispatch_fun) do
+  defp replay_valid_run(repo, run_id, dispatch_fun, opts) do
     case repo.get(RunRecord, run_id) do
       %RunRecord{} = source_run ->
         with {:ok, _workflow, definition} <-
-               WorkflowDefinition.load_serialized(source_run.workflow) do
+               WorkflowDefinition.load_serialized(source_run.workflow),
+             :ok <- ensure_replay_allowed(repo, source_run, definition, opts) do
           attrs = Persistence.replay_run_attrs(source_run, definition)
           Persistence.insert_run_with_dispatch(repo, attrs, dispatch_fun)
         end
@@ -1050,6 +1054,45 @@ defmodule SquidMesh.RunStore do
       nil ->
         {:error, :not_found}
     end
+  end
+
+  @spec ensure_replay_allowed(module(), RunRecord.t(), WorkflowDefinition.t(), [replay_option()]) ::
+          :ok | {:error, {:unsafe_replay, map()}}
+  defp ensure_replay_allowed(repo, source_run, definition, opts) do
+    if Keyword.get(opts, :allow_irreversible) == true do
+      :ok
+    else
+      validate_safe_replay(repo, source_run, definition)
+    end
+  end
+
+  defp validate_safe_replay(repo, source_run, definition) do
+    unsafe_steps =
+      source_run
+      |> completed_step_recovery_policies(repo)
+      |> then(&WorkflowDefinition.unsafe_replay_steps(definition, &1))
+
+    case unsafe_steps do
+      [] ->
+        :ok
+
+      steps ->
+        {:error,
+         {:unsafe_replay,
+          %{
+            message:
+              "replay requires explicit approval after irreversible or non-compensatable steps",
+            steps: steps
+          }}}
+    end
+  end
+
+  defp completed_step_recovery_policies(%RunRecord{id: run_id}, repo) do
+    StepRun
+    |> where([step_run], step_run.run_id == ^run_id and step_run.status == "completed")
+    |> order_by([step_run], asc: step_run.inserted_at, asc: step_run.id)
+    |> select([step_run], {step_run.step, step_run.recovery})
+    |> repo.all()
   end
 
   @spec get_valid_run(module(), Ecto.UUID.t(), [get_option()]) ::

@@ -120,6 +120,17 @@ MinimalHostApp.WorkflowRuns.start_payment_recovery(%{
 That map is the workflow payload for the `:payment_recovery` trigger declared
 in the example workflow.
 
+The payment recovery workflow marks its customer notification step as
+non-compensatable:
+
+```elixir
+step(:notify_customer, MinimalHostApp.Steps.NotifyCustomer, compensatable: false)
+```
+
+That marker makes replay require explicit operator approval after the
+notification has completed, instead of silently treating the side effect as
+reversible.
+
 Host apps can expose diagnostics through the same boundary:
 
 ```elixir

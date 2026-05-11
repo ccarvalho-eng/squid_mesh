@@ -132,6 +132,7 @@ defmodule SquidMesh.RunStore.Serialization do
       input: deserialize_map(step_run.input || %{}),
       output: deserialize_map(step_run.output),
       last_error: deserialize_map(step_run.last_error),
+      recovery: step_recovery_policy(definition, step_run),
       attempts: to_public_attempts(step_run),
       inserted_at: step_run.inserted_at,
       updated_at: step_run.updated_at
@@ -150,10 +151,15 @@ defmodule SquidMesh.RunStore.Serialization do
     declared_step_names = MapSet.new(Enum.map(declared_steps, & &1.step))
 
     declared_states =
-      Enum.map(declared_steps, fn %{step: step, depends_on: depends_on, status: status} ->
+      Enum.map(declared_steps, fn %{
+                                    step: step,
+                                    depends_on: depends_on,
+                                    status: status,
+                                    recovery: recovery
+                                  } ->
         case Map.fetch(step_runs_by_step, step) do
           {:ok, step_run} -> to_public_step_state(step_run, depends_on)
-          :error -> to_waiting_step_state(step, depends_on, status)
+          :error -> to_waiting_step_state(step, depends_on, status, recovery)
         end
       end)
 
@@ -173,19 +179,49 @@ defmodule SquidMesh.RunStore.Serialization do
       input: step_run.input,
       output: step_run.output,
       last_error: step_run.last_error,
+      recovery: step_run.recovery,
       attempts: step_run.attempts,
       inserted_at: step_run.inserted_at,
       updated_at: step_run.updated_at
     }
   end
 
-  defp to_waiting_step_state(step, depends_on, status) do
+  defp to_waiting_step_state(step, depends_on, status, recovery) do
     %RunStepState{
       step: step,
       status: status,
       depends_on: depends_on,
+      recovery: recovery,
       attempts: []
     }
+  end
+
+  defp step_recovery_policy(definition, %StepRunRecord{recovery: recovery, step: step}) do
+    deserialize_recovery_policy(recovery) || step_recovery_policy(definition, step)
+  end
+
+  defp step_recovery_policy(nil, _step), do: nil
+
+  defp step_recovery_policy(definition, step) when is_binary(step) do
+    case deserialize_step(definition, step) do
+      step_name when is_atom(step_name) -> step_recovery_policy(definition, step_name)
+      _unknown -> nil
+    end
+  end
+
+  defp step_recovery_policy(definition, step) when is_atom(step) do
+    case WorkflowDefinition.step_recovery_policy(definition, step) do
+      {:ok, recovery} -> recovery
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp deserialize_recovery_policy(nil), do: nil
+
+  defp deserialize_recovery_policy(recovery) when is_map(recovery) do
+    recovery
+    |> deserialize_map()
+    |> WorkflowDefinition.normalize_recovery_policy()
   end
 
   defp to_public_audit_events(_definition, %Ecto.Association.NotLoaded{}), do: nil

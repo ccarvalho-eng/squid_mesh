@@ -22,7 +22,7 @@ defmodule SquidMesh.Persistence.StepRun do
   @type t :: %__MODULE__{}
 
   @required_fields ~w(run_id step status)a
-  @optional_fields ~w(input output last_error resume manual)a
+  @optional_fields ~w(input output last_error recovery resume manual)a
 
   schema "squid_mesh_step_runs" do
     field(:step, :string)
@@ -30,6 +30,7 @@ defmodule SquidMesh.Persistence.StepRun do
     field(:input, :map, default: %{})
     field(:output, :map)
     field(:last_error, :map)
+    field(:recovery, :map)
     field(:resume, :map)
     field(:manual, :map)
 

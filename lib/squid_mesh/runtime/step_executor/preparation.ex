@@ -58,12 +58,15 @@ defmodule SquidMesh.Runtime.StepExecutor.Preparation do
              {:ok, running_run, events} <-
                ensure_running(config.repo, run, definition, execution_step),
              candidate_input = StepInput.build_step_input(running_run, input_mapping),
+             {:ok, recovery_policy} <-
+               WorkflowDefinition.step_recovery_policy(definition, execution_step),
              {:ok, step_run, execution_mode} <-
                StepRunStore.begin_step(
                  config.repo,
                  running_run.id,
                  execution_step,
-                 candidate_input
+                 candidate_input,
+                 recovery_policy
                ) do
           prepared = %PreparedStep{
             config: config,

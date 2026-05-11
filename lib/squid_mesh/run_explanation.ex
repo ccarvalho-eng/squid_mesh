@@ -139,9 +139,9 @@ defmodule SquidMesh.RunExplanation do
 
     details =
       details
-      |> Map.merge(workflow_definition_details(definition))
+      |> Map.merge(terminal_details(run, definition))
 
-    explanation(run, reason, run.current_step, details, replay_actions(definition), evidence)
+    explanation(run, reason, run.current_step, details, replay_actions(run, definition), evidence)
   end
 
   defp build(%Config{} = config, %Run{} = run, _definition) do
@@ -253,8 +253,8 @@ defmodule SquidMesh.RunExplanation do
       run,
       reason,
       nil,
-      workflow_definition_details(definition),
-      replay_actions(definition),
+      terminal_details(run, definition),
+      replay_actions(run, definition),
       evidence_with_workflow_definition(run, definition)
     )
   end
@@ -514,8 +514,49 @@ defmodule SquidMesh.RunExplanation do
   defp workflow_definition_details(nil), do: %{workflow_definition: :unavailable}
   defp workflow_definition_details(_definition), do: %{}
 
-  defp replay_actions(nil), do: []
-  defp replay_actions(_definition), do: [:replay_run]
+  defp terminal_details(run, definition) do
+    definition
+    |> workflow_definition_details()
+    |> Map.merge(replay_details(run, definition))
+  end
+
+  defp replay_details(_run, nil), do: %{}
+
+  defp replay_details(run, definition) do
+    case unsafe_replay_steps(run, definition) do
+      [] ->
+        %{replay: %{allowed?: true}}
+
+      steps ->
+        %{
+          replay: %{
+            allowed?: false,
+            required_override: :allow_irreversible,
+            blocked_by: steps
+          }
+        }
+    end
+  end
+
+  defp replay_actions(_run, nil), do: []
+
+  defp replay_actions(run, definition) do
+    case unsafe_replay_steps(run, definition) do
+      [] -> [:replay_run]
+      _steps -> []
+    end
+  end
+
+  defp unsafe_replay_steps(%Run{step_runs: step_runs}, definition) when is_list(step_runs) do
+    completed_steps =
+      step_runs
+      |> Enum.filter(&(&1.status == :completed))
+      |> Enum.map(&{&1.step, &1.recovery})
+
+    WorkflowDefinition.unsafe_replay_steps(definition, completed_steps)
+  end
+
+  defp unsafe_replay_steps(_run, _definition), do: []
 
   defp step_evidence(nil, nil), do: %{}
 

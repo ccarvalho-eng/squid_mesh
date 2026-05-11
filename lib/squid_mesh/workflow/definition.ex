@@ -22,6 +22,12 @@ defmodule SquidMesh.Workflow.Definition do
   @type step :: %{name: atom(), module: module() | built_in_step_kind(), opts: keyword()}
   @type transition :: %{from: atom(), on: transition_outcome(), to: atom()}
   @type retry :: %{step: atom(), opts: keyword()}
+  @type recovery_policy :: %{
+          irreversible?: boolean(),
+          compensatable?: boolean(),
+          replay: :allowed | :manual_review_required,
+          recovery: :automatic | :manual_intervention
+        }
   @type dependency_step_status :: :pending | :running | :completed | :failed
   @type inspect_step_status :: dependency_step_status() | :waiting
   @type dependency_progress ::
@@ -32,7 +38,8 @@ defmodule SquidMesh.Workflow.Definition do
   @type inspect_step :: %{
           step: atom(),
           depends_on: [atom()],
-          status: inspect_step_status()
+          status: inspect_step_status(),
+          recovery: recovery_policy()
         }
 
   @type t :: %{
@@ -246,6 +253,69 @@ defmodule SquidMesh.Workflow.Definition do
   end
 
   @doc """
+  Returns the recovery policy for one declared step.
+
+  Irreversible steps are always treated as non-compensatable. Steps marked
+  `compensatable: false` keep their reversibility marker but still require
+  explicit operator review before replay.
+  """
+  @spec step_recovery_policy(t(), atom()) ::
+          {:ok, recovery_policy()} | {:error, {:unknown_step, atom()}}
+  def step_recovery_policy(definition, step_name) when is_atom(step_name) do
+    with {:ok, step} <- step(definition, step_name) do
+      {:ok, recovery_policy(step)}
+    end
+  end
+
+  @doc """
+  Returns completed steps whose recovery policy makes replay unsafe by default.
+  """
+  @spec unsafe_replay_steps(t(), [atom() | String.t() | {atom() | String.t(), map() | nil}]) ::
+          [map()]
+  def unsafe_replay_steps(definition, completed_steps) when is_list(completed_steps) do
+    Enum.flat_map(completed_steps, &unsafe_replay_step(definition, &1))
+  end
+
+  @doc false
+  @spec normalize_recovery_policy(map()) :: recovery_policy()
+  def normalize_recovery_policy(policy) when is_map(policy) do
+    irreversible? = recovery_value(policy, :irreversible?, false)
+
+    compensatable? =
+      if irreversible? do
+        false
+      else
+        recovery_value(policy, :compensatable?, true)
+      end
+
+    replay =
+      case recovery_value(policy, :replay, nil) do
+        :manual_review_required ->
+          :manual_review_required
+
+        "manual_review_required" ->
+          :manual_review_required
+
+        _other ->
+          if irreversible? or not compensatable?, do: :manual_review_required, else: :allowed
+      end
+
+    recovery =
+      case recovery_value(policy, :recovery, nil) do
+        :manual_intervention -> :manual_intervention
+        "manual_intervention" -> :manual_intervention
+        _other -> if replay == :manual_review_required, do: :manual_intervention, else: :automatic
+      end
+
+    %{
+      irreversible?: irreversible?,
+      compensatable?: compensatable?,
+      replay: replay,
+      recovery: recovery
+    }
+  end
+
+  @doc """
   Applies the declared output mapping for one step result.
   """
   @spec apply_output_mapping(t(), atom(), map()) ::
@@ -394,9 +464,75 @@ defmodule SquidMesh.Workflow.Definition do
         status:
           normalized_statuses
           |> Map.get(serialize_step(step_name), "waiting")
-          |> deserialize_inspect_step_status()
+          |> deserialize_inspect_step_status(),
+        recovery: recovery_policy(step(definition, step_name))
       }
     end)
+  end
+
+  defp recovery_policy({:ok, step}), do: recovery_policy(step)
+
+  defp recovery_policy(%{opts: opts}) do
+    irreversible? = Keyword.get(opts, :irreversible, false)
+    compensatable? = Keyword.get(opts, :compensatable, not irreversible?)
+
+    if irreversible? or not compensatable? do
+      %{
+        irreversible?: irreversible?,
+        compensatable?: false,
+        replay: :manual_review_required,
+        recovery: :manual_intervention
+      }
+    else
+      %{
+        irreversible?: false,
+        compensatable?: true,
+        replay: :allowed,
+        recovery: :automatic
+      }
+    end
+  end
+
+  defp unsafe_replay_step(definition, {completed_step, recovery}) when is_map(recovery) do
+    step_name = deserialize_completed_step(definition, completed_step)
+    policy = normalize_recovery_policy(recovery)
+
+    if is_atom(step_name) and policy.replay == :manual_review_required do
+      [Map.put(policy, :step, step_name)]
+    else
+      []
+    end
+  end
+
+  defp unsafe_replay_step(definition, {completed_step, _recovery}) do
+    unsafe_replay_step(definition, completed_step)
+  end
+
+  defp unsafe_replay_step(definition, completed_step) do
+    step_name = deserialize_completed_step(definition, completed_step)
+
+    case step_name do
+      step when is_atom(step) ->
+        case step_recovery_policy(definition, step) do
+          {:ok, %{replay: :manual_review_required} = policy} ->
+            [Map.put(policy, :step, step)]
+
+          _other ->
+            []
+        end
+
+      _unknown ->
+        []
+    end
+  end
+
+  defp deserialize_completed_step(_definition, step) when is_atom(step), do: step
+
+  defp deserialize_completed_step(definition, step) when is_binary(step),
+    do: deserialize_step(definition, step)
+
+  defp recovery_value(policy, key, default) do
+    Map.get(policy, key, Map.get(policy, Atom.to_string(key), default))
   end
 
   @doc """

@@ -68,6 +68,8 @@ Recommended practice:
 - declare retries only on steps that own recoverable work
 - prefer bounded exponential backoff
 - surface structured errors from steps so retry behavior is understandable in inspection
+- mark non-compensatable external side effects with `irreversible: true` or
+  `compensatable: false` so replay requires explicit operator approval
 
 Example:
 
@@ -75,6 +77,30 @@ Example:
 step :check_gateway_status, MyApp.Steps.CheckGatewayStatus,
   retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
 ```
+
+## Replay After Irreversible Side Effects
+
+Replay starts a new run from the original payload. That is useful for
+recoverable workflows, but it can repeat external effects that have already
+happened.
+
+When a completed source run contains a step marked `irreversible: true` or
+`compensatable: false`, Squid Mesh blocks replay by default:
+
+```elixir
+{:error, {:unsafe_replay, details}} = SquidMesh.replay_run(run_id)
+```
+
+Operator tooling should show `details.steps` and require a deliberate decision
+before retrying. If the operator accepts the risk, pass the explicit override:
+
+```elixir
+SquidMesh.replay_run(run_id, allow_irreversible: true)
+```
+
+Use this path only after checking the external system or domain records. The
+marker changes Squid Mesh recovery semantics; it does not make a payment,
+message, shipment, or webhook idempotent.
 
 ## Stale Running Steps
 

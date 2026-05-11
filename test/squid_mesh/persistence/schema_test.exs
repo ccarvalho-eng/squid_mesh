@@ -47,6 +47,7 @@ defmodule SquidMesh.Persistence.SchemaTest do
                :input,
                :output,
                :last_error,
+               :recovery,
                :resume,
                :manual,
                :run_id,

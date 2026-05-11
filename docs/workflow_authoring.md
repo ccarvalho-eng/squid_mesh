@@ -24,6 +24,7 @@ Workflows are Elixir modules that `use SquidMesh.Workflow` and declare:
 - transitions between steps
 - optional dependency-based `after: [...]` joins on steps that wait for other work
 - optional retry policy on the steps that own side effects
+- optional recovery markers for irreversible or non-compensatable side effects
 
 ```elixir
 defmodule Billing.Workflows.PaymentRecovery do
@@ -232,6 +233,36 @@ Manual-review durability notes:
 - `inspect_run(..., include_history: true)` also returns durable audit events for pause, resume, approval, and rejection actions
 - the resolved `:ok` and `:error` targets plus output-mapping metadata are persisted with the paused step so restart or deploy boundaries do not recompute review semantics from the current workflow definition
 - host apps should apply the latest Squid Mesh migrations before using pause-resume in existing environments
+
+## Irreversible Steps
+
+Use recovery markers when a step performs a side effect that should not be
+treated as safely repeatable or undoable.
+
+```elixir
+step(:capture_payment, Billing.Steps.CapturePayment, irreversible: true)
+step(:send_receipt, Billing.Steps.SendReceipt, compensatable: false)
+```
+
+`irreversible: true` means the step's effect cannot be undone in the workflow's
+domain. Squid Mesh treats it as non-compensatable. `compensatable: false` is for
+steps that may not be strictly irreversible but still have no reliable
+application-owned compensation path.
+
+Both markers produce the same replay safety behavior:
+
+- `inspect_run(..., include_history: true)` includes each step's `recovery`
+  policy
+- `explain_run/2` removes `:replay_run` from terminal next actions after a
+  completed marked step and reports the blocking step in `details.replay`
+- `replay_run/2` returns `{:error, {:unsafe_replay, details}}` by default after
+  a completed marked step
+- `replay_run(run_id, allow_irreversible: true)` is the explicit operator
+  override when re-execution has been reviewed and accepted
+
+These markers do not provide exactly-once delivery or external compensation.
+They keep Squid Mesh honest about recovery policy so a replay cannot silently
+repeat a payment capture, notification, or other non-compensatable effect.
 
 ## Step Modules
 

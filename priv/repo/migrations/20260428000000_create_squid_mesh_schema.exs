@@ -31,6 +31,7 @@ defmodule SquidMesh.Repo.Migrations.CreateSquidMeshSchema do
       add :input, :map, null: false, default: %{}
       add :output, :map
       add :last_error, :map
+      add :recovery, :map
       add :resume, :map
       add :manual, :map
 

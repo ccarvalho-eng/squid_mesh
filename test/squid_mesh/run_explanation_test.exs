@@ -4,6 +4,7 @@ defmodule SquidMesh.RunExplanationTest do
   alias __MODULE__.ApprovalWorkflow
   alias __MODULE__.BackoffWorkflow
   alias __MODULE__.DependencyWorkflow
+  alias __MODULE__.IrreversibleWorkflow
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetryExhaustedWorkflow
   alias __MODULE__.SuccessfulWorkflow
@@ -279,6 +280,34 @@ defmodule SquidMesh.RunExplanationTest do
       refute :replay_run in explanation.next_actions
     end
 
+    test "requires explicit replay approval after completed irreversible steps" do
+      assert {:ok, completed_run} =
+               SquidMesh.start_run(IrreversibleWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, explanation} = SquidMesh.explain_run(completed_run.id, repo: Repo)
+
+      assert explanation.status == :completed
+      assert explanation.reason == :completed
+      assert explanation.next_actions == []
+
+      assert explanation.details.replay == %{
+               allowed?: false,
+               required_override: :allow_irreversible,
+               blocked_by: [
+                 %{
+                   step: :capture_payment,
+                   irreversible?: true,
+                   compensatable?: false,
+                   replay: :manual_review_required,
+                   recovery: :manual_intervention
+                 }
+               ]
+             }
+    end
+
     test "surfaces stale running step recovery policy for duplicate delivery skips" do
       assert {:ok, run} =
                SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_123"}, repo: Repo)
@@ -346,6 +375,50 @@ defmodule SquidMesh.RunExplanationTest do
     @impl true
     def run(%{account: account}, _context) do
       {:ok, %{delivery: %{account_id: account.id}}}
+    end
+  end
+
+  defmodule IrreversibleWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field(:account_id, :string)
+        end
+      end
+
+      step(:load_account, IrreversibleWorkflow.LoadAccount)
+      step(:capture_payment, IrreversibleWorkflow.CapturePayment, irreversible: true)
+
+      transition(:load_account, on: :ok, to: :capture_payment)
+      transition(:capture_payment, on: :ok, to: :complete)
+    end
+  end
+
+  defmodule IrreversibleWorkflow.LoadAccount do
+    use Jido.Action,
+      name: "load_account",
+      description: "Loads account",
+      schema: [account_id: [type: :string, required: true]]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{account: %{id: account_id}}}
+    end
+  end
+
+  defmodule IrreversibleWorkflow.CapturePayment do
+    use Jido.Action,
+      name: "capture_payment",
+      description: "Captures payment",
+      schema: [account: [type: :map, required: true]]
+
+    @impl true
+    def run(%{account: account}, _context) do
+      {:ok, %{payment: %{account_id: account.id, status: "captured"}}}
     end
   end
 

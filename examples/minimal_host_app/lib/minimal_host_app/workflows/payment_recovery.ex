@@ -22,7 +22,7 @@ defmodule MinimalHostApp.Workflows.PaymentRecovery do
     step :check_gateway_status, MinimalHostApp.Steps.CheckGatewayStatus,
       retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 1_000]]
 
-    step :notify_customer, MinimalHostApp.Steps.NotifyCustomer
+    step :notify_customer, MinimalHostApp.Steps.NotifyCustomer, compensatable: false
 
     transition :load_invoice, on: :ok, to: :check_gateway_status
     transition :check_gateway_status, on: :ok, to: :notify_customer
