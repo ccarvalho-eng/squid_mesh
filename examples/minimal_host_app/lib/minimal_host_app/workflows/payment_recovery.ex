@@ -10,23 +10,22 @@ defmodule MinimalHostApp.Workflows.PaymentRecovery do
       manual()
 
       payload do
-        field(:account_id, :string)
-        field(:invoice_id, :string)
-        field(:attempt_id, :string)
-        field(:gateway_url, :string)
+        field :account_id, :string
+        field :invoice_id, :string
+        field :attempt_id, :string
+        field :gateway_url, :string
       end
     end
 
-    step(:load_invoice, MinimalHostApp.Steps.LoadInvoice)
+    step :load_invoice, MinimalHostApp.Steps.LoadInvoice
 
-    step(:check_gateway_status, MinimalHostApp.Steps.CheckGatewayStatus,
+    step :check_gateway_status, MinimalHostApp.Steps.CheckGatewayStatus,
       retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 1_000]]
-    )
 
-    step(:notify_customer, MinimalHostApp.Steps.NotifyCustomer)
+    step :notify_customer, MinimalHostApp.Steps.NotifyCustomer
 
-    transition(:load_invoice, on: :ok, to: :check_gateway_status)
-    transition(:check_gateway_status, on: :ok, to: :notify_customer)
-    transition(:notify_customer, on: :ok, to: :complete)
+    transition :load_invoice, on: :ok, to: :check_gateway_status
+    transition :check_gateway_status, on: :ok, to: :notify_customer
+    transition :notify_customer, on: :ok, to: :complete
   end
 end

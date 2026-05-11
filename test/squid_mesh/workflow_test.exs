@@ -83,17 +83,16 @@ defmodule SquidMesh.WorkflowTest do
             manual()
 
             payload do
-              field(:account_id, :string)
-              field(:invoice_id, :string)
+              field :account_id, :string
+              field :invoice_id, :string
             end
           end
 
-          step(:load_account, WorkflowWithStepMappings.LoadAccount,
+          step :load_account, WorkflowWithStepMappings.LoadAccount,
             input: [:account_id],
             output: :account
-          )
 
-          transition(:load_account, on: :ok, to: :complete)
+          transition :load_account, on: :ok, to: :complete
         end
       end
       """)
@@ -148,7 +147,7 @@ defmodule SquidMesh.WorkflowTest do
             manual()
 
             payload do
-              field(:account_id, :string)
+              field :account_id, :string
             end
           end
         end
@@ -169,8 +168,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:send_email, WorkflowWithDuplicateSteps.SendEmail)
-          step(:send_email, WorkflowWithDuplicateSteps.RecordDelivery)
+          step :send_email, WorkflowWithDuplicateSteps.SendEmail
+          step :send_email, WorkflowWithDuplicateSteps.RecordDelivery
         end
       end
       """,
@@ -189,7 +188,7 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:send_email, WorkflowWithInvalidRetry.SendEmail, retry: [max_attempts: 0])
+          step :send_email, WorkflowWithInvalidRetry.SendEmail, retry: [max_attempts: 0]
         end
       end
       """,
@@ -208,8 +207,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:send_email, WorkflowWithoutRetries.SendEmail)
-          transition(:send_email, on: :ok, to: :complete)
+          step :send_email, WorkflowWithoutRetries.SendEmail
+          transition :send_email, on: :ok, to: :complete
         end
       end
       """)
@@ -228,7 +227,7 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:send_email, WorkflowWithInvalidRetryShape.SendEmail, retry: 3)
+          step :send_email, WorkflowWithInvalidRetryShape.SendEmail, retry: 3
         end
       end
       """,
@@ -247,9 +246,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:send_email, WorkflowWithInvalidRetryBackoff.SendEmail,
+          step :send_email, WorkflowWithInvalidRetryBackoff.SendEmail,
             retry: [max_attempts: 3, backoff: [type: :exponential, min: 0, max: 1_000]]
-          )
         end
       end
       """,
@@ -268,7 +266,7 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:send_email, WorkflowWithInvalidStepInput.SendEmail, input: "account_id")
+          step :send_email, WorkflowWithInvalidStepInput.SendEmail, input: "account_id"
         end
       end
       """,
@@ -287,7 +285,7 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:send_email, WorkflowWithInvalidStepOutput.SendEmail, output: [:delivery])
+          step :send_email, WorkflowWithInvalidStepOutput.SendEmail, output: [:delivery]
         end
       end
       """,
@@ -306,8 +304,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_invoice, WorkflowWithMultipleEntrySteps.LoadInvoice)
-          step(:send_email, WorkflowWithMultipleEntrySteps.SendEmail)
+          step :load_invoice, WorkflowWithMultipleEntrySteps.LoadInvoice
+          step :send_email, WorkflowWithMultipleEntrySteps.SendEmail
         end
       end
       """,
@@ -326,11 +324,10 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_account, WorkflowWithMultipleDependencyRoots.LoadAccount)
-          step(:load_invoice, WorkflowWithMultipleDependencyRoots.LoadInvoice)
-          step(:send_email, WorkflowWithMultipleDependencyRoots.SendEmail,
+          step :load_account, WorkflowWithMultipleDependencyRoots.LoadAccount
+          step :load_invoice, WorkflowWithMultipleDependencyRoots.LoadInvoice
+          step :send_email, WorkflowWithMultipleDependencyRoots.SendEmail,
             after: [:load_account, :load_invoice]
-          )
         end
       end
       """)
@@ -349,11 +346,11 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_invoice, WorkflowWithoutEntryStep.LoadInvoice)
-          step(:send_email, WorkflowWithoutEntryStep.SendEmail)
+          step :load_invoice, WorkflowWithoutEntryStep.LoadInvoice
+          step :send_email, WorkflowWithoutEntryStep.SendEmail
 
-          transition(:load_invoice, on: :ok, to: :send_email)
-          transition(:send_email, on: :ok, to: :load_invoice)
+          transition :load_invoice, on: :ok, to: :send_email
+          transition :send_email, on: :ok, to: :load_invoice
         end
       end
       """,
@@ -372,8 +369,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_invoice, WorkflowWithUnknownDependency.LoadInvoice)
-          step(:send_email, WorkflowWithUnknownDependency.SendEmail, after: [:missing_step])
+          step :load_invoice, WorkflowWithUnknownDependency.LoadInvoice
+          step :send_email, WorkflowWithUnknownDependency.SendEmail, after: [:missing_step]
         end
       end
       """,
@@ -408,8 +405,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_invoice, WorkflowWithDependencyCycle.LoadInvoice, after: [:send_email])
-          step(:send_email, WorkflowWithDependencyCycle.SendEmail, after: [:load_invoice])
+          step :load_invoice, WorkflowWithDependencyCycle.LoadInvoice, after: [:send_email]
+          step :send_email, WorkflowWithDependencyCycle.SendEmail, after: [:load_invoice]
         end
       end
       """,
@@ -428,15 +425,14 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_account, WorkflowWithMixedProgression.LoadAccount)
-          step(:load_invoice, WorkflowWithMixedProgression.LoadInvoice)
-          step(:prepare_notification, WorkflowWithMixedProgression.PrepareNotification,
+          step :load_account, WorkflowWithMixedProgression.LoadAccount
+          step :load_invoice, WorkflowWithMixedProgression.LoadInvoice
+          step :prepare_notification, WorkflowWithMixedProgression.PrepareNotification,
             after: [:load_account, :load_invoice]
-          )
-          step(:record_delivery, WorkflowWithMixedProgression.RecordDelivery)
+          step :record_delivery, WorkflowWithMixedProgression.RecordDelivery
 
-          transition(:prepare_notification, on: :ok, to: :record_delivery)
-          transition(:record_delivery, on: :ok, to: :complete)
+          transition :prepare_notification, on: :ok, to: :record_delivery
+          transition :record_delivery, on: :ok, to: :complete
         end
       end
       """,
@@ -455,8 +451,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_invoice, WorkflowWithInvalidAfterShape.LoadInvoice)
-          step(:send_email, WorkflowWithInvalidAfterShape.SendEmail, after: "load_invoice")
+          step :load_invoice, WorkflowWithInvalidAfterShape.LoadInvoice
+          step :send_email, WorkflowWithInvalidAfterShape.SendEmail, after: "load_invoice"
         end
       end
       """,
@@ -475,8 +471,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_invoice, WorkflowWithEmptyAfter.LoadInvoice)
-          step(:send_email, WorkflowWithEmptyAfter.SendEmail, after: [])
+          step :load_invoice, WorkflowWithEmptyAfter.LoadInvoice
+          step :send_email, WorkflowWithEmptyAfter.SendEmail, after: []
         end
       end
       """,
@@ -491,7 +487,7 @@ defmodule SquidMesh.WorkflowTest do
         use SquidMesh.Workflow
 
         workflow do
-          step(:load_invoice, WorkflowWithoutTriggers.LoadInvoice)
+          step :load_invoice, WorkflowWithoutTriggers.LoadInvoice
         end
       end
       """,
@@ -508,11 +504,11 @@ defmodule SquidMesh.WorkflowTest do
         workflow do
           trigger :manual do
             payload do
-              field(:account_id, :string)
+              field :account_id, :string
             end
           end
 
-          step(:load_invoice, WorkflowWithUntypedTrigger.LoadInvoice)
+          step :load_invoice, WorkflowWithUntypedTrigger.LoadInvoice
         end
       end
       """,
@@ -531,20 +527,20 @@ defmodule SquidMesh.WorkflowTest do
             manual()
 
             payload do
-              field(:chat_id, :integer)
+              field :chat_id, :integer
             end
           end
 
           trigger :scheduled_digest do
-            cron("0 9 * * *", timezone: "UTC")
+            cron "0 9 * * *", timezone: "UTC"
 
             payload do
-              field(:window_start_at, :string, default: {:today, :iso8601})
+              field :window_start_at, :string, default: {:today, :iso8601}
             end
           end
 
-          step(:load_invoice, WorkflowWithMultipleTriggers.LoadInvoice)
-          transition(:load_invoice, on: :ok, to: :complete)
+          step :load_invoice, WorkflowWithMultipleTriggers.LoadInvoice
+          transition :load_invoice, on: :ok, to: :complete
         end
       end
       """)
@@ -583,20 +579,20 @@ defmodule SquidMesh.WorkflowTest do
             manual()
 
             payload do
-              field(:chat_id, :integer)
+              field :chat_id, :integer
             end
           end
 
           trigger :scheduled_digest do
-            cron("0 9 * * *", timezone: "UTC")
+            cron "0 9 * * *", timezone: "UTC"
 
             payload do
-              field(:chat_id, :string)
+              field :chat_id, :string
             end
           end
 
-          step(:load_invoice, WorkflowWithConflictingTriggerPayloads.LoadInvoice)
-          transition(:load_invoice, on: :ok, to: :complete)
+          step :load_invoice, WorkflowWithConflictingTriggerPayloads.LoadInvoice
+          transition :load_invoice, on: :ok, to: :complete
         end
       end
       """,
@@ -613,10 +609,10 @@ defmodule SquidMesh.WorkflowTest do
         workflow do
           trigger :manual do
             manual()
-            cron("0 9 * * *", timezone: "UTC")
+            cron "0 9 * * *", timezone: "UTC"
           end
 
-          step(:load_invoice, WorkflowWithMultipleTriggerTypes.LoadInvoice)
+          step :load_invoice, WorkflowWithMultipleTriggerTypes.LoadInvoice
         end
       end
       """,
@@ -632,16 +628,16 @@ defmodule SquidMesh.WorkflowTest do
 
         workflow do
           trigger :daily_standup do
-            cron("0 9 * * 1-5", timezone: "America/Sao_Paulo")
+            cron "0 9 * * 1-5", timezone: "America/Sao_Paulo"
 
             payload do
-              field(:team_id, :string, default: "backend")
-              field(:prompt_date, :string, default: {:today, :iso8601})
+              field :team_id, :string, default: "backend"
+              field :prompt_date, :string, default: {:today, :iso8601}
             end
           end
 
-          step(:load_team_members, WorkflowWithCronTrigger.LoadTeamMembers)
-          transition(:load_team_members, on: :ok, to: :complete)
+          step :load_team_members, WorkflowWithCronTrigger.LoadTeamMembers
+          transition :load_team_members, on: :ok, to: :complete
         end
       end
       """)
@@ -673,11 +669,11 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:wait_for_settlement, :wait, duration: 250)
-          step(:log_delivery, :log, message: "delivery completed", level: :info)
+          step :wait_for_settlement, :wait, duration: 250
+          step :log_delivery, :log, message: "delivery completed", level: :info
 
-          transition(:wait_for_settlement, on: :ok, to: :log_delivery)
-          transition(:log_delivery, on: :ok, to: :complete)
+          transition :wait_for_settlement, on: :ok, to: :log_delivery
+          transition :log_delivery, on: :ok, to: :complete
         end
       end
       """)
@@ -703,7 +699,7 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:wait_for_settlement, :wait)
+          step :wait_for_settlement, :wait
         end
       end
       """,
@@ -722,7 +718,7 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:log_delivery, :log, level: :warning)
+          step :log_delivery, :log, level: :warning
         end
       end
       """,
@@ -741,11 +737,11 @@ defmodule SquidMesh.WorkflowTest do
             manual()
 
             payload do
-              field(:max_attempts, :integer, default: "five")
+              field :max_attempts, :integer, default: "five"
             end
           end
 
-          step(:load_invoice, WorkflowWithInvalidPayloadDefault.LoadInvoice)
+          step :load_invoice, WorkflowWithInvalidPayloadDefault.LoadInvoice
         end
       end
       """,
@@ -764,11 +760,11 @@ defmodule SquidMesh.WorkflowTest do
             manual()
 
             payload do
-              field(:prompt_date, :integer, default: {:today, :iso8601})
+              field :prompt_date, :integer, default: {:today, :iso8601}
             end
           end
 
-          step(:load_invoice, WorkflowWithInvalidDynamicPayloadDefault.LoadInvoice)
+          step :load_invoice, WorkflowWithInvalidDynamicPayloadDefault.LoadInvoice
         end
       end
       """,
@@ -787,8 +783,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_invoice, WorkflowWithUnsupportedTransitionOutcome.LoadInvoice)
-          transition(:load_invoice, on: :unexpected, to: :complete)
+          step :load_invoice, WorkflowWithUnsupportedTransitionOutcome.LoadInvoice
+          transition :load_invoice, on: :unexpected, to: :complete
         end
       end
       """,
@@ -807,11 +803,11 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:check_gateway, WorkflowWithErrorTransition.CheckGateway)
-          step(:notify_operator, WorkflowWithErrorTransition.NotifyOperator)
+          step :check_gateway, WorkflowWithErrorTransition.CheckGateway
+          step :notify_operator, WorkflowWithErrorTransition.NotifyOperator
 
-          transition(:check_gateway, on: :error, to: :notify_operator)
-          transition(:notify_operator, on: :ok, to: :complete)
+          transition :check_gateway, on: :error, to: :notify_operator
+          transition :notify_operator, on: :ok, to: :complete
         end
       end
       """)
@@ -833,14 +829,14 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          approval_step(:wait_for_review, output: :approval)
-          step(:record_approval, WorkflowWithApprovalStep.RecordApproval)
-          step(:record_rejection, WorkflowWithApprovalStep.RecordRejection)
+          approval_step :wait_for_review, output: :approval
+          step :record_approval, WorkflowWithApprovalStep.RecordApproval
+          step :record_rejection, WorkflowWithApprovalStep.RecordRejection
 
-          transition(:wait_for_review, on: :ok, to: :record_approval)
-          transition(:wait_for_review, on: :error, to: :record_rejection)
-          transition(:record_approval, on: :ok, to: :complete)
-          transition(:record_rejection, on: :ok, to: :complete)
+          transition :wait_for_review, on: :ok, to: :record_approval
+          transition :wait_for_review, on: :error, to: :record_rejection
+          transition :record_approval, on: :ok, to: :complete
+          transition :record_rejection, on: :ok, to: :complete
         end
       end
       """)
@@ -863,8 +859,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_account, DependencyWorkflowWithPause.LoadAccount)
-          step(:wait_for_approval, :pause, after: [:load_account])
+          step :load_account, DependencyWorkflowWithPause.LoadAccount
+          step :wait_for_approval, :pause, after: [:load_account]
         end
       end
       """,
@@ -883,8 +879,8 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:load_account, DependencyWorkflowWithApproval.LoadAccount)
-          approval_step(:wait_for_review, after: [:load_account])
+          step :load_account, DependencyWorkflowWithApproval.LoadAccount
+          approval_step :wait_for_review, after: [:load_account]
         end
       end
       """,
@@ -903,11 +899,11 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          approval_step(:wait_for_review)
-          step(:record_approval, WorkflowWithIncompleteApprovalRouting.RecordApproval)
+          approval_step :wait_for_review
+          step :record_approval, WorkflowWithIncompleteApprovalRouting.RecordApproval
 
-          transition(:wait_for_review, on: :ok, to: :record_approval)
-          transition(:record_approval, on: :ok, to: :complete)
+          transition :wait_for_review, on: :ok, to: :record_approval
+          transition :record_approval, on: :ok, to: :complete
         end
       end
       """,
@@ -926,12 +922,12 @@ defmodule SquidMesh.WorkflowTest do
             manual()
           end
 
-          step(:check_gateway, WorkflowWithDuplicateTransitions.CheckGateway)
-          step(:notify_operator, WorkflowWithDuplicateTransitions.NotifyOperator)
-          step(:record_failure, WorkflowWithDuplicateTransitions.RecordFailure)
+          step :check_gateway, WorkflowWithDuplicateTransitions.CheckGateway
+          step :notify_operator, WorkflowWithDuplicateTransitions.NotifyOperator
+          step :record_failure, WorkflowWithDuplicateTransitions.RecordFailure
 
-          transition(:check_gateway, on: :error, to: :notify_operator)
-          transition(:check_gateway, on: :error, to: :record_failure)
+          transition :check_gateway, on: :error, to: :notify_operator
+          transition :check_gateway, on: :error, to: :record_failure
         end
       end
       """,
@@ -961,18 +957,18 @@ defmodule SquidMesh.WorkflowTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_invoice, InvoiceReminder.LoadInvoice)
-      step(:send_email, InvoiceReminder.SendEmail, retry: [max_attempts: 3])
-      step(:record_delivery, InvoiceReminder.RecordDelivery)
+      step :load_invoice, InvoiceReminder.LoadInvoice
+      step :send_email, InvoiceReminder.SendEmail, retry: [max_attempts: 3]
+      step :record_delivery, InvoiceReminder.RecordDelivery
 
-      transition(:load_invoice, on: :ok, to: :send_email)
-      transition(:send_email, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
+      transition :load_invoice, on: :ok, to: :send_email
+      transition :send_email, on: :ok, to: :record_delivery
+      transition :record_delivery, on: :ok, to: :complete
     end
   end
 
@@ -984,14 +980,14 @@ defmodule SquidMesh.WorkflowTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_account, DependencyWorkflow.LoadAccount)
-      step(:load_invoice, DependencyWorkflow.LoadInvoice)
-      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+      step :load_account, DependencyWorkflow.LoadAccount
+      step :load_invoice, DependencyWorkflow.LoadInvoice
+      step :send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice]
     end
   end
 end

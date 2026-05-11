@@ -113,6 +113,19 @@ mix ecto.migrate
 host app's `priv/repo/migrations`. The host app still owns its `Oban` setup and
 `oban_jobs` migration.
 
+### 4. Import formatter rules
+
+To keep workflow modules formatted as DSL-style calls, import Squid Mesh's
+formatter configuration from the host app:
+
+```elixir
+# .formatter.exs
+[
+  import_deps: [:squid_mesh],
+  inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
+]
+```
+
 ## Example: Daily RSS To Discord
 
 This example shows the core runtime shape: one cron trigger, typed payload defaults, built-in steps, custom steps, explicit failure routing, and step-level retry on the external side-effect step.
@@ -123,34 +136,32 @@ defmodule Content.Workflows.PostDailyDigest do
 
   workflow do
     trigger :daily_digest do
-      cron("0 9 * * 1-5", timezone: "Etc/UTC")
+      cron "0 9 * * 1-5", timezone: "Etc/UTC"
 
       payload do
-        field(:feed_url, :string, default: "https://example.com/feed.xml")
-        field(:discord_webhook_url, :string)
-        field(:posted_on, :string, default: {:today, :iso8601})
+        field :feed_url, :string, default: "https://example.com/feed.xml"
+        field :discord_webhook_url, :string
+        field :posted_on, :string, default: {:today, :iso8601}
       end
     end
 
-    step(:fetch_feed, Content.Steps.FetchFeed, output: :feed)
-    step(:build_digest, Content.Steps.BuildDigest,
+    step :fetch_feed, Content.Steps.FetchFeed, output: :feed
+    step :build_digest, Content.Steps.BuildDigest,
       input: [:feed, :posted_on],
       output: :digest
-    )
-    step(:announce_post, :log, message: "Posting digest to Discord", level: :info)
-    step(:record_failed_delivery, Content.Steps.RecordFailedDelivery)
+    step :announce_post, :log, message: "Posting digest to Discord", level: :info
+    step :record_failed_delivery, Content.Steps.RecordFailedDelivery
 
-    step(:post_to_discord, Content.Steps.PostToDiscord,
+    step :post_to_discord, Content.Steps.PostToDiscord,
       input: [:digest, :discord_webhook_url],
       retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
-    )
 
-    transition(:fetch_feed, on: :ok, to: :build_digest)
-    transition(:build_digest, on: :ok, to: :announce_post)
-    transition(:announce_post, on: :ok, to: :post_to_discord)
-    transition(:post_to_discord, on: :ok, to: :complete)
-    transition(:post_to_discord, on: :error, to: :record_failed_delivery)
-    transition(:record_failed_delivery, on: :ok, to: :complete)
+    transition :fetch_feed, on: :ok, to: :build_digest
+    transition :build_digest, on: :ok, to: :announce_post
+    transition :announce_post, on: :ok, to: :post_to_discord
+    transition :post_to_discord, on: :ok, to: :complete
+    transition :post_to_discord, on: :error, to: :record_failed_delivery
+    transition :record_failed_delivery, on: :ok, to: :complete
   end
 end
 ```

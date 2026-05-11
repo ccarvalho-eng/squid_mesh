@@ -10,24 +10,24 @@ defmodule MinimalHostApp.Workflows.DailyDigest do
       manual()
 
       payload do
-        field(:channel, :string)
-        field(:digest_date, :string)
+        field :channel, :string
+        field :digest_date, :string
       end
     end
 
     trigger :daily_digest do
-      cron("@reboot", timezone: "Etc/UTC")
+      cron "@reboot", timezone: "Etc/UTC"
 
       payload do
-        field(:channel, :string, default: "ops")
-        field(:digest_date, :string, default: {:today, :iso8601})
+        field :channel, :string, default: "ops"
+        field :digest_date, :string, default: {:today, :iso8601}
       end
     end
 
-    step(:announce_digest, :log, message: "posting daily digest")
-    step(:record_digest_delivery, MinimalHostApp.Steps.RecordDigestDelivery)
+    step :announce_digest, :log, message: "posting daily digest"
+    step :record_digest_delivery, MinimalHostApp.Steps.RecordDigestDelivery
 
-    transition(:announce_digest, on: :ok, to: :record_digest_delivery)
-    transition(:record_digest_delivery, on: :ok, to: :complete)
+    transition :announce_digest, on: :ok, to: :record_digest_delivery
+    transition :record_digest_delivery, on: :ok, to: :complete
   end
 end

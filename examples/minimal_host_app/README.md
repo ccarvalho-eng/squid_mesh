@@ -146,17 +146,17 @@ trigger :manual_digest do
   manual()
 
   payload do
-    field(:channel, :string)
-    field(:digest_date, :string)
+    field :channel, :string
+    field :digest_date, :string
   end
 end
 
 trigger :daily_digest do
-  cron("@reboot", timezone: "Etc/UTC")
+  cron "@reboot", timezone: "Etc/UTC"
 
   payload do
-    field(:channel, :string, default: "ops")
-    field(:digest_date, :string, default: {:today, :iso8601})
+    field :channel, :string, default: "ops"
+    field :digest_date, :string, default: {:today, :iso8601}
   end
 end
 ```
@@ -179,17 +179,16 @@ defmodule MinimalHostApp.Workflows.DependencyRecovery do
       manual()
 
       payload do
-        field(:account_id, :string)
-        field(:invoice_id, :string)
-        field(:attempt_id, :string)
+        field :account_id, :string
+        field :invoice_id, :string
+        field :attempt_id, :string
       end
     end
 
-    step(:load_account, MinimalHostApp.Steps.LoadAccount)
-    step(:load_invoice, MinimalHostApp.Steps.LoadInvoice)
-    step(:prepare_notification, MinimalHostApp.Steps.PrepareNotification,
+    step :load_account, MinimalHostApp.Steps.LoadAccount
+    step :load_invoice, MinimalHostApp.Steps.LoadInvoice
+    step :prepare_notification, MinimalHostApp.Steps.PrepareNotification,
       after: [:load_account, :load_invoice]
-    )
   end
 end
 ```

@@ -1825,14 +1825,14 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_account, DependencyWorkflow.LoadAccount)
-      step(:load_invoice, DependencyWorkflow.LoadInvoice)
-      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+      step :load_account, DependencyWorkflow.LoadAccount
+      step :load_invoice, DependencyWorkflow.LoadInvoice
+      step :send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice]
     end
   end
 
@@ -1844,14 +1844,14 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_account, DependencyWorkflow.LoadAccount)
-      step(:load_invoice, DependencyFailureWorkflow.LoadInvoice)
-      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+      step :load_account, DependencyWorkflow.LoadAccount
+      step :load_invoice, DependencyFailureWorkflow.LoadInvoice
+      step :send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice]
     end
   end
 
@@ -1913,22 +1913,20 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_account, DependencyWorkflow.LoadAccount)
+      step :load_account, DependencyWorkflow.LoadAccount
 
-      step(:prepare_account_message, OrderedDependencyWorkflow.PrepareAccountMessage,
+      step :prepare_account_message, OrderedDependencyWorkflow.PrepareAccountMessage,
         after: [:load_account]
-      )
 
-      step(:load_invoice, DependencyWorkflow.LoadInvoice)
+      step :load_invoice, DependencyWorkflow.LoadInvoice
 
-      step(:send_email, OrderedDependencyWorkflow.SendEmail,
+      step :send_email, OrderedDependencyWorkflow.SendEmail,
         after: [:prepare_account_message, :load_invoice]
-      )
     end
   end
 
@@ -1976,18 +1974,17 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_account, DependencyWorkflow.LoadAccount)
-      step(:load_invoice, InputIsolationWorkflow.LoadInvoice)
+      step :load_account, DependencyWorkflow.LoadAccount
+      step :load_invoice, InputIsolationWorkflow.LoadInvoice
 
-      step(:complete_run, :log,
+      step :complete_run, :log,
         message: "dependency roots completed",
         after: [:load_account, :load_invoice]
-      )
     end
   end
 
@@ -2019,14 +2016,14 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_account, ConcurrentDependencyWorkflow.LoadAccount)
-      step(:load_invoice, ConcurrentDependencyWorkflow.LoadInvoice)
-      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+      step :load_account, ConcurrentDependencyWorkflow.LoadAccount
+      step :load_invoice, ConcurrentDependencyWorkflow.LoadInvoice
+      step :send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice]
     end
   end
 
@@ -2100,14 +2097,14 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_account, ConcurrentDependencyFailureWorkflow.LoadAccount)
-      step(:load_invoice, ConcurrentDependencyFailureWorkflow.LoadInvoice)
-      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+      step :load_account, ConcurrentDependencyFailureWorkflow.LoadAccount
+      step :load_invoice, ConcurrentDependencyFailureWorkflow.LoadInvoice
+      step :send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice]
     end
   end
 
@@ -2183,14 +2180,14 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_account, ConcurrentRetryWorkflow.LoadAccount, retry: [max_attempts: 2])
-      step(:load_invoice, ConcurrentRetryWorkflow.LoadInvoice, retry: [max_attempts: 2])
-      step(:send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice])
+      step :load_account, ConcurrentRetryWorkflow.LoadAccount, retry: [max_attempts: 2]
+      step :load_invoice, ConcurrentRetryWorkflow.LoadInvoice, retry: [max_attempts: 2]
+      step :send_email, DependencyWorkflow.SendEmail, after: [:load_account, :load_invoice]
     end
   end
 
@@ -2281,16 +2278,16 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_invoice, SuccessfulWorkflow.LoadInvoice)
-      step(:send_email, SuccessfulWorkflow.SendEmail)
+      step :load_invoice, SuccessfulWorkflow.LoadInvoice
+      step :send_email, SuccessfulWorkflow.SendEmail
 
-      transition(:load_invoice, on: :ok, to: :send_email)
-      transition(:send_email, on: :ok, to: :complete)
+      transition :load_invoice, on: :ok, to: :send_email
+      transition :send_email, on: :ok, to: :complete
     end
   end
 
@@ -2302,23 +2299,21 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
-          field(:invoice_id, :string)
+          field :account_id, :string
+          field :invoice_id, :string
         end
       end
 
-      step(:load_account, ExplicitMappingWorkflow.LoadAccount,
+      step :load_account, ExplicitMappingWorkflow.LoadAccount,
         input: [:account_id],
         output: :account
-      )
 
-      step(:record_delivery, ExplicitMappingWorkflow.RecordDelivery,
+      step :record_delivery, ExplicitMappingWorkflow.RecordDelivery,
         input: [:account, :invoice_id],
         output: :delivery
-      )
 
-      transition(:load_account, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
+      transition :load_account, on: :ok, to: :record_delivery
+      transition :record_delivery, on: :ok, to: :complete
     end
   end
 
@@ -2400,12 +2395,12 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:check_gateway, FailingWorkflow.CheckGateway)
-      transition(:check_gateway, on: :ok, to: :complete)
+      step :check_gateway, FailingWorkflow.CheckGateway
+      transition :check_gateway, on: :ok, to: :complete
     end
   end
 
@@ -2431,15 +2426,14 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:check_gateway, BackoffWorkflow.CheckGateway,
+      step :check_gateway, BackoffWorkflow.CheckGateway,
         retry: [max_attempts: 3, backoff: [type: :exponential, min: 1_000, max: 5_000]]
-      )
 
-      transition(:check_gateway, on: :ok, to: :complete)
+      transition :check_gateway, on: :ok, to: :complete
     end
   end
 
@@ -2465,15 +2459,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:check_gateway, ErrorRoutingWorkflow.CheckGateway)
-      step(:queue_recovery, ErrorRoutingWorkflow.QueueRecovery)
+      step :check_gateway, ErrorRoutingWorkflow.CheckGateway
+      step :queue_recovery, ErrorRoutingWorkflow.QueueRecovery
 
-      transition(:check_gateway, on: :error, to: :queue_recovery)
-      transition(:queue_recovery, on: :ok, to: :complete)
+      transition :check_gateway, on: :error, to: :queue_recovery
+      transition :queue_recovery, on: :ok, to: :complete
     end
   end
 
@@ -2513,15 +2507,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:check_gateway, ExhaustedRetryWorkflow.CheckGateway, retry: [max_attempts: 2])
-      step(:queue_recovery, ExhaustedRetryWorkflow.QueueRecovery)
+      step :check_gateway, ExhaustedRetryWorkflow.CheckGateway, retry: [max_attempts: 2]
+      step :queue_recovery, ExhaustedRetryWorkflow.QueueRecovery
 
-      transition(:check_gateway, on: :error, to: :queue_recovery)
-      transition(:queue_recovery, on: :ok, to: :complete)
+      transition :check_gateway, on: :error, to: :queue_recovery
+      transition :queue_recovery, on: :ok, to: :complete
     end
   end
 
@@ -2561,15 +2555,14 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:check_gateway, RetrySurfaceWorkflow.FailOnce,
+      step :check_gateway, RetrySurfaceWorkflow.FailOnce,
         retry: [max_attempts: 3, backoff: [type: :exponential, min: 1_000, max: 5_000]]
-      )
 
-      transition(:check_gateway, on: :ok, to: :complete)
+      transition :check_gateway, on: :ok, to: :complete
     end
   end
 
@@ -2604,15 +2597,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:wait_for_settlement, :wait, duration: 10)
-      step(:log_delivery, :log, message: "delivery completed", level: :info)
+      step :wait_for_settlement, :wait, duration: 10
+      step :log_delivery, :log, message: "delivery completed", level: :info
 
-      transition(:wait_for_settlement, on: :ok, to: :log_delivery)
-      transition(:log_delivery, on: :ok, to: :complete)
+      transition :wait_for_settlement, on: :ok, to: :log_delivery
+      transition :log_delivery, on: :ok, to: :complete
     end
   end
 
@@ -2624,15 +2617,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:wait_for_approval, :pause)
-      step(:record_delivery, :log, message: "delivery recorded", level: :info)
+      step :wait_for_approval, :pause
+      step :record_delivery, :log, message: "delivery recorded", level: :info
 
-      transition(:wait_for_approval, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
+      transition :wait_for_approval, on: :ok, to: :record_delivery
+      transition :record_delivery, on: :ok, to: :complete
     end
   end
 
@@ -2644,19 +2637,18 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:wait_for_approval, :pause, output: :approval)
+      step :wait_for_approval, :pause, output: :approval
 
-      step(:record_delivery, PauseMappedWorkflow.RecordDelivery,
+      step :record_delivery, PauseMappedWorkflow.RecordDelivery,
         input: [:approval, :account_id],
         output: :delivery
-      )
 
-      transition(:wait_for_approval, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
+      transition :wait_for_approval, on: :ok, to: :record_delivery
+      transition :record_delivery, on: :ok, to: :complete
     end
   end
 
@@ -2683,26 +2675,24 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      approval_step(:wait_for_review, output: :approval)
+      approval_step :wait_for_review, output: :approval
 
-      step(:record_approval, ApprovalWorkflow.RecordApproval,
+      step :record_approval, ApprovalWorkflow.RecordApproval,
         input: [:approval, :account_id],
         output: :approved
-      )
 
-      step(:record_rejection, ApprovalWorkflow.RecordRejection,
+      step :record_rejection, ApprovalWorkflow.RecordRejection,
         input: [:approval, :account_id],
         output: :rejected
-      )
 
-      transition(:wait_for_review, on: :ok, to: :record_approval)
-      transition(:wait_for_review, on: :error, to: :record_rejection)
-      transition(:record_approval, on: :ok, to: :complete)
-      transition(:record_rejection, on: :ok, to: :complete)
+      transition :wait_for_review, on: :ok, to: :record_approval
+      transition :wait_for_review, on: :error, to: :record_rejection
+      transition :record_approval, on: :ok, to: :complete
+      transition :record_rejection, on: :ok, to: :complete
     end
   end
 
@@ -2754,15 +2744,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
         manual()
 
         payload do
-          field(:account_id, :string)
+          field :account_id, :string
         end
       end
 
-      step(:wait_for_settlement, :wait, duration: 10)
-      step(:record_delivery, CancellationCompletionWorkflow.RecordDelivery)
+      step :wait_for_settlement, :wait, duration: 10
+      step :record_delivery, CancellationCompletionWorkflow.RecordDelivery
 
-      transition(:wait_for_settlement, on: :ok, to: :record_delivery)
-      transition(:record_delivery, on: :ok, to: :complete)
+      transition :wait_for_settlement, on: :ok, to: :record_delivery
+      transition :record_delivery, on: :ok, to: :complete
     end
   end
 
