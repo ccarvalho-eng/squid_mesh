@@ -280,7 +280,13 @@ defmodule SquidMesh.Workflow.Definition do
   @spec normalize_recovery_policy(map()) :: recovery_policy()
   def normalize_recovery_policy(policy) when is_map(policy) do
     irreversible? = recovery_value(policy, :irreversible?, false)
-    compensatable? = recovery_value(policy, :compensatable?, not irreversible?)
+
+    compensatable? =
+      if irreversible? do
+        false
+      else
+        recovery_value(policy, :compensatable?, true)
+      end
 
     replay =
       case recovery_value(policy, :replay, nil) do

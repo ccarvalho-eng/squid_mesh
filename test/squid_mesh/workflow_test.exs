@@ -147,6 +147,20 @@ defmodule SquidMesh.WorkflowTest do
               }}
   end
 
+  test "normalizes persisted irreversible policy as non-compensatable" do
+    assert SquidMesh.Workflow.Definition.normalize_recovery_policy(%{
+             "irreversible?" => true,
+             "compensatable?" => true,
+             "replay" => "manual_review_required",
+             "recovery" => "manual_intervention"
+           }) == %{
+             irreversible?: true,
+             compensatable?: false,
+             replay: :manual_review_required,
+             recovery: :manual_intervention
+           }
+  end
+
   test "supports introspection of definition segments" do
     assert InvoiceReminder.__workflow__(:steps) == InvoiceReminder.workflow_definition().steps
     assert InvoiceReminder.__workflow__(:payload) == InvoiceReminder.workflow_definition().payload
@@ -356,6 +370,42 @@ defmodule SquidMesh.WorkflowTest do
       """,
       "step :capture_payment cannot be both irreversible and compensatable"
     )
+  end
+
+  test "does not report recovery marker conflicts for invalid marker shapes" do
+    error =
+      assert_raise CompileError, fn ->
+        Code.compile_string(
+          """
+          defmodule WorkflowWithInvalidRecoveryMarkerShape do
+            use SquidMesh.Workflow
+
+            workflow do
+              trigger :manual do
+                manual()
+              end
+
+              step(:capture_payment, WorkflowWithInvalidRecoveryMarkerShape.CapturePayment,
+                irreversible: :yes,
+                compensatable: true
+              )
+
+              transition(:capture_payment, on: :ok, to: :complete)
+            end
+          end
+          """,
+          "test/support/invalid_workflow.exs"
+        )
+      end
+
+    message = Exception.message(error)
+
+    assert String.contains?(
+             message,
+             "step :capture_payment defines an invalid :irreversible marker"
+           )
+
+    refute String.contains?(message, "cannot be both irreversible and compensatable")
   end
 
   test "fails when a workflow defines multiple entry steps" do

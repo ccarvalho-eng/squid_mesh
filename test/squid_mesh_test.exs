@@ -1066,7 +1066,8 @@ defmodule SquidMeshTest do
       assert {:error,
               {:unsafe_replay,
                %{
-                 message: "replay requires explicit approval after irreversible steps",
+                 message:
+                   "replay requires explicit approval after irreversible or non-compensatable steps",
                  steps: [
                    %{
                      step: :capture_payment,

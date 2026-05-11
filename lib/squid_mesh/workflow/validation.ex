@@ -434,7 +434,7 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp validate_recovery_marker_conflict(errors, name, opts) do
-    if Keyword.get(opts, :irreversible, false) and Keyword.get(opts, :compensatable) == true do
+    if Keyword.get(opts, :irreversible) == true and Keyword.get(opts, :compensatable) == true do
       ["step #{inspect(name)} cannot be both irreversible and compensatable" | errors]
     else
       errors
