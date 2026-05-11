@@ -1131,6 +1131,25 @@ defmodule SquidMeshTest do
       assert replay_run.replayed_from_run_id == source_run.id
       assert replay_run.current_step == :load_account
     end
+
+    test "does not treat non-boolean allow_irreversible values as approval" do
+      assert {:ok, source_run} =
+               SquidMesh.start_run(
+                 IrreversibleWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      before_count = Repo.aggregate(RunRecord, :count, :id)
+
+      assert {:error, {:unsafe_replay, %{steps: [%{step: :capture_payment}]}}} =
+               SquidMesh.replay_run(source_run.id, repo: Repo, allow_irreversible: "true")
+
+      assert Repo.aggregate(RunRecord, :count, :id) == before_count
+    end
   end
 
   describe "unblock_run/2" do

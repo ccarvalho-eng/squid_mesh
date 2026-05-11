@@ -1059,7 +1059,7 @@ defmodule SquidMesh.RunStore do
   @spec ensure_replay_allowed(module(), RunRecord.t(), WorkflowDefinition.t(), [replay_option()]) ::
           :ok | {:error, {:unsafe_replay, map()}}
   defp ensure_replay_allowed(repo, source_run, definition, opts) do
-    if Keyword.get(opts, :allow_irreversible, false) do
+    if Keyword.get(opts, :allow_irreversible) == true do
       :ok
     else
       validate_safe_replay(repo, source_run, definition)
