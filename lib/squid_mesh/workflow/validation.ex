@@ -8,6 +8,7 @@ defmodule SquidMesh.Workflow.Validation do
 
   @terminal_transitions [:complete]
   @supported_transition_outcomes [:ok, :error]
+  @supported_transition_recovery_markers [:compensation, :undo]
   @allowed_trigger_types [:manual, :cron]
   @built_in_step_kinds [:wait, :log, :pause, :approval]
   @log_levels [:debug, :info, :warning, :error]
@@ -537,6 +538,7 @@ defmodule SquidMesh.Workflow.Validation do
         reduce_acc
         |> validate_transition_from(transition, step_names)
         |> validate_transition_outcome(transition)
+        |> validate_transition_recovery_marker(transition)
         |> validate_transition_to(transition, step_names)
       end)
     end)
@@ -568,6 +570,27 @@ defmodule SquidMesh.Workflow.Validation do
       ]
     end
   end
+
+  defp validate_transition_recovery_marker(errors, %{recovery: _recovery, from: from, on: on})
+       when on != :error do
+    [
+      "transition from #{inspect(from)} can only define recovery markers for :error outcomes"
+      | errors
+    ]
+  end
+
+  defp validate_transition_recovery_marker(errors, %{recovery: recovery, from: from}) do
+    if recovery in @supported_transition_recovery_markers do
+      errors
+    else
+      [
+        "transition from #{inspect(from)} defines unsupported recovery marker #{inspect(recovery)}"
+        | errors
+      ]
+    end
+  end
+
+  defp validate_transition_recovery_marker(errors, _transition), do: errors
 
   defp validate_transition_to(errors, %{to: to}, step_names) do
     if to in step_names or to in @terminal_transitions do

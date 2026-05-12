@@ -197,7 +197,7 @@ defmodule SquidMesh.RunStore.Serialization do
   end
 
   defp step_recovery_policy(definition, %StepRunRecord{recovery: recovery, step: step}) do
-    deserialize_recovery_policy(recovery) || step_recovery_policy(definition, step)
+    deserialize_recovery_policy(definition, recovery) || step_recovery_policy(definition, step)
   end
 
   defp step_recovery_policy(nil, _step), do: nil
@@ -216,12 +216,13 @@ defmodule SquidMesh.RunStore.Serialization do
     end
   end
 
-  defp deserialize_recovery_policy(nil), do: nil
+  defp deserialize_recovery_policy(_definition, nil), do: nil
 
-  defp deserialize_recovery_policy(recovery) when is_map(recovery) do
+  defp deserialize_recovery_policy(definition, recovery) when is_map(recovery) do
     recovery
     |> deserialize_map()
     |> WorkflowDefinition.normalize_recovery_policy()
+    |> deserialize_recovery_failure_target(definition)
   end
 
   defp to_public_audit_events(_definition, %Ecto.Association.NotLoaded{}), do: nil
@@ -282,19 +283,69 @@ defmodule SquidMesh.RunStore.Serialization do
   end
 
   defp step_run_audit_events(definition, %StepRunRecord{} = step_run) do
+    failure_events = failure_recovery_audit_events(definition, step_run)
     step = deserialize_step(definition, step_run.step)
 
-    case manual_step_kind(definition, step, step_run) do
-      nil ->
+    manual_events =
+      case manual_step_kind(definition, step, step_run) do
+        nil ->
+          []
+
+        _kind ->
+          paused_event = %RunAuditEvent{type: :paused, step: step, at: step_run.inserted_at}
+
+          [paused_event | completed_manual_events(definition, step_run)]
+          |> Enum.reject(&is_nil(&1))
+      end
+
+    failure_events ++ manual_events
+  end
+
+  defp deserialize_recovery_failure_target(
+         %{failure: %{target: target} = failure} = policy,
+         definition
+       )
+       when is_binary(target) do
+    Map.put(
+      policy,
+      :failure,
+      Map.put(failure, :target, deserialize_failure_target(definition, target))
+    )
+  end
+
+  defp deserialize_recovery_failure_target(policy, _definition), do: policy
+
+  defp deserialize_failure_target(_definition, target)
+       when target in ["__complete__", "complete"],
+       do: :complete
+
+  defp deserialize_failure_target(definition, target) do
+    deserialize_step(definition, target) || target
+  end
+
+  defp failure_recovery_audit_events(_definition, %StepRunRecord{status: status})
+       when status != "failed",
+       do: []
+
+  defp failure_recovery_audit_events(definition, %StepRunRecord{} = step_run) do
+    case step_recovery_policy(definition, step_run) do
+      %{failure: %{strategy: strategy, target: target}} when strategy in [:compensation, :undo] ->
+        [
+          %RunAuditEvent{
+            type: failure_recovery_audit_type(strategy),
+            step: deserialize_step(definition, step_run.step),
+            metadata: %{target: target},
+            at: step_run.updated_at
+          }
+        ]
+
+      _other ->
         []
-
-      _kind ->
-        paused_event = %RunAuditEvent{type: :paused, step: step, at: step_run.inserted_at}
-
-        [paused_event | completed_manual_events(definition, step_run)]
-        |> Enum.reject(&is_nil(&1))
     end
   end
+
+  defp failure_recovery_audit_type(:compensation), do: :compensation_routed
+  defp failure_recovery_audit_type(:undo), do: :undo_routed
 
   defp completed_manual_events(definition, %StepRunRecord{status: "completed"} = step_run) do
     case deserialize_manual_event(step_run.manual, definition, step_run) do

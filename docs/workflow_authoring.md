@@ -308,6 +308,37 @@ before rollback starts, and callback failures are persisted under
 `recovery.compensation` for inspection. Write callbacks to be idempotent so a
 host app can safely redeliver or repair failed compensation work.
 
+## Compensation And Undo Routes
+
+Error transitions can declare whether the routed recovery step is compensation
+or undo:
+
+```elixir
+transition(:capture_payment, on: :error, to: :issue_credit, recovery: :compensation)
+transition(:reserve_inventory, on: :error, to: :release_inventory, recovery: :undo)
+```
+
+Use `recovery: :compensation` when the next step reconciles or finishes partial
+work with a forward action, such as issuing a credit after a payment capture
+cannot continue. Use `recovery: :undo` when the next step reverses application-
+owned local work, such as releasing a reservation that the workflow can still
+control.
+
+The marker does not change retry behavior. Squid Mesh still retries the failed
+step first when a retry policy exists, then routes through the error transition
+only after retries are exhausted. When the route is chosen,
+`inspect_run(..., include_history: true)` exposes it in the failed step's
+`recovery.failure` field and adds an audit event:
+
+```elixir
+%{
+  failure: %{strategy: :compensation, target: :issue_credit}
+}
+```
+
+Audit event types are `:compensation_routed` and `:undo_routed`, with the
+target step in event metadata.
+
 ## Step Modules
 
 Custom steps typically use `Jido.Action` and return workflow output in a plain

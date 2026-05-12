@@ -70,6 +70,8 @@ Recommended practice:
 - surface structured errors from steps so retry behavior is understandable in inspection
 - mark non-compensatable external side effects with `irreversible: true` or
   `compensatable: false` so replay requires explicit operator approval
+- mark error transitions with `recovery: :compensation` or `recovery: :undo`
+  when the operational response differs
 
 Example:
 
@@ -77,6 +79,22 @@ Example:
 step :check_gateway_status, MyApp.Steps.CheckGatewayStatus,
   retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
 ```
+
+## Compensation Versus Undo
+
+Compensation is a forward recovery action that reconciles partial work. Undo is
+a reversal of local work the application still controls. Keep those paths
+explicit in the workflow so operators can tell whether a failure was reconciled
+or reversed:
+
+```elixir
+transition(:capture_payment, on: :error, to: :issue_credit, recovery: :compensation)
+transition(:reserve_inventory, on: :error, to: :release_inventory, recovery: :undo)
+```
+
+When Squid Mesh routes through one of these transitions, inspection history
+shows the failed step's `recovery.failure` decision and emits either
+`:compensation_routed` or `:undo_routed` in `audit_events`.
 
 ## Replay After Irreversible Side Effects
 

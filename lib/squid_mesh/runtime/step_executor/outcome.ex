@@ -137,18 +137,34 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     with {:ok, _attempt} <- AttemptStore.fail_attempt(config.repo, attempt_id, error),
          {:ok, _step_run} <- StepRunStore.fail_step(config.repo, step_run_id, error),
          {:ok, events} <-
-           apply_failure_progression(config, definition, run, step_name, attempt_number, error) do
+           apply_failure_progression(
+             config,
+             definition,
+             run,
+             step_name,
+             step_run_id,
+             attempt_number,
+             error
+           ) do
       {:ok, [step_failed_event(run, step_name, attempt_number, duration, error) | events]}
     end
   end
 
-  defp apply_failure_progression(config, definition, run, step_name, attempt_number, error) do
+  defp apply_failure_progression(
+         config,
+         definition,
+         run,
+         step_name,
+         step_run_id,
+         attempt_number,
+         error
+       ) do
     case RetryPolicy.resolve(run.workflow, step_name, attempt_number) do
       {:retry, _next_attempt, delay_ms} ->
         schedule_retry(config, run, step_name, attempt_number, error, delay_ms)
 
       _no_retry ->
-        handle_terminal_or_routed_failure(config, definition, run, step_name, error)
+        handle_terminal_or_routed_failure(config, definition, run, step_name, step_run_id, error)
     end
   end
 
@@ -589,7 +605,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     |> progress_events_result()
   end
 
-  defp handle_terminal_or_routed_failure(config, definition, run, step_name, error) do
+  defp handle_terminal_or_routed_failure(config, definition, run, step_name, step_run_id, error) do
     if WorkflowDefinition.dependency_mode?(definition) do
       Logger.error("workflow step failed")
       fail_run_and_request_compensation(config, definition, run, step_name, error)
@@ -597,7 +613,10 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
       case WorkflowDefinition.transition_target(definition, step_name, :error) do
         {:ok, target} ->
           Logger.warning("workflow step failed; routing to error transition")
-          advance_after_failure(config, run, target)
+
+          with :ok <- record_failure_recovery(config.repo, definition, step_name, step_run_id) do
+            advance_after_failure(config, run, target)
+          end
 
         {:error, {:unknown_transition, _from_step, :error}} ->
           Logger.error("workflow step failed")
@@ -606,6 +625,25 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  defp record_failure_recovery(repo, definition, step_name, step_run_id) do
+    case WorkflowDefinition.failure_recovery(definition, step_name) do
+      {:ok, nil} ->
+        :ok
+
+      {:ok, failure_recovery} ->
+        case StepRunStore.record_failure_recovery(repo, step_run_id, failure_recovery) do
+          {:ok, _step_run} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, {:unknown_transition, _from_step, :error}} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

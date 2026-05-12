@@ -187,11 +187,19 @@ defmodule SquidMesh.Workflow do
   """
   defmacro transition(from, opts) do
     quote bind_quoted: [from: from, opts: opts] do
-      @squid_mesh_transitions %{
+      transition = %{
         from: from,
         on: Keyword.fetch!(opts, :on),
         to: Keyword.fetch!(opts, :to)
       }
+
+      transition =
+        case Keyword.fetch(opts, :recovery) do
+          {:ok, recovery} -> Map.put(transition, :recovery, recovery)
+          :error -> transition
+        end
+
+      @squid_mesh_transitions transition
     end
   end
 

@@ -11,6 +11,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.ConcurrentRetryWorkflow
   alias __MODULE__.CompensationWorkflow
   alias __MODULE__.CompensationRetryWorkflow
+  alias __MODULE__.CompleteUndoRoutingWorkflow
   alias __MODULE__.DependencyFailureWorkflow
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.ErrorRoutingWorkflow
@@ -25,6 +26,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
   alias __MODULE__.SuccessfulWorkflow
+  alias __MODULE__.UndoRoutingWorkflow
 
   alias SquidMesh.AttemptStore
   alias SquidMesh.Config
@@ -1173,6 +1175,79 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                {:check_gateway, :failed},
                {:queue_recovery, :completed}
              ]
+
+      assert [
+               %{
+                 type: :compensation_routed,
+                 step: :check_gateway,
+                 metadata: %{target: :queue_recovery}
+               }
+             ] = completed_run.audit_events
+
+      assert [%{recovery: %{failure: %{strategy: :compensation, target: :queue_recovery}}}, _] =
+               completed_run.step_runs
+    end
+
+    test "surfaces undo failure routes distinctly from compensation routes" do
+      assert {:ok, run} =
+               SquidMesh.start_run(UndoRoutingWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context == %{undo: %{account_id: "acct_123", status: "released"}}
+
+      assert [
+               %{
+                 type: :undo_routed,
+                 step: :reserve_inventory,
+                 metadata: %{target: :release_inventory}
+               }
+             ] = completed_run.audit_events
+
+      assert [
+               %{
+                 step: :reserve_inventory,
+                 status: :failed,
+                 recovery: %{failure: %{strategy: :undo, target: :release_inventory}}
+               },
+               %{step: :release_inventory, status: :completed}
+             ] = completed_run.step_runs
+    end
+
+    test "surfaces terminal failure route targets as atoms in inspection history" do
+      assert {:ok, run} =
+               SquidMesh.start_run(CompleteUndoRoutingWorkflow, %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 1, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+
+      assert [
+               %{
+                 type: :undo_routed,
+                 step: :reserve_inventory,
+                 metadata: %{target: :complete}
+               }
+             ] = completed_run.audit_events
+
+      assert [
+               %{
+                 step: :reserve_inventory,
+                 status: :failed,
+                 recovery: %{failure: %{strategy: :undo, target: :complete}}
+               }
+             ] = completed_run.step_runs
     end
 
     test "continues to the :error transition only after retries are exhausted" do
@@ -2821,7 +2896,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       step :check_gateway, ErrorRoutingWorkflow.CheckGateway
       step :queue_recovery, ErrorRoutingWorkflow.QueueRecovery
 
-      transition :check_gateway, on: :error, to: :queue_recovery
+      transition :check_gateway, on: :error, to: :queue_recovery, recovery: :compensation
       transition :queue_recovery, on: :ok, to: :complete
     end
   end
@@ -2851,6 +2926,86 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     @impl true
     def run(%{account_id: account_id}, _context) do
       {:ok, %{recovery: %{account_id: account_id, status: "queued"}}}
+    end
+  end
+
+  defmodule UndoRoutingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :reserve_inventory, UndoRoutingWorkflow.ReserveInventory
+      step :release_inventory, UndoRoutingWorkflow.ReleaseInventory
+
+      transition :reserve_inventory, on: :error, to: :release_inventory, recovery: :undo
+      transition :release_inventory, on: :ok, to: :complete
+    end
+  end
+
+  defmodule UndoRoutingWorkflow.ReserveInventory do
+    use Jido.Action,
+      name: "reserve_inventory",
+      description: "Fails after a reservation attempt",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(_params, _context) do
+      {:error, %{message: "reservation failed", code: "reservation_failed"}}
+    end
+  end
+
+  defmodule UndoRoutingWorkflow.ReleaseInventory do
+    use Jido.Action,
+      name: "release_inventory",
+      description: "Releases a local reservation after a failed attempt",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{undo: %{account_id: account_id, status: "released"}}}
+    end
+  end
+
+  defmodule CompleteUndoRoutingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :reserve_inventory, CompleteUndoRoutingWorkflow.ReserveInventory
+
+      transition :reserve_inventory, on: :error, to: :complete, recovery: :undo
+    end
+  end
+
+  defmodule CompleteUndoRoutingWorkflow.ReserveInventory do
+    use Jido.Action,
+      name: "reserve_inventory",
+      description: "Fails after a reservation attempt that needs no follow-up step",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(_params, _context) do
+      {:error, %{message: "reservation failed", code: "reservation_failed"}}
     end
   end
 

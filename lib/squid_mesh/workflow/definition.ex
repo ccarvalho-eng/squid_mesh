@@ -13,6 +13,7 @@ defmodule SquidMesh.Workflow.Definition do
   @type step_output_mapping :: atom()
   @type payload_field :: %{name: atom(), type: atom(), opts: keyword()}
   @type trigger_type :: :manual | :cron
+  @type transition_target :: atom() | :complete
   @type trigger :: %{
           name: atom(),
           type: trigger_type(),
@@ -20,14 +21,25 @@ defmodule SquidMesh.Workflow.Definition do
           payload: [payload_field()]
         }
   @type step :: %{name: atom(), module: module() | built_in_step_kind(), opts: keyword()}
-  @type transition :: %{from: atom(), on: transition_outcome(), to: atom()}
+  @type failure_recovery_strategy :: :compensation | :undo
+  @type transition :: %{
+          required(:from) => atom(),
+          required(:on) => transition_outcome(),
+          required(:to) => transition_target(),
+          optional(:recovery) => failure_recovery_strategy()
+        }
+  @type failure_recovery :: %{
+          strategy: failure_recovery_strategy(),
+          target: transition_target() | String.t()
+        }
   @type retry :: %{step: atom(), opts: keyword()}
   @type recovery_policy :: %{
+          optional(:compensation) => map(),
+          optional(:failure) => failure_recovery(),
           required(:irreversible?) => boolean(),
           required(:compensatable?) => boolean(),
           required(:recovery) => :automatic | :manual_intervention,
-          required(:replay) => :allowed | :manual_review_required,
-          optional(:compensation) => map()
+          required(:replay) => :allowed | :manual_review_required
         }
   @type dependency_step_status :: :pending | :running | :completed | :failed
   @type inspect_step_status :: dependency_step_status() | :waiting
@@ -61,8 +73,6 @@ defmodule SquidMesh.Workflow.Definition do
           optional(:unknown_fields) => [atom() | String.t()],
           optional(:invalid_types) => %{optional(atom()) => atom()}
         }
-  @type transition_target :: atom() | :complete
-
   @doc """
   Loads a compiled workflow definition from a workflow module.
   """
@@ -330,6 +340,7 @@ defmodule SquidMesh.Workflow.Definition do
       recovery: recovery
     }
     |> maybe_put_compensation(normalize_compensation(recovery_value(policy, :compensation, nil)))
+    |> maybe_put(:failure, normalize_failure_recovery(recovery_value(policy, :failure, nil)))
   end
 
   @doc """
@@ -354,9 +365,40 @@ defmodule SquidMesh.Workflow.Definition do
           {:ok, transition_target()} | {:error, {:unknown_transition, atom(), atom()}}
   def transition_target(definition, from_step, outcome)
       when is_atom(from_step) and is_atom(outcome) do
+    case transition(definition, from_step, outcome) do
+      {:ok, %{to: to_step}} -> {:ok, to_step}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Resolves the full transition metadata for one step outcome.
+  """
+  @spec transition(t(), atom(), transition_outcome()) ::
+          {:ok, transition()} | {:error, {:unknown_transition, atom(), atom()}}
+  def transition(definition, from_step, outcome)
+      when is_atom(from_step) and is_atom(outcome) do
     case Enum.find(definition.transitions, &(&1.from == from_step and &1.on == outcome)) do
-      %{to: to_step} -> {:ok, to_step}
+      %{} = transition -> {:ok, transition}
       nil -> {:error, {:unknown_transition, from_step, outcome}}
+    end
+  end
+
+  @doc """
+  Returns the explicit failure recovery route for a step when one was declared.
+  """
+  @spec failure_recovery(t(), atom()) ::
+          {:ok, failure_recovery() | nil} | {:error, {:unknown_transition, atom(), atom()}}
+  def failure_recovery(definition, from_step) when is_atom(from_step) do
+    case transition(definition, from_step, :error) do
+      {:ok, %{recovery: strategy, to: target}} when strategy in [:compensation, :undo] ->
+        {:ok, %{strategy: strategy, target: target}}
+
+      {:ok, %{}} ->
+        {:ok, nil}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -596,6 +638,26 @@ defmodule SquidMesh.Workflow.Definition do
 
   defp deserialize_completed_step(definition, step) when is_binary(step),
     do: deserialize_step(definition, step)
+
+  defp normalize_failure_recovery(%{} = failure) do
+    strategy =
+      case recovery_value(failure, :strategy, nil) do
+        strategy when strategy in [:compensation, :undo] -> strategy
+        "compensation" -> :compensation
+        "undo" -> :undo
+        _other -> nil
+      end
+
+    target = recovery_value(failure, :target, nil)
+
+    if strategy && target do
+      %{strategy: strategy, target: target}
+    else
+      %{}
+    end
+  end
+
+  defp normalize_failure_recovery(_failure), do: %{}
 
   defp recovery_value(policy, key, default) do
     Map.get(policy, key, Map.get(policy, Atom.to_string(key), default))
