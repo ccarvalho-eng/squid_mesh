@@ -176,6 +176,43 @@ defmodule SquidMesh.WorkflowTest do
              {:ok, Module.concat(module, ReleaseInventory)}
   end
 
+  test "supports explicit compensation and undo error transition markers" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithFailureRecoveryMarkers do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:capture_payment, WorkflowWithFailureRecoveryMarkers.CapturePayment)
+          step(:issue_credit, WorkflowWithFailureRecoveryMarkers.IssueCredit)
+          step(:reserve_inventory, WorkflowWithFailureRecoveryMarkers.ReserveInventory)
+          step(:release_inventory, WorkflowWithFailureRecoveryMarkers.ReleaseInventory)
+
+          transition(:capture_payment, on: :error, to: :issue_credit, recovery: :compensation)
+          transition(:issue_credit, on: :ok, to: :reserve_inventory)
+          transition(:reserve_inventory, on: :error, to: :release_inventory, recovery: :undo)
+          transition(:release_inventory, on: :ok, to: :complete)
+        end
+      end
+      """)
+
+    assert [
+             %{
+               from: :capture_payment,
+               on: :error,
+               to: :issue_credit,
+               recovery: :compensation
+             },
+             %{from: :issue_credit, on: :ok, to: :reserve_inventory},
+             %{from: :reserve_inventory, on: :error, to: :release_inventory, recovery: :undo},
+             %{from: :release_inventory, on: :ok, to: :complete}
+           ] = module.workflow_definition().transitions
+  end
+
   test "normalizes persisted irreversible policy as non-compensatable" do
     assert SquidMesh.Workflow.Definition.normalize_recovery_policy(%{
              "irreversible?" => true,
@@ -187,6 +224,22 @@ defmodule SquidMesh.WorkflowTest do
              compensatable?: false,
              replay: :manual_review_required,
              recovery: :manual_intervention
+           }
+  end
+
+  test "normalizes persisted failure recovery decisions" do
+    assert SquidMesh.Workflow.Definition.normalize_recovery_policy(%{
+             "irreversible?" => false,
+             "compensatable?" => true,
+             "replay" => "allowed",
+             "recovery" => "automatic",
+             "failure" => %{"strategy" => "undo", "target" => "release_inventory"}
+           }) == %{
+             irreversible?: false,
+             compensatable?: true,
+             replay: :allowed,
+             recovery: :automatic,
+             failure: %{strategy: :undo, target: "release_inventory"}
            }
   end
 
@@ -505,6 +558,52 @@ defmodule SquidMesh.WorkflowTest do
            )
 
     refute String.contains?(message, "cannot be both irreversible and compensatable")
+  end
+
+  test "fails when error transition recovery markers are invalid" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidFailureRecoveryMarker do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:capture_payment, WorkflowWithInvalidFailureRecoveryMarker.CapturePayment)
+          step(:issue_credit, WorkflowWithInvalidFailureRecoveryMarker.IssueCredit)
+
+          transition(:capture_payment, on: :error, to: :issue_credit, recovery: :rollback)
+          transition(:issue_credit, on: :ok, to: :complete)
+        end
+      end
+      """,
+      "transition from :capture_payment defines unsupported recovery marker :rollback"
+    )
+  end
+
+  test "fails when success transitions define recovery markers" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithSuccessRecoveryMarker do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:capture_payment, WorkflowWithSuccessRecoveryMarker.CapturePayment)
+          step(:issue_credit, WorkflowWithSuccessRecoveryMarker.IssueCredit)
+
+          transition(:capture_payment, on: :ok, to: :issue_credit, recovery: :undo)
+          transition(:issue_credit, on: :ok, to: :complete)
+        end
+      end
+      """,
+      "transition from :capture_payment can only define recovery markers for :error outcomes"
+    )
   end
 
   test "fails when a workflow defines multiple entry steps" do

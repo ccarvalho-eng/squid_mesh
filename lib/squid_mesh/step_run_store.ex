@@ -16,6 +16,7 @@ defmodule SquidMesh.StepRunStore do
   @type step_output :: map()
   @type step_error :: map()
   @type recovery_policy :: map() | nil
+  @type failure_recovery :: %{strategy: :compensation | :undo, target: step_identifier()}
   @type pause_target :: :complete | atom()
   @type approval_targets :: %{ok: pause_target(), error: pause_target()}
   @type manual_event :: map()
@@ -205,6 +206,37 @@ defmodule SquidMesh.StepRunStore do
       resume: nil,
       last_error: error
     })
+  end
+
+  @doc false
+  @spec record_failure_recovery(module(), Ecto.UUID.t(), failure_recovery()) ::
+          {:ok, StepRun.t()} | {:error, :not_found | stale_error()}
+  def record_failure_recovery(repo, step_run_id, %{strategy: strategy, target: target} = failure)
+      when strategy in [:compensation, :undo] and (is_atom(target) or is_binary(target)) do
+    case repo.get(StepRun, step_run_id) do
+      %StepRun{status: "failed", recovery: recovery} ->
+        updated_recovery =
+          (recovery || %{})
+          |> Map.put("failure", serialize_recovery_value(failure))
+
+        updates = [recovery: updated_recovery, updated_at: now_utc()]
+
+        {count, _rows} =
+          StepRun
+          |> where([step_run], step_run.id == ^step_run_id and step_run.status == "failed")
+          |> repo.update_all(set: updates)
+
+        case count do
+          1 -> {:ok, repo.get!(StepRun, step_run_id)}
+          0 -> stale_step_run_error(repo, step_run_id)
+        end
+
+      %StepRun{status: status} ->
+        {:error, {:stale_step_run, status}}
+
+      nil ->
+        {:error, :not_found}
+    end
   end
 
   @doc """
@@ -446,7 +478,7 @@ defmodule SquidMesh.StepRunStore do
   defp transition_failed_step_to_running(repo, run_id, step, attrs) do
     updates =
       attrs
-      |> Map.take([:status, :input, :output, :resume, :last_error])
+      |> Map.take([:status, :input, :output, :recovery, :resume, :last_error])
       |> Map.put(:updated_at, now_utc())
 
     {count, _rows} =
@@ -510,28 +542,27 @@ defmodule SquidMesh.StepRunStore do
   defp serialize_recovery(nil), do: nil
 
   defp serialize_recovery(recovery) when is_map(recovery) do
+    serialize_recovery_value(recovery)
+  end
+
+  defp serialize_recovery_value(recovery) when is_map(recovery) do
     Map.new(recovery, fn {key, value} ->
       {serialize_recovery_key(key), serialize_recovery_value(value)}
     end)
   end
 
-  defp serialize_recovery_key(key) when is_atom(key), do: Atom.to_string(key)
-  defp serialize_recovery_key(key), do: key
-
   defp serialize_recovery_value(value) when is_boolean(value), do: value
   defp serialize_recovery_value(nil), do: nil
+  defp serialize_recovery_value(:complete), do: "__complete__"
   defp serialize_recovery_value(value) when is_atom(value), do: Atom.to_string(value)
-
-  defp serialize_recovery_value(value) when is_map(value) do
-    Map.new(value, fn {key, nested_value} ->
-      {serialize_recovery_key(key), serialize_recovery_value(nested_value)}
-    end)
-  end
 
   defp serialize_recovery_value(value) when is_list(value),
     do: Enum.map(value, &serialize_recovery_value/1)
 
   defp serialize_recovery_value(value), do: value
+
+  defp serialize_recovery_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp serialize_recovery_key(key), do: key
 
   defp now_utc do
     DateTime.utc_now() |> DateTime.truncate(:microsecond)

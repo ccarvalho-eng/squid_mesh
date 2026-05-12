@@ -151,6 +151,20 @@ voids the payment authorization and releases inventory in reverse completion
 order. The smoke task verifies those compensation results through
 `inspect_run(..., include_history: true)`.
 
+The same workflow routes exhausted gateway failures to a compensation step:
+
+```elixir
+transition(:check_gateway_status,
+  on: :error,
+  to: :issue_gateway_credit,
+  recovery: :compensation
+)
+```
+
+When that path runs, `inspect_run(run_id, include_history: true)` exposes a
+`:compensation_routed` audit event and the failed step's
+`recovery.failure.strategy`.
+
 Host apps can expose diagnostics through the same boundary:
 
 ```elixir

@@ -42,6 +42,70 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert inspected_run == run
   end
 
+  test "surfaces payment recovery compensation through host inspection history" do
+    {server_pid, port} =
+      MinimalHostApp.RuntimeHarness.start_gateway_server(
+        fn _attempt -> MinimalHostApp.RuntimeHarness.failure_gateway_response(503, "down") end,
+        10
+      )
+
+    on_exit(fn -> MinimalHostApp.RuntimeHarness.stop_gateway_server(server_pid) end)
+
+    attrs = %{
+      account_id: "acct_123",
+      invoice_id: "inv_456",
+      attempt_id: "attempt_789",
+      gateway_url: endpoint_url(port, "/gateway")
+    }
+
+    assert {:ok, run} = WorkflowRuns.start_payment_recovery(attrs)
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+
+    assert :ok =
+             MinimalHostApp.RuntimeHarness.perform_scheduled_step!(run.id, "check_gateway_status")
+
+    assert :ok =
+             MinimalHostApp.RuntimeHarness.perform_scheduled_step!(run.id, "check_gateway_status")
+
+    assert :ok =
+             MinimalHostApp.RuntimeHarness.perform_scheduled_step!(run.id, "check_gateway_status")
+
+    assert :ok =
+             MinimalHostApp.RuntimeHarness.perform_scheduled_step!(run.id, "check_gateway_status")
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+    assert {:ok, history_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
+
+    assert completed_run.status == :completed
+
+    assert completed_run.context.compensation == %{
+             account_id: "acct_123",
+             invoice_id: "inv_456",
+             status: "credit_issued"
+           }
+
+    assert [
+             %{
+               type: :compensation_routed,
+               step: :check_gateway_status,
+               metadata: %{target: :issue_gateway_credit}
+             }
+           ] = history_run.audit_events
+
+    assert [
+             %{step: :load_invoice, status: :completed},
+             %{
+               step: :check_gateway_status,
+               status: :failed,
+               recovery: %{failure: %{strategy: :compensation, target: :issue_gateway_credit}}
+             },
+             %{step: :issue_gateway_credit, status: :completed}
+           ] = history_run.step_runs
+  end
+
   test "executes a dependency-based workflow through the host boundary" do
     attrs = %{
       account_id: "acct_123",
