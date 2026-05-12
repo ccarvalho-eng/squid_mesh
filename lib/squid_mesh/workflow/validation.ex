@@ -416,7 +416,9 @@ defmodule SquidMesh.Workflow.Validation do
       acc
       |> validate_boolean_step_option(name, opts, :irreversible)
       |> validate_boolean_step_option(name, opts, :compensatable)
+      |> validate_step_compensation_callback(name, opts)
       |> validate_recovery_marker_conflict(name, opts)
+      |> validate_compensation_marker_conflict(name, opts)
     end)
   end
 
@@ -436,6 +438,43 @@ defmodule SquidMesh.Workflow.Validation do
   defp validate_recovery_marker_conflict(errors, name, opts) do
     if Keyword.get(opts, :irreversible) == true and Keyword.get(opts, :compensatable) == true do
       ["step #{inspect(name)} cannot be both irreversible and compensatable" | errors]
+    else
+      errors
+    end
+  end
+
+  defp validate_step_compensation_callback(errors, name, opts) do
+    case Keyword.fetch(opts, :compensate) do
+      {:ok, callback} when is_atom(callback) ->
+        if module_atom?(callback) and callback not in @built_in_step_kinds do
+          errors
+        else
+          ["step #{inspect(name)} defines an invalid :compensate callback" | errors]
+        end
+
+      {:ok, _callback} ->
+        ["step #{inspect(name)} defines an invalid :compensate callback" | errors]
+
+      :error ->
+        errors
+    end
+  end
+
+  defp module_atom?(callback) when is_atom(callback) do
+    callback
+    |> Atom.to_string()
+    |> String.starts_with?("Elixir.")
+  end
+
+  defp module_atom?(_callback), do: false
+
+  defp validate_compensation_marker_conflict(errors, name, opts) do
+    if Keyword.has_key?(opts, :compensate) and
+         (Keyword.get(opts, :irreversible) == true or Keyword.get(opts, :compensatable) == false) do
+      [
+        "step #{inspect(name)} cannot declare :compensate when it is irreversible or non-compensatable"
+        | errors
+      ]
     else
       errors
     end

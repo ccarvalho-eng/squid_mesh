@@ -69,8 +69,11 @@ The smoke task:
 - approves the paused run through `MinimalHostApp.WorkflowRuns.approve_run/2`
 - starts a manual digest run through
   `MinimalHostApp.WorkflowRuns.start_manual_digest/1`
+- starts a saga checkout run through
+  `MinimalHostApp.WorkflowRuns.start_saga_checkout/1`
 - waits for execution, inspects all completed manual workflows, and
-  verifies the paused approval run's durable audit history
+  verifies the paused approval run's durable audit history and saga rollback
+  compensation history
 - activates the same digest workflow through the host app's Oban-backed cron plugin
 - verifies both digest triggers complete through the same workflow graph
 
@@ -131,6 +134,23 @@ That marker makes replay require explicit operator approval after the
 notification has completed, instead of silently treating the side effect as
 reversible.
 
+The saga checkout workflow demonstrates reversible side effects:
+
+```elixir
+step :reserve_inventory, MinimalHostApp.Steps.ReserveInventory,
+  compensate: MinimalHostApp.Steps.ReleaseInventory
+
+step :authorize_payment, MinimalHostApp.Steps.AuthorizePayment,
+  compensate: MinimalHostApp.Steps.VoidPaymentAuthorization
+
+step :capture_payment, MinimalHostApp.Steps.CapturePayment, retry: [max_attempts: 2]
+```
+
+The capture step fails after its retry policy is exhausted, then Squid Mesh
+voids the payment authorization and releases inventory in reverse completion
+order. The smoke task verifies those compensation results through
+`inspect_run(..., include_history: true)`.
+
 Host apps can expose diagnostics through the same boundary:
 
 ```elixir
@@ -144,6 +164,7 @@ The reference workflow and step modules live in:
 - `lib/minimal_host_app/workflows/payment_recovery.ex`
 - `lib/minimal_host_app/workflows/dependency_recovery.ex`
 - `lib/minimal_host_app/workflows/manual_approval.ex`
+- `lib/minimal_host_app/workflows/saga_checkout.ex`
 - `lib/minimal_host_app/workflows/daily_digest.ex`
 - `lib/minimal_host_app/steps/`
 

@@ -8,6 +8,7 @@ defmodule SquidMesh.StepRunStore do
 
   import Ecto.Query
 
+  alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
 
   @type step_identifier :: atom() | String.t()
@@ -20,6 +21,7 @@ defmodule SquidMesh.StepRunStore do
   @type manual_event :: map()
   @type step_status :: :pending | :running | :completed | :failed
   @type stale_error :: {:stale_step_run, String.t()}
+  @type recovery_attrs :: map()
   @type begin_result :: {:ok, StepRun.t(), :execute | :skip}
   @type schedule_result :: {:ok, StepRun.t(), :schedule | :skip} | {:error, Ecto.Changeset.t()}
   @type step_schedule_input ::
@@ -283,6 +285,60 @@ defmodule SquidMesh.StepRunStore do
   end
 
   @doc """
+  Lists completed step runs for one workflow run in compensation order.
+
+  Saga rollback must undo the most recently completed reversible effect first.
+  The ordering uses the completed forward attempt timestamp so compensation
+  metadata updates do not change rollback order on redelivery.
+  """
+  @spec completed_step_runs_for_compensation(module(), Ecto.UUID.t()) :: [StepRun.t()]
+  def completed_step_runs_for_compensation(repo, run_id) do
+    latest_completion_query =
+      from(attempt in StepAttempt,
+        where: attempt.status == "completed",
+        group_by: attempt.step_run_id,
+        select: %{step_run_id: attempt.step_run_id, completed_at: max(attempt.updated_at)}
+      )
+
+    StepRun
+    |> join(:left, [step_run], completion in subquery(latest_completion_query),
+      on: completion.step_run_id == step_run.id
+    )
+    |> where([step_run], step_run.run_id == ^run_id and step_run.status == "completed")
+    |> order_by([step_run, completion],
+      desc: completion.completed_at,
+      desc: step_run.inserted_at,
+      desc: step_run.id
+    )
+    |> repo.all()
+  end
+
+  @doc """
+  Updates the persisted recovery metadata for one step run.
+
+  The compensation runtime uses this to mark callbacks as running, completed, or
+  failed without changing the original forward step status.
+  """
+  @spec update_recovery(module(), Ecto.UUID.t(), recovery_attrs()) ::
+          {:ok, StepRun.t()} | {:error, :not_found}
+  def update_recovery(repo, step_run_id, recovery) when is_map(recovery) do
+    updates = [
+      recovery: serialize_recovery(recovery),
+      updated_at: now_utc()
+    ]
+
+    {count, _rows} =
+      StepRun
+      |> where([step_run], step_run.id == ^step_run_id)
+      |> repo.update_all(set: updates)
+
+    case count do
+      1 -> {:ok, repo.get!(StepRun, step_run_id)}
+      0 -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Lists the persisted step status for each declared step in a workflow run.
   """
   @spec step_statuses(module(), Ecto.UUID.t()) :: %{optional(String.t()) => step_status()}
@@ -454,11 +510,28 @@ defmodule SquidMesh.StepRunStore do
   defp serialize_recovery(nil), do: nil
 
   defp serialize_recovery(recovery) when is_map(recovery) do
-    Map.new(recovery, fn {key, value} -> {serialize_recovery_key(key), value} end)
+    Map.new(recovery, fn {key, value} ->
+      {serialize_recovery_key(key), serialize_recovery_value(value)}
+    end)
   end
 
   defp serialize_recovery_key(key) when is_atom(key), do: Atom.to_string(key)
   defp serialize_recovery_key(key), do: key
+
+  defp serialize_recovery_value(value) when is_boolean(value), do: value
+  defp serialize_recovery_value(nil), do: nil
+  defp serialize_recovery_value(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp serialize_recovery_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {serialize_recovery_key(key), serialize_recovery_value(nested_value)}
+    end)
+  end
+
+  defp serialize_recovery_value(value) when is_list(value),
+    do: Enum.map(value, &serialize_recovery_value/1)
+
+  defp serialize_recovery_value(value), do: value
 
   defp now_utc do
     DateTime.utc_now() |> DateTime.truncate(:microsecond)
