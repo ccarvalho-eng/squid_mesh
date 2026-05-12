@@ -23,10 +23,11 @@ defmodule SquidMesh.Workflow.Definition do
   @type transition :: %{from: atom(), on: transition_outcome(), to: atom()}
   @type retry :: %{step: atom(), opts: keyword()}
   @type recovery_policy :: %{
-          irreversible?: boolean(),
-          compensatable?: boolean(),
-          replay: :allowed | :manual_review_required,
-          recovery: :automatic | :manual_intervention
+          required(:irreversible?) => boolean(),
+          required(:compensatable?) => boolean(),
+          required(:recovery) => :automatic | :manual_intervention,
+          required(:replay) => :allowed | :manual_review_required,
+          optional(:compensation) => map()
         }
   @type dependency_step_status :: :pending | :running | :completed | :failed
   @type inspect_step_status :: dependency_step_status() | :waiting
@@ -268,6 +269,21 @@ defmodule SquidMesh.Workflow.Definition do
   end
 
   @doc """
+  Returns the compensation callback for one declared step, if any.
+
+  A callback means the step's completed side effect is reversible by a host
+  application action. The runtime uses it only during saga rollback after a
+  downstream terminal failure, never as a same-step fallback.
+  """
+  @spec step_compensation_callback(t(), atom()) ::
+          {:ok, module() | nil} | {:error, {:unknown_step, atom()}}
+  def step_compensation_callback(definition, step_name) when is_atom(step_name) do
+    with {:ok, step} <- step(definition, step_name) do
+      {:ok, Keyword.get(step.opts, :compensate)}
+    end
+  end
+
+  @doc """
   Returns completed steps whose recovery policy makes replay unsafe by default.
   """
   @spec unsafe_replay_steps(t(), [atom() | String.t() | {atom() | String.t(), map() | nil}]) ::
@@ -279,13 +295,13 @@ defmodule SquidMesh.Workflow.Definition do
   @doc false
   @spec normalize_recovery_policy(map()) :: recovery_policy()
   def normalize_recovery_policy(policy) when is_map(policy) do
-    irreversible? = recovery_value(policy, :irreversible?, false)
+    irreversible? = boolean_recovery_value(policy, :irreversible?, false)
 
     compensatable? =
       if irreversible? do
         false
       else
-        recovery_value(policy, :compensatable?, true)
+        boolean_recovery_value(policy, :compensatable?, true)
       end
 
     replay =
@@ -313,6 +329,7 @@ defmodule SquidMesh.Workflow.Definition do
       replay: replay,
       recovery: recovery
     }
+    |> maybe_put_compensation(normalize_compensation(recovery_value(policy, :compensation, nil)))
   end
 
   @doc """
@@ -490,8 +507,57 @@ defmodule SquidMesh.Workflow.Definition do
         replay: :allowed,
         recovery: :automatic
       }
+      |> maybe_put_compensation(compensation_policy(Keyword.get(opts, :compensate)))
     end
   end
+
+  defp compensation_policy(nil), do: nil
+
+  defp compensation_policy(callback) when is_atom(callback) do
+    %{callback: callback, status: :available}
+  end
+
+  defp normalize_compensation(nil), do: nil
+
+  defp normalize_compensation(compensation) when is_map(compensation) do
+    compensation
+    |> Map.new(fn {key, value} -> {deserialize_compensation_key(key), value} end)
+    |> Map.update(:status, :available, &deserialize_compensation_status/1)
+  end
+
+  defp normalize_compensation(_compensation), do: nil
+
+  defp maybe_put_compensation(policy, nil), do: policy
+
+  defp maybe_put_compensation(policy, compensation),
+    do: Map.put(policy, :compensation, compensation)
+
+  defp deserialize_compensation_key(key) when is_binary(key) do
+    case key do
+      "callback" -> :callback
+      "status" -> :status
+      "output" -> :output
+      "error" -> :error
+      "started_at" -> :started_at
+      "completed_at" -> :completed_at
+      "failed_at" -> :failed_at
+      other -> other
+    end
+  end
+
+  defp deserialize_compensation_key(key), do: key
+
+  defp deserialize_compensation_status(status) when is_binary(status) do
+    case status do
+      "available" -> :available
+      "running" -> :running
+      "completed" -> :completed
+      "failed" -> :failed
+      other -> other
+    end
+  end
+
+  defp deserialize_compensation_status(status), do: status
 
   defp unsafe_replay_step(definition, {completed_step, recovery}) when is_map(recovery) do
     step_name = deserialize_completed_step(definition, completed_step)
@@ -533,6 +599,16 @@ defmodule SquidMesh.Workflow.Definition do
 
   defp recovery_value(policy, key, default) do
     Map.get(policy, key, Map.get(policy, Atom.to_string(key), default))
+  end
+
+  defp boolean_recovery_value(policy, key, default) do
+    case recovery_value(policy, key, default) do
+      true -> true
+      false -> false
+      "true" -> true
+      "false" -> false
+      _other -> default
+    end
   end
 
   @doc """

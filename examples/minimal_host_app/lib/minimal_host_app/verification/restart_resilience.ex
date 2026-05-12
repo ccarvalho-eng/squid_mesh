@@ -114,7 +114,7 @@ defmodule MinimalHostApp.Verification.RestartResilience do
     {:ok, history_run} = WorkflowRuns.inspect_run(run.id, include_history: true)
     retry_step = Enum.find(history_run.step_runs, &(&1.step == :exercise_retry))
 
-    unless completed_run.status == :completed and retry_step &&
+    unless (completed_run.status == :completed and retry_step) &&
              length(retry_step.attempts) == 2 do
       raise "expected retried run to complete with two attempts"
     end

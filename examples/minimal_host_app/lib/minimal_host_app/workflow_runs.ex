@@ -36,6 +36,11 @@ defmodule MinimalHostApp.WorkflowRuns do
           required(:digest_date) => String.t()
         }
 
+  @type saga_checkout_attrs :: %{
+          required(:account_id) => String.t(),
+          required(:order_id) => String.t()
+        }
+
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
@@ -70,6 +75,14 @@ defmodule MinimalHostApp.WorkflowRuns do
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_manual_digest(attrs) when is_map(attrs) do
     SquidMesh.start_run(MinimalHostApp.Workflows.DailyDigest, :manual_digest, attrs)
+  end
+
+  @doc """
+  Starts the saga checkout example that compensates completed side effects.
+  """
+  @spec start_saga_checkout(saga_checkout_attrs()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def start_saga_checkout(attrs) when is_map(attrs) do
+    SquidMesh.start_run(MinimalHostApp.Workflows.SagaCheckout, :saga_checkout, attrs)
   end
 
   @spec inspect_payment_recovery(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}

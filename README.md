@@ -128,7 +128,10 @@ formatter configuration from the host app:
 
 ## Example: Daily RSS To Discord
 
-This example shows the core runtime shape: one cron trigger, typed payload defaults, built-in steps, custom steps, explicit failure routing, and step-level retry on the external side-effect step.
+This example shows the core runtime shape: one cron trigger, typed payload
+defaults, built-in steps, custom steps, explicit failure routing, step-level
+retry on the external side-effect step, and compensation for a successfully
+posted Discord message if a later bookkeeping step fails.
 
 ```elixir
 defmodule Content.Workflows.PostDailyDigest do
@@ -152,17 +155,23 @@ defmodule Content.Workflows.PostDailyDigest do
       output: :digest
     
     step :announce_post, :log, message: "Posting digest to Discord", level: :info
+    step :record_successful_delivery, Content.Steps.RecordSuccessfulDelivery,
+      input: [:discord_message, :posted_on]
+
     step :record_failed_delivery, Content.Steps.RecordFailedDelivery
 
     step :post_to_discord, Content.Steps.PostToDiscord,
       input: [:digest, :discord_webhook_url],
+      output: :discord_message,
+      compensate: Content.Steps.DeleteDiscordMessage,
       retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
 
     transition :fetch_feed, on: :ok, to: :build_digest
     transition :build_digest, on: :ok, to: :announce_post
     transition :announce_post, on: :ok, to: :post_to_discord
-    transition :post_to_discord, on: :ok, to: :complete
+    transition :post_to_discord, on: :ok, to: :record_successful_delivery
     transition :post_to_discord, on: :error, to: :record_failed_delivery
+    transition :record_successful_delivery, on: :ok, to: :complete
     transition :record_failed_delivery, on: :ok, to: :complete
   end
 end
@@ -180,6 +189,36 @@ For external side effects that cannot be honestly undone, mark the step with
 policy in inspection and blocks replay by default after such a step completes;
 operators can still replay with `allow_irreversible: true` after reviewing the
 side effect.
+
+In the RSS example, the `:error` transition on `:post_to_discord` is a
+same-step fallback for a message that was never posted successfully after
+retries. The compensation callback is different: it is used only if
+`:post_to_discord` completes, stores a deletable Discord message id under
+`:discord_message`, and a later step such as `:record_successful_delivery`
+causes the run to fail.
+
+For other reversible saga steps, declare compensation callbacks the same way:
+
+```elixir
+step :reserve_inventory, Checkout.Steps.ReserveInventory,
+  compensate: Checkout.Steps.ReleaseInventory
+
+step :authorize_payment, Checkout.Steps.AuthorizePayment,
+  compensate: Checkout.Steps.VoidPaymentAuthorization
+
+step :capture_payment, Checkout.Steps.CapturePayment,
+  retry: [max_attempts: 2]
+
+transition :reserve_inventory, on: :ok, to: :authorize_payment
+transition :authorize_payment, on: :ok, to: :capture_payment
+transition :capture_payment, on: :ok, to: :complete
+```
+
+When a downstream step fails after retries and the workflow has no forward
+`:error` path, Squid Mesh runs completed compensation callbacks in reverse
+completion order. In the checkout example above, a failed `:capture_payment`
+step voids the payment authorization before releasing inventory, and each
+result is persisted under the original step's `recovery.compensation` history.
 
 Start the workflow through the public API and inspect the result with history:
 

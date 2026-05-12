@@ -101,6 +101,24 @@ defmodule SquidMesh.Runtime.Dispatcher do
     end
   end
 
+  @doc """
+  Enqueues the durable compensation worker for a failed run.
+
+  This is called from the same transaction that marks the run failed, giving the
+  terminal run transition and compensation dispatch the same atomicity as normal
+  successor-step dispatch.
+  """
+  @spec dispatch_compensation_with_events(Config.t(), Run.t()) ::
+          {:ok, Oban.Job.t(), [dispatch_event()]} | {:error, dispatch_error()}
+  def dispatch_compensation_with_events(%Config{} = config, %Run{} = run) do
+    changeset = StepWorker.new(%{run_id: run.id, compensate: true}, queue: config.execution_queue)
+
+    with :ok <- validate_job_changesets([changeset]),
+         {:ok, [job]} <- do_insert_step_jobs(config, [changeset]) do
+      {:ok, job, [run_dispatched_event(run, job, config.execution_queue, nil)]}
+    end
+  end
+
   defp emit_dispatch_events(events) do
     Enum.each(events, fn {:run_dispatched, run, job, queue, schedule_in} ->
       Observability.emit_run_dispatched(run, job, queue, schedule_in)

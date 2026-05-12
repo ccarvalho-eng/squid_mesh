@@ -50,6 +50,7 @@ defmodule MinimalHostApp.Smoke do
           dependency_recovery: SquidMesh.Run.t(),
           manual_approval: SquidMesh.Run.t(),
           manual_digest: SquidMesh.Run.t(),
+          saga_checkout: SquidMesh.Run.t(),
           daily_digest: SquidMesh.Run.t()
         }
   def run_all! do
@@ -57,6 +58,7 @@ defmodule MinimalHostApp.Smoke do
     dependency_recovery = run_dependency_recovery!()
     manual_approval = run_manual_approval!()
     manual_digest = run_manual_digest!()
+    saga_checkout = run_saga_checkout!()
     existing_daily_digest_run_ids = daily_digest_run_ids()
 
     with :ok <- run_cron_digest(),
@@ -71,6 +73,7 @@ defmodule MinimalHostApp.Smoke do
         dependency_recovery: dependency_recovery,
         manual_approval: manual_approval,
         manual_digest: manual_digest,
+        saga_checkout: saga_checkout,
         daily_digest: cron_run
       }
     else
@@ -127,9 +130,7 @@ defmodule MinimalHostApp.Smoke do
   @spec run_manual_approval!() :: SquidMesh.Run.t()
   def run_manual_approval! do
     with {:ok, run} <- WorkflowRuns.start_manual_approval(%{account_id: "acct_manual_demo"}),
-         :ok <- RuntimeHarness.wait_for_execution(),
-         {:ok, paused_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
-         :ok <- ensure_paused(paused_run),
+         {:ok, _paused_run} <- await_paused_run(run.id, @poll_attempts),
          {:ok, explanation} <- WorkflowRuns.explain_run(run.id),
          :ok <- ensure_paused_approval_explanation(explanation),
          {:ok, resumed_run} <-
@@ -175,6 +176,30 @@ defmodule MinimalHostApp.Smoke do
     else
       {:error, reason} ->
         raise "manual digest smoke test failed: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Runs the saga checkout example and verifies persisted compensation history.
+  """
+  @spec run_saga_checkout!() :: SquidMesh.Run.t()
+  def run_saga_checkout! do
+    attrs = %{account_id: "acct_saga_demo", order_id: "ord_saga_demo"}
+
+    with {:ok, run} <- WorkflowRuns.start_saga_checkout(attrs),
+         :ok <- RuntimeHarness.wait_for_execution(),
+         {:ok, inspected_run} <-
+           RuntimeHarness.await_terminal_run(run.id, attempts: @poll_attempts),
+         {:ok, history_run} <- WorkflowRuns.inspect_run(run.id, include_history: true),
+         :ok <- ensure_saga_compensation(history_run) do
+      unless inspected_run.status == :failed and inspected_run.current_step == :capture_payment do
+        raise "unexpected saga checkout smoke result"
+      end
+
+      history_run
+    else
+      {:error, reason} ->
+        raise "saga checkout smoke test failed: #{inspect(reason)}"
     end
   end
 
@@ -227,6 +252,29 @@ defmodule MinimalHostApp.Smoke do
   defp ensure_cancelling(%SquidMesh.Run{status: :cancelling}), do: :ok
   defp ensure_cancelling(%SquidMesh.Run{}), do: {:error, :unexpected_cancellation_status}
 
+  @spec await_paused_run(Ecto.UUID.t(), non_neg_integer()) ::
+          {:ok, SquidMesh.Run.t()} | {:error, term()}
+  defp await_paused_run(_run_id, 0), do: {:error, :timeout}
+
+  defp await_paused_run(run_id, attempts_remaining) when attempts_remaining > 0 do
+    :ok = RuntimeHarness.wait_for_execution()
+
+    case WorkflowRuns.inspect_run(run_id, include_history: true) do
+      {:ok, %SquidMesh.Run{} = run} ->
+        case ensure_paused(run) do
+          :ok ->
+            {:ok, run}
+
+          {:error, _reason} ->
+            Process.sleep(50)
+            await_paused_run(run_id, attempts_remaining - 1)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   @spec ensure_paused(SquidMesh.Run.t()) :: :ok | {:error, :unexpected_paused_status}
   defp ensure_paused(%SquidMesh.Run{status: :paused, current_step: :wait_for_approval}), do: :ok
   defp ensure_paused(%SquidMesh.Run{}), do: {:error, :unexpected_paused_status}
@@ -266,6 +314,35 @@ defmodule MinimalHostApp.Smoke do
 
   defp ensure_manual_approval_audit(%SquidMesh.Run{}),
     do: {:error, :unexpected_manual_approval_audit}
+
+  @spec ensure_saga_compensation(SquidMesh.Run.t()) ::
+          :ok | {:error, :unexpected_saga_compensation}
+  defp ensure_saga_compensation(%SquidMesh.Run{step_runs: step_runs}) when is_list(step_runs) do
+    expected_steps = [
+      {:reserve_inventory, :completed},
+      {:authorize_payment, :completed},
+      {:capture_payment, :failed}
+    ]
+
+    compensation_statuses =
+      step_runs
+      |> Enum.filter(&(&1.step in [:reserve_inventory, :authorize_payment]))
+      |> Enum.map(fn step_run ->
+        {step_run.step, get_in(step_run.recovery, [:compensation, :status])}
+      end)
+
+    if Enum.map(step_runs, &{&1.step, &1.status}) == expected_steps and
+         Enum.sort(compensation_statuses) == [
+           {:authorize_payment, :completed},
+           {:reserve_inventory, :completed}
+         ] do
+      :ok
+    else
+      {:error, :unexpected_saga_compensation}
+    end
+  end
+
+  defp ensure_saga_compensation(%SquidMesh.Run{}), do: {:error, :unexpected_saga_compensation}
 
   @spec latest_daily_digest_run([SquidMesh.Run.t()]) ::
           {:ok, SquidMesh.Run.t()} | {:error, :missing_daily_digest_run}

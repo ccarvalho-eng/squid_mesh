@@ -14,6 +14,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.RunStore
+  alias SquidMesh.Runtime.Compensation
   alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.RetryPolicy
   alias SquidMesh.Runtime.StepExecutor.Progression
@@ -591,24 +592,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   defp handle_terminal_or_routed_failure(config, definition, run, step_name, error) do
     if WorkflowDefinition.dependency_mode?(definition) do
       Logger.error("workflow step failed")
-
-      case RunStore.progress_run_with_events(
-             config.repo,
-             run.id,
-             fn _current_run ->
-               %{
-                 current_step: step_name,
-                 last_error: error
-               }
-             end,
-             {:transition, :failed}
-           ) do
-        {:ok, _result, events} ->
-          {:ok, events}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+      fail_run_and_request_compensation(config, definition, run, step_name, error)
     else
       case WorkflowDefinition.transition_target(definition, step_name, :error) do
         {:ok, target} ->
@@ -617,24 +601,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
         {:error, {:unknown_transition, _from_step, :error}} ->
           Logger.error("workflow step failed")
-
-          case RunStore.progress_run_with_events(
-                 config.repo,
-                 run.id,
-                 fn _current_run ->
-                   %{
-                     current_step: step_name,
-                     last_error: error
-                   }
-                 end,
-                 {:transition, :failed}
-               ) do
-            {:ok, _result, events} ->
-              {:ok, events}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
+          fail_run_and_request_compensation(config, definition, run, step_name, error)
 
         {:error, reason} ->
           {:error, reason}
@@ -672,6 +639,33 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
         end
       )
     )
+  end
+
+  defp fail_run_and_request_compensation(config, definition, run, step_name, error) do
+    operation =
+      if Compensation.compensation_available?(config.repo, definition, run.id) do
+        {:transition_or_dispatch, :failed,
+         fn failed_run -> dispatch_compensation_events(config, failed_run, definition) end}
+      else
+        {:transition, :failed}
+      end
+
+    RunStore.progress_run_with_events(
+      config.repo,
+      run.id,
+      failure_attrs(step_name, error),
+      operation
+    )
+    |> progress_events_result()
+  end
+
+  defp failure_attrs(step_name, error) do
+    fn _current_run ->
+      %{
+        current_step: step_name,
+        last_error: error
+      }
+    end
   end
 
   defp progress_events_result({:ok, _result, events}), do: {:ok, events}
@@ -726,6 +720,12 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
 
   defp dispatch_steps_events(config, run, steps, opts) do
     with {:ok, _jobs, events} <- Dispatcher.dispatch_steps_with_events(config, run, steps, opts) do
+      {:ok, {:dispatch_events, events}}
+    end
+  end
+
+  defp dispatch_compensation_events(config, run, _definition) do
+    with {:ok, _job, events} <- Dispatcher.dispatch_compensation_with_events(config, run) do
       {:ok, {:dispatch_events, events}}
     end
   end

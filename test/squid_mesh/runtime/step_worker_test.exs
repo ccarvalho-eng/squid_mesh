@@ -9,6 +9,8 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.ConcurrentDependencyFailureWorkflow
   alias __MODULE__.ConcurrentDependencyWorkflow
   alias __MODULE__.ConcurrentRetryWorkflow
+  alias __MODULE__.CompensationWorkflow
+  alias __MODULE__.CompensationRetryWorkflow
   alias __MODULE__.DependencyFailureWorkflow
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.ErrorRoutingWorkflow
@@ -973,6 +975,171 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert step_run.status == "failed"
       assert step_run.last_error == %{"message" => "gateway timeout", "code" => "gateway_timeout"}
       assert AttemptStore.attempt_count(Repo, step_run.id) == 1
+    end
+
+    test "compensates completed reversible steps in reverse order after terminal failure" do
+      :persistent_term.erase({CompensationWorkflow, :events})
+
+      on_exit(fn ->
+        :persistent_term.erase({CompensationWorkflow, :events})
+      end)
+
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 CompensationWorkflow,
+                 %{account_id: "acct_123", order_id: "ord_456"},
+                 repo: Repo
+               )
+
+      assert %{failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, failed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :charge_card
+      assert failed_run.last_error == %{message: "card declined", code: "card_declined"}
+
+      assert :persistent_term.get({CompensationWorkflow, :events}) == [
+               {:release_inventory, "ord_456"},
+               {:release_credit_hold, "acct_123"}
+             ]
+
+      assert Enum.map(failed_run.step_runs, &{&1.step, &1.status}) == [
+               {:hold_credit, :completed},
+               {:reserve_inventory, :completed},
+               {:charge_card, :failed}
+             ]
+
+      assert %{recovery: %{compensation: %{status: :completed, output: %{released: "credit"}}}} =
+               Enum.find(failed_run.step_runs, &(&1.step == :hold_credit))
+
+      assert %{
+               recovery: %{
+                 compensation: %{status: :completed, output: %{released: "inventory"}}
+               }
+             } = Enum.find(failed_run.step_runs, &(&1.step == :reserve_inventory))
+    end
+
+    test "waits for forward retries to exhaust before compensating completed steps" do
+      :persistent_term.erase({CompensationRetryWorkflow, :events})
+
+      on_exit(fn ->
+        :persistent_term.erase({CompensationRetryWorkflow, :events})
+      end)
+
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 CompensationRetryWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "hold_credit"}
+               })
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "charge_card"}
+               })
+
+      assert {:ok, retried_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert retried_run.status == :retrying
+      assert :persistent_term.get({CompensationRetryWorkflow, :events}, []) == []
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "charge_card"}
+               })
+
+      assert {:ok, failed_before_compensation} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_before_compensation.status == :failed
+      assert :persistent_term.get({CompensationRetryWorkflow, :events}, []) == []
+
+      assert %Job{} =
+               compensation_job =
+               Repo.one!(
+                 from(job in Job,
+                   where:
+                     job.worker == "SquidMesh.Workers.StepWorker" and
+                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
+                       fragment("?->>'compensate' = 'true'", job.args),
+                   order_by: [desc: job.inserted_at],
+                   limit: 1
+                 )
+               )
+
+      assert :ok = StepWorker.perform(compensation_job)
+
+      assert {:ok, failed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_run.status == :failed
+
+      assert :persistent_term.get({CompensationRetryWorkflow, :events}) == [
+               {:release_credit_hold, "acct_123"}
+             ]
+    end
+
+    test "persists compensation callback failures for inspection" do
+      :persistent_term.erase({CompensationWorkflow, :events})
+      :persistent_term.put({CompensationWorkflow, :fail_release_credit?}, true)
+
+      on_exit(fn ->
+        :persistent_term.erase({CompensationWorkflow, :events})
+        :persistent_term.erase({CompensationWorkflow, :fail_release_credit?})
+      end)
+
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 CompensationWorkflow,
+                 %{account_id: "acct_123", order_id: "ord_456"},
+                 repo: Repo
+               )
+
+      assert %{failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, failed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :charge_card
+
+      assert :persistent_term.get({CompensationWorkflow, :events}) == [
+               {:release_inventory, "ord_456"}
+             ]
+
+      assert failed_run.last_error == %{
+               message: "workflow step failed and compensation failed",
+               failed_step: :charge_card,
+               cause: %{message: "card declined", code: "card_declined"},
+               compensation_failures: [
+                 %{message: "release failed", code: "release_failed"}
+               ]
+             }
+
+      assert %{
+               recovery: %{
+                 compensation: %{
+                   status: :failed,
+                   error: %{message: "release failed", code: "release_failed"}
+                 }
+               }
+             } = Enum.find(failed_run.step_runs, &(&1.step == :hold_credit))
+
+      assert %{
+               recovery: %{
+                 compensation: %{status: :completed, output: %{released: "inventory"}}
+               }
+             } = Enum.find(failed_run.step_runs, &(&1.step == :reserve_inventory))
     end
 
     test "continues to the :error transition when a step fails without retry" do
@@ -2415,6 +2582,182 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     @impl true
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+    end
+  end
+
+  defmodule CompensationWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :order_id, :string
+        end
+      end
+
+      step :hold_credit, CompensationWorkflow.HoldCredit,
+        compensate: CompensationWorkflow.ReleaseCreditHold
+
+      step :reserve_inventory, CompensationWorkflow.ReserveInventory,
+        compensate: CompensationWorkflow.ReleaseInventory
+
+      step :charge_card, CompensationWorkflow.ChargeCard
+
+      transition :hold_credit, on: :ok, to: :reserve_inventory
+      transition :reserve_inventory, on: :ok, to: :charge_card
+      transition :charge_card, on: :ok, to: :complete
+    end
+  end
+
+  defmodule CompensationWorkflow.HoldCredit do
+    use Jido.Action,
+      name: "hold_credit",
+      description: "Places a credit hold",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{credit_hold: %{account_id: account_id, status: "held"}}}
+    end
+  end
+
+  defmodule CompensationWorkflow.ReserveInventory do
+    use Jido.Action,
+      name: "reserve_inventory",
+      description: "Reserves order inventory",
+      schema: [
+        order_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{order_id: order_id}, _context) do
+      {:ok, %{inventory_reservation: %{order_id: order_id, status: "reserved"}}}
+    end
+  end
+
+  defmodule CompensationWorkflow.ChargeCard do
+    use Jido.Action,
+      name: "charge_card",
+      description: "Attempts to charge a card",
+      schema: []
+
+    @impl true
+    def run(_params, _context) do
+      {:error, %{message: "card declined", code: "card_declined"}}
+    end
+  end
+
+  defmodule CompensationWorkflow.ReleaseCreditHold do
+    use Jido.Action,
+      name: "release_credit_hold",
+      description: "Releases a prior credit hold",
+      schema: []
+
+    @impl true
+    def run(%{payload: %{account_id: account_id}}, _context) do
+      if :persistent_term.get({CompensationWorkflow, :fail_release_credit?}, false) do
+        {:error, %{message: "release failed", code: "release_failed"}}
+      else
+        events = :persistent_term.get({CompensationWorkflow, :events}, [])
+
+        :persistent_term.put(
+          {CompensationWorkflow, :events},
+          events ++ [{:release_credit_hold, account_id}]
+        )
+
+        {:ok, %{released: "credit"}}
+      end
+    end
+  end
+
+  defmodule CompensationWorkflow.ReleaseInventory do
+    use Jido.Action,
+      name: "release_inventory",
+      description: "Releases a prior inventory reservation",
+      schema: []
+
+    @impl true
+    def run(%{payload: %{order_id: order_id}}, _context) do
+      events = :persistent_term.get({CompensationWorkflow, :events}, [])
+
+      :persistent_term.put(
+        {CompensationWorkflow, :events},
+        events ++ [{:release_inventory, order_id}]
+      )
+
+      {:ok, %{released: "inventory"}}
+    end
+  end
+
+  defmodule CompensationRetryWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :hold_credit, CompensationRetryWorkflow.HoldCredit,
+        compensate: CompensationRetryWorkflow.ReleaseCreditHold
+
+      step :charge_card, CompensationRetryWorkflow.ChargeCard, retry: [max_attempts: 2]
+
+      transition :hold_credit, on: :ok, to: :charge_card
+      transition :charge_card, on: :ok, to: :complete
+    end
+  end
+
+  defmodule CompensationRetryWorkflow.HoldCredit do
+    use Jido.Action,
+      name: "hold_credit",
+      description: "Places a credit hold",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{credit_hold: %{account_id: account_id, status: "held"}}}
+    end
+  end
+
+  defmodule CompensationRetryWorkflow.ChargeCard do
+    use Jido.Action,
+      name: "charge_card",
+      description: "Attempts to charge a card with workflow retries",
+      schema: []
+
+    @impl true
+    def run(_params, _context) do
+      {:error, %{message: "card declined", code: "card_declined"}}
+    end
+  end
+
+  defmodule CompensationRetryWorkflow.ReleaseCreditHold do
+    use Jido.Action,
+      name: "release_credit_hold_retry",
+      description: "Releases a prior credit hold",
+      schema: []
+
+    @impl true
+    def run(%{payload: %{account_id: account_id}}, _context) do
+      events = :persistent_term.get({CompensationRetryWorkflow, :events}, [])
+
+      :persistent_term.put(
+        {CompensationRetryWorkflow, :events},
+        events ++ [{:release_credit_hold, account_id}]
+      )
+
+      {:ok, %{released: "credit"}}
     end
   end
 

@@ -264,6 +264,50 @@ These markers do not provide exactly-once delivery or external compensation.
 They keep Squid Mesh honest about recovery policy so a replay cannot silently
 repeat a payment capture, notification, or other non-compensatable effect.
 
+## Saga Compensation
+
+Use `compensate: SomeAction` when a completed step has a domain-level inverse
+operation that should run if a later step fails and the workflow cannot continue.
+This is rollback, not same-step fallback. Same-step fallback stays modeled as an
+`:error` transition.
+
+```elixir
+step :reserve_inventory, Billing.Steps.ReserveInventory,
+  compensate: Billing.Steps.ReleaseInventory
+
+step :authorize_payment, Billing.Steps.AuthorizePayment,
+  compensate: Billing.Steps.VoidAuthorization
+
+step :capture_payment, Billing.Steps.CapturePayment, retry: [max_attempts: 2]
+
+transition :reserve_inventory, on: :ok, to: :authorize_payment
+transition :authorize_payment, on: :ok, to: :capture_payment
+transition :capture_payment, on: :ok, to: :complete
+```
+
+When `:capture_payment` exhausts its retry policy and has no `:error`
+transition, Squid Mesh compensates previously completed compensatable steps in
+reverse completion order. In this example it voids the payment authorization,
+then releases inventory. Failed steps are not compensated because their forward
+effect did not complete.
+
+Compensation callbacks are `Jido.Action` modules. They receive the original
+payload, current run context, the completed step's input and output, and the
+terminal failure:
+
+```elixir
+def run(%{step: %{output: %{inventory_reservation: reservation}}}, _context) do
+  {:ok, %{released_inventory: Map.put(reservation, :status, "released")}}
+end
+```
+
+`inspect_run(..., include_history: true)` exposes compensation status and output
+under each completed step's `recovery.compensation` field. Compensation callbacks
+are not governed by the forward step's retry policy; forward retries exhaust
+before rollback starts, and callback failures are persisted under
+`recovery.compensation` for inspection. Write callbacks to be idempotent so a
+host app can safely redeliver or repair failed compensation work.
+
 ## Step Modules
 
 Custom steps typically use `Jido.Action` and return workflow output in a plain

@@ -11,6 +11,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   alias SquidMesh.Observability
   alias SquidMesh.Run
   alias SquidMesh.RunStore
+  alias SquidMesh.Runtime.Compensation
   alias SquidMesh.Runtime.StepInput
   alias SquidMesh.Runtime.StepExecutor.Execution
   alias SquidMesh.Runtime.StepExecutor.Outcome
@@ -36,6 +37,45 @@ defmodule SquidMesh.Runtime.StepExecutor do
     with {:ok, config} <- Config.load(overrides),
          {:ok, run} <- RunStore.get_run(config.repo, run_id) do
       execute_run(config, run, expected_step)
+    end
+  end
+
+  @doc """
+  Executes pending compensation for a failed run.
+
+  Compensation jobs are separate from step execution jobs so the failed run and
+  failed step attempt are durable before rollback side effects start. If a
+  compensation callback fails, the run remains failed and its `last_error` is
+  updated with the compensation failure details for inspection.
+  """
+  @spec compensate(Ecto.UUID.t(), keyword()) :: :ok | {:error, execution_error() | term()}
+  def compensate(run_id, overrides \\ []) when is_binary(run_id) do
+    with {:ok, config} <- Config.load(overrides),
+         {:ok, %Run{} = run} <- RunStore.get_run(config.repo, run_id),
+         {:ok, definition} <- WorkflowDefinition.load(run.workflow) do
+      case Compensation.compensate_completed_steps(config, definition, run, run.last_error || %{}) do
+        :ok ->
+          :ok
+
+        {:error, {:compensation_failed, failures}} ->
+          compensation_error = %{
+            message: "workflow step failed and compensation failed",
+            failed_step: run.current_step,
+            cause: run.last_error,
+            compensation_failures: failures
+          }
+
+          _result =
+            RunStore.update_run(config.repo, run.id, %{
+              current_step: run.current_step,
+              last_error: compensation_error
+            })
+
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
