@@ -425,6 +425,52 @@ defmodule SquidMesh.WorkflowTest do
     )
   end
 
+  test "fails when a compensation callback is a built-in step kind" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithBuiltInCompensation do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:reserve_inventory, WorkflowWithBuiltInCompensation.ReserveInventory,
+            compensate: :log
+          )
+
+          transition(:reserve_inventory, on: :ok, to: :complete)
+        end
+      end
+      """,
+      "step :reserve_inventory defines an invalid :compensate callback"
+    )
+  end
+
+  test "fails when a compensation callback is not a module atom" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithNonModuleCompensation do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:reserve_inventory, WorkflowWithNonModuleCompensation.ReserveInventory,
+            compensate: :release_inventory
+          )
+
+          transition(:reserve_inventory, on: :ok, to: :complete)
+        end
+      end
+      """,
+      "step :reserve_inventory defines an invalid :compensate callback"
+    )
+  end
+
   test "does not report recovery marker conflicts for invalid marker shapes" do
     error =
       assert_raise CompileError, fn ->

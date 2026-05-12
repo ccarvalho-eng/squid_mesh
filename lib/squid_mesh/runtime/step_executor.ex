@@ -25,6 +25,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
           | {:dispatch_failed, term()}
           | {:invalid_run, Ecto.Changeset.t()}
           | {:invalid_transition, Run.status(), Run.status()}
+          | {:invalid_compensation_run_status, Run.status()}
           | {:unknown_transition, atom(), atom()}
           | {:unknown_step, atom()}
           | {:missing_config, [atom()]}
@@ -52,6 +53,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
   def compensate(run_id, overrides \\ []) when is_binary(run_id) do
     with {:ok, config} <- Config.load(overrides),
          {:ok, %Run{} = run} <- RunStore.get_run(config.repo, run_id),
+         :ok <- ensure_failed_compensation_run(run),
          {:ok, definition} <- WorkflowDefinition.load(run.workflow) do
       case Compensation.compensate_completed_steps(config, definition, run, run.last_error || %{}) do
         :ok ->
@@ -70,14 +72,21 @@ defmodule SquidMesh.Runtime.StepExecutor do
               current_step: run.current_step,
               last_error: compensation_error
             })
-
-          :ok
+            |> case do
+              {:ok, _run} -> :ok
+              {:error, reason} -> {:error, reason}
+            end
 
         {:error, reason} ->
           {:error, reason}
       end
     end
   end
+
+  defp ensure_failed_compensation_run(%Run{status: :failed}), do: :ok
+
+  defp ensure_failed_compensation_run(%Run{status: status}),
+    do: {:error, {:invalid_compensation_run_status, status}}
 
   @spec execute_run(Config.t(), Run.t(), atom() | nil) ::
           :ok | {:error, execution_error() | term()}

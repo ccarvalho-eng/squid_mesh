@@ -8,6 +8,7 @@ defmodule SquidMesh.StepRunStore do
 
   import Ecto.Query
 
+  alias SquidMesh.Persistence.StepAttempt
   alias SquidMesh.Persistence.StepRun
 
   @type step_identifier :: atom() | String.t()
@@ -286,16 +287,26 @@ defmodule SquidMesh.StepRunStore do
   @doc """
   Lists completed step runs for one workflow run in compensation order.
 
-  Saga rollback must undo the most recently completed reversible effect first,
-  so rows are ordered by latest completion/update time before their insertion
-  fallback.
+  Saga rollback must undo the most recently completed reversible effect first.
+  The ordering uses the completed forward attempt timestamp so compensation
+  metadata updates do not change rollback order on redelivery.
   """
   @spec completed_step_runs_for_compensation(module(), Ecto.UUID.t()) :: [StepRun.t()]
   def completed_step_runs_for_compensation(repo, run_id) do
+    latest_completion_query =
+      from(attempt in StepAttempt,
+        where: attempt.status == "completed",
+        group_by: attempt.step_run_id,
+        select: %{step_run_id: attempt.step_run_id, completed_at: max(attempt.updated_at)}
+      )
+
     StepRun
+    |> join(:left, [step_run], completion in subquery(latest_completion_query),
+      on: completion.step_run_id == step_run.id
+    )
     |> where([step_run], step_run.run_id == ^run_id and step_run.status == "completed")
-    |> order_by([step_run],
-      desc: step_run.updated_at,
+    |> order_by([step_run, completion],
+      desc: completion.completed_at,
       desc: step_run.inserted_at,
       desc: step_run.id
     )

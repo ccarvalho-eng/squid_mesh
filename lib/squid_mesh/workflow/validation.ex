@@ -446,7 +446,11 @@ defmodule SquidMesh.Workflow.Validation do
   defp validate_step_compensation_callback(errors, name, opts) do
     case Keyword.fetch(opts, :compensate) do
       {:ok, callback} when is_atom(callback) ->
-        errors
+        if module_atom?(callback) and callback not in @built_in_step_kinds do
+          errors
+        else
+          ["step #{inspect(name)} defines an invalid :compensate callback" | errors]
+        end
 
       {:ok, _callback} ->
         ["step #{inspect(name)} defines an invalid :compensate callback" | errors]
@@ -455,6 +459,14 @@ defmodule SquidMesh.Workflow.Validation do
         errors
     end
   end
+
+  defp module_atom?(callback) when is_atom(callback) do
+    callback
+    |> Atom.to_string()
+    |> String.starts_with?("Elixir.")
+  end
+
+  defp module_atom?(_callback), do: false
 
   defp validate_compensation_marker_conflict(errors, name, opts) do
     if Keyword.has_key?(opts, :compensate) and

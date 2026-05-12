@@ -1,6 +1,7 @@
 defmodule SquidMesh.StepRunStoreTest do
   use SquidMesh.DataCase
 
+  alias SquidMesh.AttemptStore
   alias SquidMesh.Persistence.Run, as: RunRecord
   alias SquidMesh.StepRunStore
 
@@ -104,5 +105,45 @@ defmodule SquidMesh.StepRunStoreTest do
     assert Repo.get!(SquidMesh.Persistence.StepRun, step_run.id).output == %{
              "invoice" => %{"id" => "inv_456"}
            }
+  end
+
+  test "orders compensation by forward completion time after recovery metadata updates" do
+    {:ok, run} =
+      %RunRecord{}
+      |> RunRecord.changeset(%{
+        workflow: "Elixir.SquidMesh.StepRunStoreTest.Workflow",
+        trigger: "manual",
+        status: "failed",
+        input: %{}
+      })
+      |> Repo.insert()
+
+    {:ok, first_step, :execute} =
+      StepRunStore.begin_step(Repo, run.id, :reserve_inventory, %{order_id: "ord_123"})
+
+    {:ok, first_attempt} = AttemptStore.begin_attempt(Repo, first_step.id)
+    {:ok, _first_attempt} = AttemptStore.complete_attempt(Repo, first_attempt.id)
+    {:ok, first_step} = StepRunStore.complete_step(Repo, first_step.id, %{reserved: true})
+
+    Process.sleep(1)
+
+    {:ok, second_step, :execute} =
+      StepRunStore.begin_step(Repo, run.id, :authorize_payment, %{order_id: "ord_123"})
+
+    {:ok, second_attempt} = AttemptStore.begin_attempt(Repo, second_step.id)
+    {:ok, _second_attempt} = AttemptStore.complete_attempt(Repo, second_attempt.id)
+    {:ok, second_step} = StepRunStore.complete_step(Repo, second_step.id, %{authorized: true})
+
+    Process.sleep(1)
+
+    assert {:ok, _updated_first_step} =
+             StepRunStore.update_recovery(Repo, first_step.id, %{
+               compensation: %{status: :completed}
+             })
+
+    assert Enum.map(
+             StepRunStore.completed_step_runs_for_compensation(Repo, run.id),
+             & &1.id
+           ) == [second_step.id, first_step.id]
   end
 end

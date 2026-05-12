@@ -1088,6 +1088,18 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              ]
     end
 
+    test "does not compensate non-failed runs" do
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 CompensationWorkflow,
+                 %{account_id: "acct_123", order_id: "ord_456"},
+                 repo: Repo
+               )
+
+      assert {:error, {:invalid_compensation_run_status, :pending}} =
+               StepExecutor.compensate(run.id, repo: Repo)
+    end
+
     test "persists compensation callback failures for inspection" do
       :persistent_term.erase({CompensationWorkflow, :events})
       :persistent_term.put({CompensationWorkflow, :fail_release_credit?}, true)
