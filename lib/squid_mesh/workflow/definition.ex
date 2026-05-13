@@ -11,6 +11,7 @@ defmodule SquidMesh.Workflow.Definition do
   @type transition_outcome :: :ok | :error
   @type step_input_mapping :: [atom()]
   @type step_output_mapping :: atom()
+  @type step_transaction_boundary :: :repo
   @type payload_field :: %{name: atom(), type: atom(), opts: keyword()}
   @type trigger_type :: :manual | :cron
   @type transition_target :: atom() | :complete
@@ -260,6 +261,21 @@ defmodule SquidMesh.Workflow.Definition do
   def step_output_mapping(definition, step_name) when is_atom(step_name) do
     with {:ok, step} <- step(definition, step_name) do
       {:ok, Keyword.get(step.opts, :output)}
+    end
+  end
+
+  @doc """
+  Returns the local transaction boundary for one declared step, if any.
+
+  `:repo` wraps only the host action execution in the configured Ecto repo
+  transaction. Squid Mesh persists attempt, step, and run progression in its
+  normal durable phase after the action returns.
+  """
+  @spec step_transaction_boundary(t(), atom()) ::
+          {:ok, step_transaction_boundary() | nil} | {:error, {:unknown_step, atom()}}
+  def step_transaction_boundary(definition, step_name) when is_atom(step_name) do
+    with {:ok, step} <- step(definition, step_name) do
+      {:ok, Keyword.get(step.opts, :transaction)}
     end
   end
 

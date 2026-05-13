@@ -234,6 +234,38 @@ Manual-review durability notes:
 - the resolved `:ok` and `:error` targets plus output-mapping metadata are persisted with the paused step so restart or deploy boundaries do not recompute review semantics from the current workflow definition
 - host apps should apply the latest Squid Mesh migrations before using pause-resume in existing environments
 
+## Local Repo Transactions
+
+Use `transaction: :repo` when one module step needs to run several same-process
+host repo writes under one local Ecto transaction:
+
+```elixir
+step :post_local_ledger_entries, Billing.Steps.PostLocalLedgerEntries,
+  transaction: :repo
+```
+
+This option is intentionally narrower than the durable workflow. It wraps only
+the custom action's `run/2` callback in `config.repo.transaction/1`. If that
+callback returns `{:error, reason}` or raises, the local repo writes made inside
+the callback roll back and Squid Mesh then records the failed step attempt in
+its normal durable history.
+
+The boundary is not a distributed transaction:
+
+- Squid Mesh still persists run, step, attempt, retry, and dispatch state after
+  the action returns
+- downstream steps and saga compensation callbacks are outside the local
+  transaction
+- external systems called by the action are not atomically reversible
+- built-in steps cannot declare `transaction: :repo`
+- transactional steps run in the worker process so Ecto can use the same
+  checked-out transaction connection
+
+Use this for small local database groups such as "insert a parent row plus
+children" or "reserve and capture two local ledger records". Use saga
+compensation or explicit `:error` transitions for work that crosses process,
+queue, service, or workflow-step boundaries.
+
 ## Irreversible Steps
 
 Use recovery markers when a step performs a side effect that should not be

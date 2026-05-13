@@ -9,6 +9,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
 
   alias SquidMesh.Run
   alias SquidMesh.Runtime.StepExecutor.PreparedStep
+  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @spec execute(PreparedStep.t()) :: {:ok, map(), keyword()} | {:error, term()}
   def execute(%PreparedStep{
@@ -23,18 +24,50 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
 
   def execute(%PreparedStep{
         step_name: step_name,
+        definition: definition,
+        config: config,
         step: %{module: action},
         input: input,
         run: %Run{} = run
       }) do
-    context = %{
+    boundary =
+      case WorkflowDefinition.step_transaction_boundary(definition, step_name) do
+        {:ok, transaction_boundary} -> transaction_boundary
+        {:error, _reason} -> nil
+      end
+
+    execute_action(config.repo, boundary, action, input, step_context(run, step_name))
+  end
+
+  defp execute_action(repo, :repo, action, input, context) do
+    case repo.transaction(fn ->
+           case run_action_with_jido(action, input, context, timeout: 0) do
+             {:ok, _output, _opts} = ok -> ok
+             {:error, reason} -> repo.rollback(reason)
+           end
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp execute_action(_repo, nil, action, input, context) do
+    run_action_with_jido(action, input, context, [])
+  end
+
+  defp step_context(%Run{} = run, step_name) do
+    %{
       run_id: run.id,
       workflow: run.workflow,
       step: step_name,
       state: run.context || %{}
     }
+  end
 
-    case Jido.Exec.run(action, input, context, max_retries: 0) do
+  defp run_action_with_jido(action, input, context, opts) do
+    opts = Keyword.put_new(opts, :max_retries, 0)
+
+    case Jido.Exec.run(action, input, context, opts) do
       {:ok, output} when is_map(output) -> {:ok, output, []}
       {:ok, output, _extras} when is_map(output) -> {:ok, output, []}
       {:error, reason} -> {:error, reason}

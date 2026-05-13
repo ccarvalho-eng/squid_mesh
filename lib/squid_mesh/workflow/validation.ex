@@ -9,6 +9,7 @@ defmodule SquidMesh.Workflow.Validation do
   @terminal_transitions [:complete]
   @supported_transition_outcomes [:ok, :error]
   @supported_transition_recovery_markers [:compensation, :undo]
+  @supported_transaction_boundaries [:repo]
   @allowed_trigger_types [:manual, :cron]
   @built_in_step_kinds [:wait, :log, :pause, :approval]
   @log_levels [:debug, :info, :warning, :error]
@@ -342,6 +343,13 @@ defmodule SquidMesh.Workflow.Validation do
   end
 
   defp validate_built_in_step(errors, %{module: kind} = step) when kind in @built_in_step_kinds do
+    errors =
+      if Keyword.has_key?(step.opts, :transaction) do
+        ["built-in step #{inspect(step.name)} cannot declare a :transaction boundary" | errors]
+      else
+        errors
+      end
+
     case kind do
       :wait -> validate_wait_step(errors, step)
       :log -> validate_log_step(errors, step)
@@ -379,6 +387,7 @@ defmodule SquidMesh.Workflow.Validation do
       acc
       |> validate_step_input_mapping(name, opts)
       |> validate_step_output_mapping(name, opts)
+      |> validate_step_transaction_boundary(name, opts)
     end)
   end
 
@@ -409,6 +418,19 @@ defmodule SquidMesh.Workflow.Validation do
 
       _other ->
         ["step #{inspect(name)} defines an invalid :output mapping" | errors]
+    end
+  end
+
+  defp validate_step_transaction_boundary(errors, name, opts) do
+    case Keyword.fetch(opts, :transaction) do
+      {:ok, boundary} when boundary in @supported_transaction_boundaries ->
+        errors
+
+      {:ok, _boundary} ->
+        ["step #{inspect(name)} defines an invalid :transaction boundary" | errors]
+
+      :error ->
+        errors
     end
   end
 

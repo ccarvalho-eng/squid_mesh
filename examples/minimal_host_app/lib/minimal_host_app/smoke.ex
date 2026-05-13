@@ -3,7 +3,10 @@ defmodule MinimalHostApp.Smoke do
   Repeatable smoke-test entrypoint for the example host app.
   """
 
+  import Ecto.Query, only: [from: 2]
+
   alias MinimalHostApp.Cron
+  alias MinimalHostApp.Repo
   alias MinimalHostApp.RuntimeHarness
   alias MinimalHostApp.WorkflowRuns
   alias SquidMesh.Workers.CronTriggerWorker
@@ -50,6 +53,8 @@ defmodule MinimalHostApp.Smoke do
           dependency_recovery: SquidMesh.Run.t(),
           manual_approval: SquidMesh.Run.t(),
           manual_digest: SquidMesh.Run.t(),
+          local_ledger_checkout: SquidMesh.Run.t(),
+          local_ledger_rollback: SquidMesh.Run.t(),
           saga_checkout: SquidMesh.Run.t(),
           daily_digest: SquidMesh.Run.t()
         }
@@ -58,6 +63,7 @@ defmodule MinimalHostApp.Smoke do
     dependency_recovery = run_dependency_recovery!()
     manual_approval = run_manual_approval!()
     manual_digest = run_manual_digest!()
+    {local_ledger_checkout, local_ledger_rollback} = run_local_ledger_checkout!()
     saga_checkout = run_saga_checkout!()
     existing_daily_digest_run_ids = daily_digest_run_ids()
 
@@ -73,6 +79,8 @@ defmodule MinimalHostApp.Smoke do
         dependency_recovery: dependency_recovery,
         manual_approval: manual_approval,
         manual_digest: manual_digest,
+        local_ledger_checkout: local_ledger_checkout,
+        local_ledger_rollback: local_ledger_rollback,
         saga_checkout: saga_checkout,
         daily_digest: cron_run
       }
@@ -176,6 +184,33 @@ defmodule MinimalHostApp.Smoke do
     else
       {:error, reason} ->
         raise "manual digest smoke test failed: #{inspect(reason)}"
+    end
+  end
+
+  @spec run_local_ledger_checkout!() :: {SquidMesh.Run.t(), SquidMesh.Run.t()}
+  def run_local_ledger_checkout! do
+    committed_attrs = %{account_id: "acct_local_commit", fail_after_reserve: false}
+    rolled_back_attrs = %{account_id: "acct_local_rollback", fail_after_reserve: true}
+
+    with {:ok, committed_run} <- WorkflowRuns.start_local_ledger_checkout(committed_attrs),
+         :ok <- RuntimeHarness.wait_for_execution(),
+         {:ok, committed_terminal_run} <-
+           RuntimeHarness.await_terminal_run(committed_run.id, attempts: @poll_attempts),
+         :ok <- ensure_local_ledger_entries(committed_terminal_run, ["reserve", "capture"]),
+         {:ok, rolled_back_run} <- WorkflowRuns.start_local_ledger_checkout(rolled_back_attrs),
+         :ok <- RuntimeHarness.wait_for_execution(),
+         {:ok, rolled_back_terminal_run} <-
+           RuntimeHarness.await_terminal_run(rolled_back_run.id, attempts: @poll_attempts),
+         :ok <- ensure_local_ledger_entries(rolled_back_terminal_run, []) do
+      unless committed_terminal_run.status == :completed and
+               rolled_back_terminal_run.status == :failed do
+        raise "unexpected local ledger smoke result"
+      end
+
+      {committed_terminal_run, rolled_back_terminal_run}
+    else
+      {:error, reason} ->
+        raise "local ledger smoke test failed: #{inspect(reason)}"
     end
   end
 
@@ -343,6 +378,25 @@ defmodule MinimalHostApp.Smoke do
   end
 
   defp ensure_saga_compensation(%SquidMesh.Run{}), do: {:error, :unexpected_saga_compensation}
+
+  @spec ensure_local_ledger_entries(SquidMesh.Run.t(), [String.t()]) ::
+          :ok | {:error, :unexpected_local_ledger_entries}
+  defp ensure_local_ledger_entries(%SquidMesh.Run{id: run_id}, expected_entries) do
+    entries =
+      Repo.all(
+        from(entry in "local_ledger_entries",
+          where: entry.run_id == ^run_id,
+          order_by: [asc: entry.id],
+          select: entry.entry
+        )
+      )
+
+    if entries == expected_entries do
+      :ok
+    else
+      {:error, :unexpected_local_ledger_entries}
+    end
+  end
 
   @spec latest_daily_digest_run([SquidMesh.Run.t()]) ::
           {:ok, SquidMesh.Run.t()} | {:error, :missing_daily_digest_run}

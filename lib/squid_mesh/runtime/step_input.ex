@@ -65,6 +65,7 @@ defmodule SquidMesh.Runtime.StepInput do
     end)
   end
 
+  defp normalize_value(%_{} = value), do: value
   defp normalize_value(value) when is_map(value), do: normalize_map_keys(value)
   defp normalize_value(value) when is_list(value), do: Enum.map(value, &normalize_value/1)
   defp normalize_value(value), do: value

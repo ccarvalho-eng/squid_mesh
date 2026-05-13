@@ -32,6 +32,7 @@ Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications.
 - Oban-based step execution, delayed scheduling, redelivery, and retries
 - retries, waits, failure routes, dependency joins, and HITL approval gates
 - explicit step input selection and output mapping
+- same-process host repo transactions for small local step groups
 - runtime inspection through declared step state, audit events, and `SquidMesh.explain_run/2`
 - built-in steps like `:log`, `:wait`, `:pause`, and `:approval`, plus custom steps with `Jido.Action`
 
@@ -183,6 +184,12 @@ exhaustion, and exposes run inspection.
 For approval or manual-review gates, use `approval_step/2` in transition-based workflows and resume the paused run through `SquidMesh.approve_run/3` or `SquidMesh.reject_run/3`. Approval steps persist their resolved `:ok` and `:error` targets plus output-mapping metadata, so already-paused review runs keep the same decision semantics across restarts and deploys. Generic `SquidMesh.unblock_run/2` remains available for lower-level `:pause` steps when you need manual intervention without an explicit approve/reject contract.
 
 When a step needs a narrower contract than the whole payload plus accumulated context, use `input: [...]` to select keys and `output: :key` to namespace the returned map for downstream steps.
+
+When a custom step needs several local repo writes to commit or roll back
+together, declare `transaction: :repo`. This wraps only that action callback in
+the configured Ecto repo transaction; workflow durability, successor dispatch,
+external side effects, and saga compensation remain explicit Squid Mesh
+boundaries.
 
 For external side effects that cannot be honestly undone, mark the step with
 `irreversible: true` or `compensatable: false`. Squid Mesh exposes that recovery

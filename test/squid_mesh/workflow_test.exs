@@ -176,6 +176,42 @@ defmodule SquidMesh.WorkflowTest do
              {:ok, Module.concat(module, ReleaseInventory)}
   end
 
+  test "supports repo transaction boundaries on local step groups" do
+    module =
+      compile_module("""
+      defmodule WorkflowWithTransactionalStepGroup do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:write_local_records, WorkflowWithTransactionalStepGroup.WriteLocalRecords,
+            transaction: :repo
+          )
+
+          transition(:write_local_records, on: :ok, to: :complete)
+        end
+      end
+      """)
+
+    definition = module.workflow_definition()
+
+    assert [
+             %{
+               name: :write_local_records,
+               module: WorkflowWithTransactionalStepGroup.WriteLocalRecords,
+               opts: [transaction: :repo]
+             }
+           ] = definition.steps
+
+    assert SquidMesh.Workflow.Definition.step_transaction_boundary(
+             definition,
+             :write_local_records
+           ) == {:ok, :repo}
+  end
+
   test "supports explicit compensation and undo error transition markers" do
     module =
       compile_module("""
@@ -558,6 +594,50 @@ defmodule SquidMesh.WorkflowTest do
            )
 
     refute String.contains?(message, "cannot be both irreversible and compensatable")
+  end
+
+  test "fails when transaction boundary markers are invalid" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithInvalidTransactionBoundary do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:write_local_records, WorkflowWithInvalidTransactionBoundary.WriteLocalRecords,
+            transaction: :database
+          )
+
+          transition(:write_local_records, on: :ok, to: :complete)
+        end
+      end
+      """,
+      "step :write_local_records defines an invalid :transaction boundary"
+    )
+  end
+
+  test "fails when built-in steps declare transaction boundaries" do
+    assert_compile_error(
+      """
+      defmodule WorkflowWithBuiltInTransactionBoundary do
+        use SquidMesh.Workflow
+
+        workflow do
+          trigger :manual do
+            manual()
+          end
+
+          step(:record_message, :log, message: "local work", transaction: :repo)
+
+          transition(:record_message, on: :ok, to: :complete)
+        end
+      end
+      """,
+      "built-in step :record_message cannot declare a :transaction boundary"
+    )
   end
 
   test "fails when error transition recovery markers are invalid" do
