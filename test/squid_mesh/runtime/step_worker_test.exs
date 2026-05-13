@@ -20,6 +20,9 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.FailingWorkflow
   alias __MODULE__.InputIsolationWorkflow
   alias __MODULE__.MissingExecutor
+  alias __MODULE__.NativeStepErrorRoutingWorkflow
+  alias __MODULE__.NativeStepRetryWorkflow
+  alias __MODULE__.NativeStepWorkflow
   alias __MODULE__.OrderedDependencyWorkflow
   alias __MODULE__.ApprovalWorkflow
   alias __MODULE__.PauseMappedWorkflow
@@ -327,6 +330,91 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                {:load_account, %{account_id: "acct_123"}, %{account: %{id: "acct_123"}}},
                {:record_delivery, %{account: %{id: "acct_123"}, invoice_id: "inv_456"},
                 %{delivery: %{account_id: "acct_123", invoice_id: "inv_456"}}}
+             ]
+    end
+
+    test "executes native Squid Mesh steps through the Jido-backed runtime" do
+      input = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, run} = SquidMesh.start_run(NativeStepWorkflow, input, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               SquidMesh.Test.Executor.drain()
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.account == %{id: "acct_123", source_step: "load_account"}
+
+      assert completed_run.context.delivery == %{
+               account_id: "acct_123",
+               invoice_id: "inv_456",
+               attempt: 1
+             }
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.input, &1.output}) == [
+               {:load_account, %{account_id: "acct_123"},
+                %{account: %{id: "acct_123", source_step: "load_account"}}},
+               {:record_delivery, %{account: %{id: "acct_123", source_step: "load_account"}},
+                %{delivery: %{account_id: "acct_123", invoice_id: "inv_456", attempt: 1}}}
+             ]
+    end
+
+    test "routes native non-retryable failures without scheduling a retry" do
+      input = %{account_id: "acct_123"}
+
+      assert {:ok, run} = SquidMesh.start_run(NativeStepErrorRoutingWorkflow, input, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               SquidMesh.Test.Executor.drain()
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.recovery == %{account_id: "acct_123", reason: "declined"}
+
+      assert Enum.map(completed_run.step_runs, &{&1.step, &1.status, &1.last_error}) == [
+               {:charge_card, :failed,
+                %{
+                  message: "card_declined",
+                  code: "card_declined",
+                  retryable?: false
+                }},
+               {:queue_recovery, :completed, nil}
+             ]
+
+      failed_step = Enum.find(completed_run.step_runs, &(&1.step == :charge_card))
+      assert Enum.map(failed_step.attempts, & &1.attempt_number) == [1]
+    end
+
+    test "retries native retryable errors through the workflow retry policy" do
+      input = %{account_id: "acct_123"}
+
+      assert {:ok, run} = SquidMesh.start_run(NativeStepRetryWorkflow, input, repo: Repo)
+
+      assert %{success: 2, failure: 0} =
+               SquidMesh.Test.Executor.drain()
+
+      assert {:ok, completed_run} =
+               SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.gateway_check == %{account_id: "acct_123", status: "ok"}
+
+      assert [%SquidMesh.StepRun{} = step_run] = completed_run.step_runs
+      assert step_run.step == :check_gateway
+      assert step_run.status == :completed
+
+      assert Enum.map(step_run.attempts, &{&1.attempt_number, &1.status, &1.error}) == [
+               {1, :failed,
+                %{
+                  message: "gateway_timeout",
+                  code: "gateway_timeout",
+                  retryable?: true
+                }},
+               {2, :completed, nil}
              ]
     end
 
@@ -3326,6 +3414,164 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       after
         5_000 -> {:error, %{message: "timed out waiting for test continuation"}}
       end
+    end
+  end
+
+  defmodule NativeStepWorkflow.LoadAccount do
+    use SquidMesh.Step,
+      name: :load_account,
+      input_schema: [
+        account_id: [type: :string, required: true]
+      ],
+      output_schema: [
+        id: [type: :string, required: true],
+        source_step: [type: :atom, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, %SquidMesh.Step.Context{step: step}) do
+      {:ok, %{id: account_id, source_step: step}}
+    end
+  end
+
+  defmodule NativeStepWorkflow.RecordDelivery do
+    use SquidMesh.Step,
+      name: :record_delivery,
+      input_schema: [
+        account: [type: :map, required: true]
+      ],
+      output_schema: [
+        account_id: [type: :string, required: true],
+        invoice_id: [type: :string, required: true],
+        attempt: [type: :integer, required: true]
+      ]
+
+    @impl true
+    def run(%{account: account}, %SquidMesh.Step.Context{state: state, attempt: attempt}) do
+      {:ok,
+       %{
+         account_id: account.id,
+         invoice_id: state.invoice_id,
+         attempt: attempt
+       }}
+    end
+  end
+
+  defmodule NativeStepWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :invoice_id, :string
+        end
+      end
+
+      step :load_account, NativeStepWorkflow.LoadAccount,
+        input: [:account_id],
+        output: :account
+
+      step :record_delivery, NativeStepWorkflow.RecordDelivery,
+        input: [:account],
+        output: :delivery
+
+      transition :load_account, on: :ok, to: :record_delivery
+      transition :record_delivery, on: :ok, to: :complete
+    end
+  end
+
+  defmodule NativeStepErrorRoutingWorkflow.ChargeCard do
+    use SquidMesh.Step,
+      name: :charge_card,
+      input_schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(_input, _context) do
+      {:error, %{message: "card_declined", code: "card_declined"}}
+    end
+  end
+
+  defmodule NativeStepErrorRoutingWorkflow.QueueRecovery do
+    use SquidMesh.Step,
+      name: :queue_recovery,
+      input_schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, _context) do
+      {:ok, %{recovery: %{account_id: account_id, reason: :declined}}}
+    end
+  end
+
+  defmodule NativeStepErrorRoutingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :charge_card, NativeStepErrorRoutingWorkflow.ChargeCard, retry: [max_attempts: 3]
+
+      step :queue_recovery, NativeStepErrorRoutingWorkflow.QueueRecovery
+
+      transition :charge_card, on: :error, to: :queue_recovery
+      transition :queue_recovery, on: :ok, to: :complete
+    end
+  end
+
+  defmodule NativeStepRetryWorkflow.CheckGateway do
+    use SquidMesh.Step,
+      name: :check_gateway,
+      input_schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @coordination_key {__MODULE__, :attempts}
+
+    @impl true
+    def run(%{account_id: account_id}, %SquidMesh.Step.Context{run_id: run_id}) do
+      seen_runs = :persistent_term.get(@coordination_key, MapSet.new())
+
+      if MapSet.member?(seen_runs, run_id) do
+        {:ok, %{gateway_check: %{account_id: account_id, status: :ok}}}
+      else
+        :persistent_term.put(@coordination_key, MapSet.put(seen_runs, run_id))
+
+        {:retry,
+         %{
+           message: "gateway_timeout",
+           code: "gateway_timeout"
+         }}
+      end
+    end
+  end
+
+  defmodule NativeStepRetryWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :check_gateway, NativeStepRetryWorkflow.CheckGateway, retry: [max_attempts: 2]
+
+      transition :check_gateway, on: :ok, to: :complete
     end
   end
 

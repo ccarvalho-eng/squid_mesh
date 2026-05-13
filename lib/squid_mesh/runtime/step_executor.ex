@@ -173,7 +173,7 @@ defmodule SquidMesh.Runtime.StepExecutor do
         started_at = System.monotonic_time()
 
         prepared
-        |> Execution.execute()
+        |> Execution.execute(attempt_number)
         |> Outcome.apply_execution_result(
           prepared.config,
           prepared.definition,

@@ -3,6 +3,36 @@ defmodule SquidMesh.WorkflowTest do
 
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.InvoiceReminder
+  alias __MODULE__.NativeStepContractWorkflow
+
+  defmodule NativeStepContractWorkflow.LoadAccount do
+    use SquidMesh.Step,
+      name: :load_account,
+      description: "Loads account details",
+      input_schema: [
+        account_id: [type: :string, required: true]
+      ],
+      output_schema: [
+        account: [type: :map, required: true]
+      ]
+
+    @impl true
+    def run(_input, _context), do: {:ok, %{account: %{id: "acct_123"}}}
+  end
+
+  defmodule NativeStepContractWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+      end
+
+      step :load_account, NativeStepContractWorkflow.LoadAccount
+
+      transition :load_account, on: :ok, to: :complete
+    end
+  end
 
   test "exposes a declarative workflow definition" do
     definition = InvoiceReminder.workflow_definition()
@@ -104,6 +134,35 @@ defmodule SquidMesh.WorkflowTest do
                opts: [input: [:account_id], output: :account]
              }
            ]
+  end
+
+  test "stores native Squid Mesh step contract metadata in the workflow definition" do
+    assert [
+             %{
+               name: :load_account,
+               module: step_module,
+               opts: [],
+               metadata: %{
+                 contract: :squid_mesh_step,
+                 name: :load_account,
+                 description: "Loads account details",
+                 input_schema: [account_id: [type: :string, required: true]],
+                 output_schema: [account: [type: :map, required: true]]
+               }
+             }
+           ] = NativeStepContractWorkflow.workflow_definition().steps
+
+    assert step_module == NativeStepContractWorkflow.LoadAccount
+
+    assert [
+             %SquidMesh.Workflow.StepSpec{
+               metadata: %{
+                 contract: :squid_mesh_step,
+                 name: :load_account,
+                 input_schema: [account_id: [type: :string, required: true]]
+               }
+             }
+           ] = SquidMesh.Workflow.Info.steps(NativeStepContractWorkflow)
   end
 
   test "supports explicit irreversible and non-compensatable step markers" do

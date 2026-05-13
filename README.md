@@ -34,7 +34,7 @@ Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications.
 - explicit step input selection and output mapping
 - same-process host repo transactions for small local step groups
 - runtime inspection through declared step state, audit events, and `SquidMesh.explain_run/2`
-- built-in steps like `:log`, `:wait`, `:pause`, and `:approval`, plus custom steps with `Jido.Action`
+- native `SquidMesh.Step` modules, built-in steps like `:log`, `:wait`, `:pause`, and `:approval`, plus raw `Jido.Action` interop
 
 ## Fit
 
@@ -72,8 +72,9 @@ defp deps do
 end
 ```
 
-If the host app defines custom steps with `use Jido.Action`, add `:jido`
-explicitly as well:
+For the common authoring path, define custom steps with `use SquidMesh.Step`.
+Raw `Jido.Action` modules remain supported as an explicit interop path; if the
+host app defines raw Jido actions directly, add `:jido` explicitly as well:
 
 ```elixir
 defp deps do

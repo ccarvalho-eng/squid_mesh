@@ -37,10 +37,21 @@ defmodule SquidMesh.Workflow do
 
   defmacro __using__(_opts) do
     quote do
-      import SquidMesh.Workflow
+      use SquidMesh.Workflow.Dsl
+
+      import SquidMesh.Workflow,
+        only: [
+          trigger: 2,
+          manual: 0,
+          cron: 1,
+          cron: 2,
+          payload: 1,
+          field: 2,
+          field: 3,
+          transition: 2
+        ]
 
       Module.register_attribute(__MODULE__, :squid_mesh_triggers, accumulate: true)
-      Module.register_attribute(__MODULE__, :squid_mesh_steps, accumulate: true)
       Module.register_attribute(__MODULE__, :squid_mesh_transitions, accumulate: true)
       Module.register_attribute(__MODULE__, :squid_mesh_current_field_target, persist: false)
       Module.register_attribute(__MODULE__, :squid_mesh_current_trigger_name, persist: false)
@@ -60,11 +71,6 @@ defmodule SquidMesh.Workflow do
       @before_compile SquidMesh.Workflow
     end
   end
-
-  @doc """
-  Declares the workflow body.
-  """
-  defmacro workflow(do: block), do: block
 
   @doc """
   Declares a named workflow trigger.
@@ -156,33 +162,6 @@ defmodule SquidMesh.Workflow do
   end
 
   @doc """
-  Declares one workflow step.
-  """
-  defmacro step(name, module, opts \\ []) do
-    quote bind_quoted: [name: name, module: module, opts: opts] do
-      @squid_mesh_steps %{name: name, module: module, opts: opts}
-    end
-  end
-
-  @doc """
-  Declares a first-class approval step for manual review decisions.
-  """
-  defmacro approval_step(name, opts \\ []) do
-    quote bind_quoted: [name: name, opts: opts] do
-      @squid_mesh_steps %{name: name, module: :approval, opts: opts}
-    end
-  end
-
-  @doc """
-  Declares a manual review step as an alias of `approval_step/2`.
-  """
-  defmacro manual_review_step(name, opts \\ []) do
-    quote bind_quoted: [name: name, opts: opts] do
-      @squid_mesh_steps %{name: name, module: :approval, opts: opts}
-    end
-  end
-
-  @doc """
   Declares a transition from one step outcome to the next step.
   """
   defmacro transition(from, opts) do
@@ -209,10 +188,7 @@ defmodule SquidMesh.Workflow do
       |> Module.get_attribute(:squid_mesh_triggers)
       |> Enum.reverse()
 
-    steps =
-      env.module
-      |> Module.get_attribute(:squid_mesh_steps)
-      |> Enum.reverse()
+    steps = spark_steps(env.module)
 
     transitions =
       env.module
@@ -277,6 +253,21 @@ defmodule SquidMesh.Workflow do
       def __workflow__(:initial_step), do: unquote(Macro.escape(definition.initial_step))
     end
   end
+
+  defp spark_steps(module) do
+    module
+    |> SquidMesh.Workflow.Info.steps()
+    |> Enum.map(fn %SquidMesh.Workflow.StepSpec{} = step ->
+      step
+      |> Map.from_struct()
+      |> Map.take([:name, :module, :opts, :metadata])
+      |> maybe_drop_interop_metadata()
+      |> Map.reject(fn {_key, value} -> value in [nil, %{}] end)
+    end)
+  end
+
+  defp maybe_drop_interop_metadata(%{metadata: %{contract: :squid_mesh_step}} = step), do: step
+  defp maybe_drop_interop_metadata(step), do: Map.delete(step, :metadata)
 
   @doc false
   @spec __push_current_trigger_definition__(module(), map()) :: :ok

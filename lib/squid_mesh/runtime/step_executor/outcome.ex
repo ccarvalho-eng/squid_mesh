@@ -159,12 +159,23 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          attempt_number,
          error
        ) do
-    case RetryPolicy.resolve(run.workflow, step_name, attempt_number) do
-      {:retry, _next_attempt, delay_ms} ->
-        schedule_retry(config, run, step_name, attempt_number, error, delay_ms)
+    if Map.get(error, :retryable?) == false do
+      handle_terminal_or_routed_failure(config, definition, run, step_name, step_run_id, error)
+    else
+      case RetryPolicy.resolve(run.workflow, step_name, attempt_number) do
+        {:retry, _next_attempt, delay_ms} ->
+          schedule_retry(config, run, step_name, attempt_number, error, delay_ms)
 
-      _no_retry ->
-        handle_terminal_or_routed_failure(config, definition, run, step_name, step_run_id, error)
+        _no_retry ->
+          handle_terminal_or_routed_failure(
+            config,
+            definition,
+            run,
+            step_name,
+            step_run_id,
+            error
+          )
+      end
     end
   end
 
