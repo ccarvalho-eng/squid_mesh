@@ -1,5 +1,13 @@
 defmodule SquidMesh.Workflow.SparkExtension do
-  @moduledoc false
+  @moduledoc """
+  Spark extension that defines the Squid Mesh workflow step section.
+
+  The extension owns `step`, `approval_step`, and `manual_review_step`
+  declarations. It stores native `SquidMesh.Step` metadata when available and
+  marks built-in or raw Jido actions as explicit interop contracts so the
+  compiled spec remains inspectable without changing the runtime execution
+  model.
+  """
 
   @step_schema [
     name: [

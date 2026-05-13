@@ -1,5 +1,13 @@
 defmodule SquidMesh.Step.Action do
-  @moduledoc false
+  @moduledoc """
+  Internal Jido action adapter for native Squid Mesh steps.
+
+  Native step modules expose the public `SquidMesh.Step` contract. This adapter
+  preserves the runtime's Jido execution path by validating native input,
+  converting the Jido context into `SquidMesh.Step.Context`, normalizing native
+  return values, and validating native output before the workflow runtime
+  persists the result.
+  """
 
   use Jido.Action,
     name: "squid_mesh_native_step",
