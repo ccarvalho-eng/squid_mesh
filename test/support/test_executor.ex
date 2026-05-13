@@ -161,7 +161,7 @@ defmodule SquidMesh.Test.Executor do
     %{
       job_id: job.id,
       executor: __MODULE__,
-      queue: String.to_atom(job.queue),
+      queue: :squid_mesh,
       worker: job.worker,
       schedule_in: get_in(job.meta, [:opts, :schedule_in])
     }

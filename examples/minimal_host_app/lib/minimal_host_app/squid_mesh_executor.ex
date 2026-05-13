@@ -101,7 +101,7 @@ defmodule MinimalHostApp.SquidMeshExecutor do
     %{
       job_id: job.id,
       executor: __MODULE__,
-      queue: String.to_atom(job.queue),
+      queue: queue(),
       worker: job.worker,
       scheduled_at: job.scheduled_at
     }
