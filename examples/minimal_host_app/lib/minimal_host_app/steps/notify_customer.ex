@@ -3,16 +3,19 @@ defmodule MinimalHostApp.Steps.NotifyCustomer do
   Example step that records customer notification intent.
   """
 
-  use Jido.Action,
-    name: "notify_customer",
+  use SquidMesh.Step,
+    name: :notify_customer,
     description: "Records notification intent",
-    schema: [
+    input_schema: [
       invoice: [type: :map, required: true],
       gateway_check: [type: :map, required: true]
+    ],
+    output_schema: [
+      notification: [type: :map, required: true]
     ]
 
   @impl true
-  @spec run(map(), map()) :: {:ok, map()}
+  @spec run(map(), SquidMesh.Step.Context.t()) :: {:ok, map()}
   def run(%{invoice: invoice, gateway_check: gateway_check}, _context) do
     {:ok,
      %{

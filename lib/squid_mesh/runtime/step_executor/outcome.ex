@@ -159,12 +159,24 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
          attempt_number,
          error
        ) do
-    case RetryPolicy.resolve(run.workflow, step_name, attempt_number) do
-      {:retry, _next_attempt, delay_ms} ->
-        schedule_retry(config, run, step_name, attempt_number, error, delay_ms)
+    if Map.get(error, :retryable?) == false do
+      handle_terminal_or_routed_failure(config, definition, run, step_name, step_run_id, error)
+    else
+      case RetryPolicy.resolve(run.workflow, step_name, attempt_number) do
+        {:retry, _next_attempt, delay_ms} ->
+          delay_ms = retry_delay_ms(error, delay_ms)
+          schedule_retry(config, run, step_name, attempt_number, error, delay_ms)
 
-      _no_retry ->
-        handle_terminal_or_routed_failure(config, definition, run, step_name, step_run_id, error)
+        _no_retry ->
+          handle_terminal_or_routed_failure(
+            config,
+            definition,
+            run,
+            step_name,
+            step_run_id,
+            error
+          )
+      end
     end
   end
 
@@ -873,6 +885,13 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
   end
 
   defp retry_dispatch_opts(_delay_ms), do: []
+
+  defp retry_delay_ms(%{retry_after: retry_after}, _policy_delay_ms)
+       when is_integer(retry_after) and retry_after >= 0 do
+    retry_after
+  end
+
+  defp retry_delay_ms(_error, policy_delay_ms), do: policy_delay_ms
 
   defp pause_kind(%{module: :pause}, execution_opts) when is_list(execution_opts) do
     if Keyword.get(execution_opts, :pause, false), do: :pause, else: nil

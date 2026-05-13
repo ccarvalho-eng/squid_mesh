@@ -157,16 +157,61 @@ Payload validation runs before the run is persisted.
 
 ## Steps
 
-Each `step` is either:
+Each `step` is declared in the Spark-backed workflow spec and is either:
 
-- a module that performs domain work
+- a native Squid Mesh step module that performs domain work
 - a built-in primitive supplied by the runtime
+- a raw `Jido.Action` module used as an explicit interop path
 
 Module step:
 
 ```elixir
 step :load_invoice, Billing.Steps.LoadInvoice
 ```
+
+Native step modules use Squid Mesh concepts only:
+
+```elixir
+defmodule Billing.Steps.LoadInvoice do
+  use SquidMesh.Step,
+    name: :load_invoice,
+    description: "Loads invoice details",
+    input_schema: [
+      invoice_id: [type: :string, required: true]
+    ],
+    output_schema: [
+      invoice: [type: :map, required: true]
+    ]
+
+  @impl true
+  def run(%{invoice_id: invoice_id}, %SquidMesh.Step.Context{} = context) do
+    {:ok, %{invoice: %{id: invoice_id, run_id: context.run_id}}}
+  end
+end
+```
+
+`SquidMesh.Step.Context` exposes durable Squid Mesh runtime data:
+
+- `run_id`
+- `workflow`
+- `step`
+- `attempt`
+- `state`, which includes the original payload merged with accumulated run context
+
+Native steps may return:
+
+- `{:ok, output}` or `{:ok, output, opts}` for success
+- `{:error, reason}` for terminal failure that skips workflow retries and follows failure routing
+- `{:retry, reason}` or `{:retry, reason, opts}` for retryable failure governed by the workflow retry policy
+
+When `output: :key` is declared on the workflow step, Squid Mesh stores the
+native step's returned map under that key after the step returns. The
+`output_schema` validates the native step return before that workflow-level
+mapping is applied.
+
+Raw `Jido.Action` modules remain supported for advanced interop. They execute
+through the same runtime path, but applications should prefer `use
+SquidMesh.Step` for the common authoring path.
 
 Built-in steps:
 

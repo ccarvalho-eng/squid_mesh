@@ -6,11 +6,14 @@ defmodule MinimalHostApp.Steps.ReserveInventory do
   if a downstream checkout step fails after retries are exhausted.
   """
 
-  use Jido.Action,
-    name: "reserve_inventory",
+  use SquidMesh.Step,
+    name: :reserve_inventory,
     description: "Reserves inventory for an order",
-    schema: [
+    input_schema: [
       order_id: [type: :string, required: true]
+    ],
+    output_schema: [
+      inventory_reservation: [type: :map, required: true]
     ]
 
   @impl true

@@ -6,12 +6,15 @@ defmodule MinimalHostApp.Steps.AuthorizePayment do
   void it during compensation if capture fails.
   """
 
-  use Jido.Action,
-    name: "authorize_payment",
+  use SquidMesh.Step,
+    name: :authorize_payment,
     description: "Authorizes payment for an order",
-    schema: [
+    input_schema: [
       account_id: [type: :string, required: true],
       order_id: [type: :string, required: true]
+    ],
+    output_schema: [
+      payment_authorization: [type: :map, required: true]
     ]
 
   @impl true

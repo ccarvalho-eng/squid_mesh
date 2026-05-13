@@ -71,6 +71,7 @@ defmodule SquidMesh.MixProject do
       {:jason, "~> 1.4"},
       {:jido, "~> 2.0"},
       {:req, "~> 0.5"},
+      {:spark, "~> 2.7"},
       {:postgrex, "~> 0.20", only: :test},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
     ]

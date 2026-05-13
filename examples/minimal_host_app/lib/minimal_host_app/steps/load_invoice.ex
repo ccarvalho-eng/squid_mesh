@@ -3,17 +3,20 @@ defmodule MinimalHostApp.Steps.LoadInvoice do
   Example step that loads invoice context for a recovery run.
   """
 
-  use Jido.Action,
-    name: "load_invoice",
+  use SquidMesh.Step,
+    name: :load_invoice,
     description: "Loads invoice context",
-    schema: [
+    input_schema: [
       account_id: [type: :string, required: true],
       invoice_id: [type: :string, required: true],
       attempt_id: [type: :string, required: true]
+    ],
+    output_schema: [
+      invoice: [type: :map, required: true]
     ]
 
   @impl true
-  @spec run(map(), map()) :: {:ok, map()}
+  @spec run(map(), SquidMesh.Step.Context.t()) :: {:ok, map()}
   def run(%{account_id: account_id, invoice_id: invoice_id, attempt_id: attempt_id}, _context) do
     {:ok,
      %{
