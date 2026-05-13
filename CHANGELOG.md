@@ -6,6 +6,38 @@ The format is based on Keep a Changelog and the project follows Semantic
 Versioning, including prerelease tags while the runtime remains in early
 development.
 
+## [0.1.0-alpha.6] - 2026-05-13
+
+### Added
+- Saga compensation callbacks with `compensate: SomeAction`, executed in
+  reverse completion order after downstream terminal failure with persisted
+  recovery history.
+- Failure-route recovery markers with `recovery: :compensation | :undo` on
+  error transitions, plus `:compensation_routed` and `:undo_routed` audit
+  events.
+- Local repo transaction groups for custom steps through `transaction: :repo`,
+  wrapping the step action in the configured repo transaction.
+- Minimal host app examples and smoke coverage for saga checkout, gateway
+  credit compensation routing, and local ledger transaction commit/rollback.
+
+### Changed
+- Workflow authoring, operations, README, and host app documentation now
+  distinguish saga rollback, same-step failure routing, undo, and local repo
+  transaction boundaries.
+- Runtime failure and compensation paths now preserve more recovery metadata
+  for inspection and explainability.
+
+### Fixed
+- Hardened compensation outcome handling and terminal target serialization for
+  failure recovery routes.
+- Nested exception structs in step error details no longer crash error
+  normalization.
+
+### Notes
+- This remains an alpha release. `transaction: :repo` is a local host repo
+  boundary only; it is not a distributed transaction across durable workflow
+  progress, Oban dispatch, external systems, or compensation callbacks.
+
 ## [0.1.0-alpha.5] - 2026-05-11
 
 ### Added
