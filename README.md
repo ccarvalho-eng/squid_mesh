@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img width="300" alt="squid-mesh-logo" src="https://github.com/user-attachments/assets/274ff13a-25d4-4d94-84ff-637176c91d4e" />
+  <img width="300" alt="squid-mesh-logo" src="https://github.com/user-attachments/assets/fb6777dc-73a6-466a-bbe6-3bd6bd7ad7a0" />
 
   <p><strong>Workflow automation runtime for Elixir apps.</strong></p>
   
