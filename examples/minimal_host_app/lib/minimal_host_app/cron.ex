@@ -3,7 +3,7 @@ defmodule MinimalHostApp.Cron do
   Test and smoke helper for the example app's cron plugin.
 
   Oban's manual testing mode disables plugins, so the example harness starts the
-  same Squid Mesh cron plugin explicitly against the running Oban config.
+  same host-owned cron plugin explicitly against the running Oban config.
   """
 
   @plugin_name __MODULE__.Plugin
@@ -14,7 +14,7 @@ defmodule MinimalHostApp.Cron do
       oban_config = build_oban_config()
       plugin_opts = plugin_opts()
 
-      case SquidMesh.Plugins.Cron.start_link(
+      case MinimalHostApp.CronPlugin.start_link(
              Keyword.merge(plugin_opts, conf: oban_config, name: @plugin_name)
            ) do
         {:ok, _pid} -> :ok
@@ -28,7 +28,7 @@ defmodule MinimalHostApp.Cron do
   @spec evaluate!() :: :ok
   def evaluate! do
     ensure_started!()
-    SquidMesh.Plugins.Cron.evaluate(@plugin_name)
+    MinimalHostApp.CronPlugin.evaluate(@plugin_name)
     Process.sleep(50)
   end
 
@@ -37,7 +37,7 @@ defmodule MinimalHostApp.Cron do
     |> Application.fetch_env!(Oban)
     |> Keyword.get(:plugins, [])
     |> Enum.find_value([], fn
-      {SquidMesh.Plugins.Cron, opts} -> opts
+      {MinimalHostApp.CronPlugin, opts} -> opts
       _other -> false
     end)
   end

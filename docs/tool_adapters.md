@@ -74,7 +74,7 @@ That keeps retry policy in one place:
 
 - adapters report the first failure
 - workflow steps declare retry policy
-- Squid Mesh and Oban schedule the next step attempt
+- Squid Mesh and the host executor schedule the next step attempt
 
 This keeps transport behavior predictable and avoids stacking HTTP-client
 retries underneath workflow retries.

@@ -19,7 +19,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.ExhaustedRetryWorkflow
   alias __MODULE__.FailingWorkflow
   alias __MODULE__.InputIsolationWorkflow
-  alias __MODULE__.MissingOban
+  alias __MODULE__.MissingExecutor
   alias __MODULE__.OrderedDependencyWorkflow
   alias __MODULE__.ApprovalWorkflow
   alias __MODULE__.PauseMappedWorkflow
@@ -39,23 +39,23 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias SquidMesh.Runtime.StepExecutor.Preparation
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
-  alias SquidMesh.Workers.StepWorker
-  alias Oban.Job
+  alias SquidMesh.Test.StepWorker
+  alias SquidMesh.Test.Job
 
-  describe "workflow execution through Oban" do
+  describe "workflow execution through the configured executor" do
     test "enqueues and executes the declared steps through Jido-backed actions" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, run} = SquidMesh.start_run(SuccessfulWorkflow, input, repo: Repo)
 
       assert_enqueued(
-        worker: SquidMesh.Workers.StepWorker,
+        worker: SquidMesh.Test.StepWorker,
         queue: "squid_mesh",
         args: %{"run_id" => run.id, "step" => "load_invoice"}
       )
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
 
@@ -94,15 +94,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert run.current_step == nil
 
       assert 2 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id)
 
       assert :ok =
                StepWorker.perform(%Job{
@@ -116,31 +108,13 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       refute Map.has_key?(running_run.context, :delivery)
 
       assert 1 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'step' = 'load_invoice'", job.args)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id, "load_invoice")
 
       assert 0 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'step' = 'send_email'", job.args)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id, "send_email")
 
       assert %{success: 3, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
 
@@ -226,15 +200,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert 2 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id)
     end
 
     test "does not run a dependency join step when one prerequisite fails" do
@@ -243,7 +209,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, run} = SquidMesh.start_run(DependencyFailureWorkflow, input, repo: Repo)
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
       assert failed_run.status == :failed
@@ -283,31 +249,13 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       refute Map.has_key?(running_run.context, :account_message)
 
       assert 1 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'step' = 'load_invoice'", job.args)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id, "load_invoice")
 
       assert 0 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'step' = 'prepare_account_message'", job.args)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id, "prepare_account_message")
 
       assert %{success: 4, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
 
@@ -335,7 +283,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                })
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -351,7 +299,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, run} = SquidMesh.start_run(ExplicitMappingWorkflow, input, repo: Repo)
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, completed_run} =
                SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -400,16 +348,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert paused_run.last_error == nil
 
       assert 0 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'step' = 'record_delivery'", job.args)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id, "record_delivery")
 
       assert [%SquidMesh.StepRun{} = paused_step] = paused_run.step_runs
       assert paused_step.step == :wait_for_approval
@@ -422,7 +361,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert unblocked_run.current_step == :record_delivery
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -456,7 +395,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert unblocked_run.status == :running
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -536,7 +475,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert approved_run.current_step == :record_approval
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -601,7 +540,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert rejected_run.current_step == :record_rejection
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -718,7 +657,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert approved_run.current_step == :record_approval
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -807,7 +746,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert :ok = Task.await(invoice_task)
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -866,16 +805,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       refute Map.has_key?(persisted_run.context, :delivery)
 
       assert 0 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'step' = 'send_email'", job.args)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id, "send_email")
 
       step_runs =
         Repo.all(
@@ -931,16 +861,8 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert retrying_run.last_error.code == "gateway_timeout"
 
       assert 4 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'step' in ('load_account', 'load_invoice')", job.args)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id, "load_account") +
+                 SquidMesh.Test.Executor.available_count(run.id, "load_invoice")
 
       step_runs =
         Repo.all(
@@ -960,7 +882,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, run} =
                SquidMesh.start_run(FailingWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
 
       assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
 
@@ -990,7 +912,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert %{success: 1, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
 
@@ -1008,7 +930,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert %{success: 1, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
 
@@ -1040,7 +962,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert %{failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, failed_run} =
                SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -1111,18 +1033,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert failed_before_compensation.status == :failed
       assert :persistent_term.get({CompensationRetryWorkflow, :events}, []) == []
 
-      assert %Job{} =
-               compensation_job =
-               Repo.one!(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'compensate' = 'true'", job.args),
-                   order_by: [desc: job.inserted_at],
-                   limit: 1
-                 )
-               )
+      assert %Job{} = compensation_job = SquidMesh.Test.Executor.compensation_job(run.id)
 
       assert :ok = StepWorker.perform(compensation_job)
 
@@ -1165,7 +1076,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert %{failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, failed_run} =
                SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -1207,7 +1118,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                SquidMesh.start_run(ErrorRoutingWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, completed_run} =
                SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -1239,7 +1150,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                SquidMesh.start_run(UndoRoutingWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, completed_run} =
                SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -1272,7 +1183,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                )
 
       assert %{success: 1, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, completed_run} =
                SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -1301,7 +1212,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                SquidMesh.start_run(ExhaustedRetryWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
       assert %{success: 3, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, completed_run} =
                SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
@@ -1325,7 +1236,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, run} =
                SquidMesh.start_run(BuiltInWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
 
       assert {:ok, waiting_run} = SquidMesh.inspect_run(run.id, repo: Repo)
       assert waiting_run.status == :running
@@ -1333,18 +1244,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert waiting_run.last_error == nil
 
       assert %Job{} =
-               scheduled_job =
-               Repo.one!(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "scheduled" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'step' = 'log_delivery'", job.args),
-                   order_by: [desc: job.inserted_at],
-                   limit: 1
-                 )
-               )
+               scheduled_job = SquidMesh.Test.Executor.scheduled_job(run.id, "log_delivery")
 
       assert DateTime.compare(scheduled_job.scheduled_at, scheduled_job.inserted_at) == :gt
 
@@ -1361,11 +1261,11 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
              ]
     end
 
-    test "schedules the next retry attempt through Oban when backoff is configured" do
+    test "schedules the next retry attempt through the configured executor when backoff is configured" do
       assert {:ok, run} =
                SquidMesh.start_run(BackoffWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
 
       assert {:ok, retried_run} = SquidMesh.inspect_run(run.id, repo: Repo)
       assert retried_run.status == :retrying
@@ -1382,18 +1282,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       assert AttemptStore.attempt_count(Repo, step_run.id) == 1
 
-      assert %Job{} =
-               scheduled_job =
-               Repo.one!(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "scheduled" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id),
-                   order_by: [desc: job.inserted_at],
-                   limit: 1
-                 )
-               )
+      assert %Job{} = scheduled_job = SquidMesh.Test.Executor.scheduled_job(run.id)
 
       assert DateTime.compare(scheduled_job.scheduled_at, scheduled_job.inserted_at) == :gt
     end
@@ -1408,7 +1297,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, run} =
                SquidMesh.start_run(RetrySurfaceWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
 
       assert {:ok, retried_run} = SquidMesh.inspect_run(run.id, repo: Repo)
       assert retried_run.status == :retrying
@@ -1458,16 +1347,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert AttemptStore.attempt_count(Repo, load_invoice_step_run.id) == 1
 
       assert 1 ==
-               Repo.aggregate(
-                 from(job in Job,
-                   where:
-                     job.worker == "SquidMesh.Workers.StepWorker" and
-                       job.state == "available" and
-                       fragment("?->>'run_id' = ?", job.args, ^run.id) and
-                       fragment("?->>'step' = 'send_email'", job.args)
-                 ),
-                 :count
-               )
+               SquidMesh.Test.Executor.available_count(run.id, "send_email")
     end
 
     test "does not re-execute a step that is already marked running" do
@@ -1494,7 +1374,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
       assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, SuccessfulWorkflow, input)
-      assert :ok = StepExecutor.execute(run.id, nil, repo: Repo, execution: [name: MissingOban])
+      assert :ok = StepExecutor.execute(run.id, nil, repo: Repo, executor: MissingExecutor)
 
       assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
 
@@ -1504,7 +1384,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert failed_run.context.invoice == %{id: "inv_456", status: "open"}
       assert failed_run.last_error.message == "failed to dispatch workflow step"
       assert failed_run.last_error.next_step == :send_email
-      assert failed_run.last_error.cause.message =~ "No Oban instance named"
+      assert failed_run.last_error.cause == "executor_unavailable"
 
       assert [%SquidMesh.StepRun{} = step_run] = failed_run.step_runs
       assert step_run.step == :load_invoice
@@ -1528,12 +1408,12 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       account_task =
         Task.async(fn ->
-          StepExecutor.execute(run.id, :load_account, repo: Repo, execution: [name: MissingOban])
+          StepExecutor.execute(run.id, :load_account, repo: Repo, executor: MissingExecutor)
         end)
 
       invoice_task =
         Task.async(fn ->
-          StepExecutor.execute(run.id, :load_invoice, repo: Repo, execution: [name: MissingOban])
+          StepExecutor.execute(run.id, :load_invoice, repo: Repo, executor: MissingExecutor)
         end)
 
       assert_receive {:concurrent_root_started, :load_account, account_pid}
@@ -1698,7 +1578,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, run} =
                SquidMesh.RunStore.create_run(Repo, BackoffWorkflow, %{account_id: "acct_123"})
 
-      assert :ok = StepExecutor.execute(run.id, nil, repo: Repo, execution: [name: MissingOban])
+      assert :ok = StepExecutor.execute(run.id, nil, repo: Repo, executor: MissingExecutor)
 
       assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
 
@@ -1750,7 +1630,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert AttemptStore.attempt_count(Repo, step_run.id) == 1
 
       assert_enqueued(
-        worker: SquidMesh.Workers.StepWorker,
+        worker: SquidMesh.Test.StepWorker,
         queue: "squid_mesh",
         args: %{"run_id" => run.id, "step" => "send_email"}
       )
@@ -1785,7 +1665,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert :ok =
                StepExecutor.execute(run.id, :load_invoice,
                  repo: Repo,
-                 execution: [stale_step_timeout: 0]
+                 stale_step_timeout: 0
                )
 
       assert {:ok, progressed_run} =
@@ -1859,17 +1739,13 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
 
       refute Repo.exists?(from(step_run in StepRun, where: step_run.run_id == ^run.id))
 
-      refute Repo.exists?(
-               from(job in Job,
-                 where: fragment("?->>'run_id' = ?", job.args, ^run.id)
-               )
-             )
+      refute Enum.any?(SquidMesh.Test.Executor.jobs(), &(&1.args["run_id"] == run.id))
     end
 
     test "rolls back pending fan-out rows when direct dispatch fails after scheduling" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
-      assert {:ok, config} = Config.load(repo: Repo, execution: [name: MissingOban])
+      assert {:ok, config} = Config.load(repo: Repo, executor: MissingExecutor)
       assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
 
       assert {:error, _reason} =
@@ -1883,7 +1759,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     test "keeps existing pending rows when dispatch fails without scheduling" do
       input = %{account_id: "acct_123", invoice_id: "inv_456"}
 
-      assert {:ok, config} = Config.load(repo: Repo, execution: [name: MissingOban])
+      assert {:ok, config} = Config.load(repo: Repo, executor: MissingExecutor)
       assert {:ok, run} = SquidMesh.RunStore.create_run(Repo, DependencyWorkflow, input)
 
       assert {:ok, [:load_account]} =
@@ -1905,7 +1781,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert {:ok, run} =
                SquidMesh.start_run(BuiltInWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
 
       assert {:ok, cancelling_run} = SquidMesh.cancel_run(run.id, repo: Repo)
       assert cancelling_run.status == :cancelling
@@ -1963,7 +1839,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                  repo: Repo
                )
 
-      assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
 
       assert {:ok, ready_run} = SquidMesh.inspect_run(run.id, repo: Repo)
       assert ready_run.status == :running
@@ -3453,6 +3329,19 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     end
   end
 
-  defmodule MissingOban do
+  defmodule MissingExecutor do
+    @behaviour SquidMesh.Executor
+
+    @impl true
+    def enqueue_step(_config, _run, _step, _opts), do: {:error, :executor_unavailable}
+
+    @impl true
+    def enqueue_steps(_config, _run, _steps, _opts), do: {:error, :executor_unavailable}
+
+    @impl true
+    def enqueue_compensation(_config, _run, _opts), do: {:error, :executor_unavailable}
+
+    @impl true
+    def enqueue_cron(_config, _workflow, _trigger, _opts), do: {:error, :executor_unavailable}
   end
 end

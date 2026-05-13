@@ -30,19 +30,14 @@ defmodule SquidMesh.Observability do
   end
 
   @doc """
-  Emits a telemetry event when a run is dispatched to Oban.
+  Emits a telemetry event when a run is dispatched to the configured executor.
   """
-  @spec emit_run_dispatched(Run.t(), Oban.Job.t(), atom(), pos_integer() | nil) :: :ok
-  def emit_run_dispatched(%Run{} = run, %Oban.Job{} = job, queue, schedule_in) do
+  @spec emit_run_dispatched(Run.t(), map()) :: :ok
+  def emit_run_dispatched(%Run{} = run, metadata) when is_map(metadata) do
     emit(
       [:run, :dispatched],
       %{system_time: System.system_time()},
-      run_metadata(run)
-      |> Map.merge(%{
-        job_id: job.id,
-        queue: queue,
-        schedule_in: schedule_in
-      })
+      Map.merge(metadata, run_metadata(run))
     )
   end
 

@@ -48,10 +48,7 @@ Ecto.Migrator.with_repo(SquidMesh.Test.Repo, fn repo ->
   Ecto.Migrator.run(repo, Path.expand("support/migrations", __DIR__), :up, all: true)
 end)
 
-{:ok, _pid} =
-  {Oban, Application.fetch_env!(:squid_mesh, Oban)}
-  |> Supervisor.child_spec(id: :squid_mesh_test_oban)
-  |> then(&Supervisor.start_link([&1], strategy: :one_for_one))
+{:ok, _pid} = SquidMesh.Test.Executor.start_link()
 
 Ecto.Adapters.SQL.Sandbox.mode(SquidMesh.Test.Repo, :manual)
 

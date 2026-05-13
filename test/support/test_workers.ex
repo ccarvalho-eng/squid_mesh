@@ -1,0 +1,41 @@
+defmodule SquidMesh.Test.StepWorker do
+  @moduledoc false
+
+  alias SquidMesh.Runtime.Runner
+
+  def perform(%{args: %{"kind" => _kind} = args}) do
+    Runner.perform(args)
+  end
+
+  def perform(%{args: %{"run_id" => run_id, "compensate" => true}}) when is_binary(run_id) do
+    Runner.execute_compensation(run_id)
+  end
+
+  def perform(%{args: %{"run_id" => run_id, "step" => step}})
+      when is_binary(run_id) and is_binary(step) do
+    Runner.execute_step(run_id, step)
+  end
+
+  def perform(%{args: args}) do
+    {:error, {:invalid_job_args, args}}
+  end
+end
+
+defmodule SquidMesh.Test.CronTriggerWorker do
+  @moduledoc false
+
+  alias SquidMesh.Runtime.Runner
+
+  def perform(%{args: %{"kind" => "cron"} = args}) do
+    Runner.perform(args)
+  end
+
+  def perform(%{args: %{"workflow" => workflow_name, "trigger" => trigger_name}})
+      when is_binary(workflow_name) and is_binary(trigger_name) do
+    Runner.start_cron_trigger(workflow_name, trigger_name)
+  end
+
+  def perform(%{args: args}) do
+    {:error, {:invalid_job_args, args}}
+  end
+end

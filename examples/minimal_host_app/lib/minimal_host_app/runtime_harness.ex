@@ -107,7 +107,7 @@ defmodule MinimalHostApp.RuntimeHarness do
     interval_ms = Keyword.get(opts, :interval_ms, @default_poll_interval_ms)
 
     case await_scheduled_step_job(run_id, step, attempts, interval_ms) do
-      {:ok, %Job{} = job} -> SquidMesh.Workers.StepWorker.perform(job)
+      {:ok, %Job{} = job} -> MinimalHostApp.Workers.SquidMeshWorker.perform(job)
       {:error, reason} -> raise "expected scheduled job for #{step}: #{inspect(reason)}"
     end
   end
@@ -287,7 +287,7 @@ defmodule MinimalHostApp.RuntimeHarness do
     Repo.one(
       from(job in Job,
         where:
-          job.worker == "SquidMesh.Workers.StepWorker" and
+          job.worker == "MinimalHostApp.Workers.SquidMeshWorker" and
             job.state == "scheduled" and
             fragment("?->>'run_id' = ?", job.args, ^run_id) and
             fragment("?->>'step' = ?", job.args, ^step),

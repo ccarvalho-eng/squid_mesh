@@ -10,8 +10,8 @@ defmodule Mix.Tasks.SquidMesh.Install do
   `priv/repo/migrations` so the host application can run it through its normal
   Ecto migration flow.
 
-  `Oban` migrations are intentionally not copied. Squid Mesh assumes the host
-  application already manages its own `oban_jobs` table.
+  Executor-specific migrations are intentionally not copied. Squid Mesh assumes
+  the host application owns the queueing backend used by its executor.
   """
 
   @shortdoc "Installs Squid Mesh migrations into the host application"
@@ -57,7 +57,7 @@ defmodule Mix.Tasks.SquidMesh.Install do
 
           config :squid_mesh,
             repo: YourApp.Repo,
-            execution: [name: Oban, queue: :squid_mesh]
+            executor: YourApp.SquidMeshExecutor
     """)
   end
 

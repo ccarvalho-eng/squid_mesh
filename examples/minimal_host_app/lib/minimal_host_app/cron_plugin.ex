@@ -1,19 +1,16 @@
-defmodule SquidMesh.Plugins.Cron do
+defmodule MinimalHostApp.CronPlugin do
   @moduledoc """
-  Host-app opt-in plugin that activates cron workflow triggers through Oban.
-
-  The plugin groups cron workflows by timezone and starts one `Oban.Plugins.Cron`
-  child per timezone. Workflow runs are still created through Squid Mesh's
-  public API and dispatched through the configured execution queue.
+  Host-owned Oban cron plugin for the example app's Squid Mesh workflows.
   """
 
   @behaviour Oban.Plugin
 
   use Supervisor
 
-  alias SquidMesh.Config
+  alias MinimalHostApp.SquidMeshExecutor
+  alias MinimalHostApp.Workers.SquidMeshWorker
+  alias SquidMesh.Executor.Payload
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
-  alias SquidMesh.Workers.CronTriggerWorker
 
   @type option ::
           Oban.Plugin.option()
@@ -45,12 +42,6 @@ defmodule SquidMesh.Plugins.Cron do
     end
   end
 
-  @doc """
-  Forces the wrapped Oban cron children to evaluate immediately.
-
-  This is useful in tests and smoke paths where the host app needs to exercise
-  cron activation without waiting for the next scheduler tick.
-  """
   @spec evaluate(Supervisor.supervisor()) :: :ok
   def evaluate(plugin) do
     plugin
@@ -65,18 +56,12 @@ defmodule SquidMesh.Plugins.Cron do
 
   @impl Supervisor
   def init(opts) do
-    config = Config.load!()
     conf = Keyword.fetch!(opts, :conf)
     workflows = Keyword.fetch!(opts, :workflows)
 
-    if conf.name != config.execution_name do
-      raise ArgumentError,
-            "Squid Mesh cron plugin must run on the configured execution Oban instance"
-    end
-
     children =
       workflows
-      |> build_crontabs(config.execution_queue)
+      |> build_crontabs(SquidMeshExecutor.queue())
       |> Enum.map(fn {timezone, crontab} ->
         opts = [conf: conf, crontab: crontab, timezone: timezone]
         Supervisor.child_spec({Oban.Plugins.Cron, opts}, id: {:cron, timezone})
@@ -131,10 +116,10 @@ defmodule SquidMesh.Plugins.Cron do
   end
 
   defp validate_crontab_entry(workflow, trigger_name, expression, timezone) do
-    opts = [args: cron_args(workflow, trigger_name)]
+    opts = [args: Payload.cron(workflow, trigger_name)]
 
     case Oban.Plugins.Cron.validate(
-           crontab: [{expression, CronTriggerWorker, opts}],
+           crontab: [{expression, SquidMeshWorker, opts}],
            timezone: timezone
          ) do
       :ok -> :ok
@@ -155,8 +140,8 @@ defmodule SquidMesh.Plugins.Cron do
     Enum.map(cron_triggers(definition), fn trigger ->
       entry = {
         trigger.config.expression,
-        CronTriggerWorker,
-        [args: cron_args(workflow, trigger.name), queue: queue]
+        SquidMeshWorker,
+        [args: Payload.cron(workflow, trigger.name), queue: queue]
       }
 
       {trigger.config.timezone, entry}
@@ -165,12 +150,5 @@ defmodule SquidMesh.Plugins.Cron do
 
   defp cron_triggers(definition) do
     Enum.filter(definition.triggers, &(&1.type == :cron))
-  end
-
-  defp cron_args(workflow, trigger_name) do
-    %{
-      workflow: WorkflowDefinition.serialize_workflow(workflow),
-      trigger: WorkflowDefinition.serialize_trigger(trigger_name)
-    }
   end
 end

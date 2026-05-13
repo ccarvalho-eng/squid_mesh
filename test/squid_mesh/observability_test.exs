@@ -126,7 +126,20 @@ defmodule SquidMesh.ObservabilityTest do
     end
   end
 
-  defmodule MissingOban do
+  defmodule MissingExecutor do
+    @behaviour SquidMesh.Executor
+
+    @impl true
+    def enqueue_step(_config, _run, _step, _opts), do: {:error, :executor_unavailable}
+
+    @impl true
+    def enqueue_steps(_config, _run, _steps, _opts), do: {:error, :executor_unavailable}
+
+    @impl true
+    def enqueue_compensation(_config, _run, _opts), do: {:error, :executor_unavailable}
+
+    @impl true
+    def enqueue_cron(_config, _workflow, _trigger, _opts), do: {:error, :executor_unavailable}
   end
 
   defmodule PauseWorkflow do
@@ -187,7 +200,7 @@ defmodule SquidMesh.ObservabilityTest do
     assert metadata.queue == :squid_mesh
     assert metadata.schedule_in == nil
 
-    assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+    assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
 
     assert_receive {:telemetry_event, [:squid_mesh, :run, :transition], %{system_time: _},
                     metadata}
@@ -216,6 +229,26 @@ defmodule SquidMesh.ObservabilityTest do
     assert metadata.run_id == run.id
     assert metadata.from_status == :running
     assert metadata.to_status == :completed
+  end
+
+  test "keeps core run telemetry metadata authoritative over executor metadata" do
+    assert {:ok, run} =
+             SquidMesh.start_run(SuccessfulWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+    flush_telemetry_events()
+
+    SquidMesh.Observability.emit_run_dispatched(run, %{
+      run_id: "wrong",
+      workflow: WrongWorkflow,
+      queue: :squid_mesh
+    })
+
+    assert_receive {:telemetry_event, [:squid_mesh, :run, :dispatched], %{system_time: _},
+                    metadata}
+
+    assert metadata.run_id == run.id
+    assert metadata.workflow == SuccessfulWorkflow
+    assert metadata.queue == :squid_mesh
   end
 
   test "emits outcome telemetry after the outcome transaction commits" do
@@ -357,7 +390,7 @@ defmodule SquidMesh.ObservabilityTest do
 
     log =
       capture_log([metadata: [:run_id, :workflow, :step, :attempt]], fn ->
-        assert %{success: 1, failure: 0} = Oban.drain_queue(queue: :squid_mesh)
+        assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
       end)
 
     assert_receive {:telemetry_event, [:squid_mesh, :step, :failed],
@@ -399,7 +432,7 @@ defmodule SquidMesh.ObservabilityTest do
   end
 
   test "does not emit retry scheduled telemetry when retry dispatch fails" do
-    assert {:ok, config} = Config.load(repo: Repo, execution: [name: MissingOban])
+    assert {:ok, config} = Config.load(repo: Repo, executor: MissingExecutor)
     assert {:ok, definition} = SquidMesh.Workflow.Definition.load(RetryWorkflow)
     assert {:ok, run} = RunStore.create_run(Repo, RetryWorkflow, %{account_id: "acct_123"})
 
@@ -439,7 +472,7 @@ defmodule SquidMesh.ObservabilityTest do
     assert {:ok, run} = SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
     assert :ok =
-             SquidMesh.Workers.StepWorker.perform(%Oban.Job{
+             SquidMesh.Test.StepWorker.perform(%SquidMesh.Test.Job{
                args: %{"run_id" => run.id, "step" => "wait_for_approval"}
              })
 
@@ -477,7 +510,7 @@ defmodule SquidMesh.ObservabilityTest do
     assert {:ok, run} = SquidMesh.start_run(PauseWorkflow, %{account_id: "acct_123"}, repo: Repo)
 
     assert :ok =
-             SquidMesh.Workers.StepWorker.perform(%Oban.Job{
+             SquidMesh.Test.StepWorker.perform(%SquidMesh.Test.Job{
                args: %{"run_id" => run.id, "step" => "wait_for_approval"}
              })
 

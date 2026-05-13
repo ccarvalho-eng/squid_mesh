@@ -17,9 +17,9 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert {:ok, run} = WorkflowRuns.start_payment_recovery(attrs)
 
     assert_enqueued(
-      worker: SquidMesh.Workers.StepWorker,
+      worker: MinimalHostApp.Workers.SquidMeshWorker,
       queue: "squid_mesh",
-      args: %{"run_id" => run.id, "step" => "load_invoice"}
+      args: %{"kind" => "step", "run_id" => run.id, "step" => "load_invoice"}
     )
 
     assert run.workflow == MinimalHostApp.Workflows.PaymentRecovery
@@ -240,9 +240,9 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.payload == attrs
 
     assert_enqueued(
-      worker: SquidMesh.Workers.StepWorker,
+      worker: MinimalHostApp.Workers.SquidMeshWorker,
       queue: "squid_mesh",
-      args: %{"run_id" => run.id, "step" => "announce_digest"}
+      args: %{"kind" => "step", "run_id" => run.id, "step" => "announce_digest"}
     )
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
@@ -265,17 +265,18 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     job = %Oban.Job{
       args: %{
+        "kind" => "cron",
         "workflow" => "Elixir.MinimalHostApp.Workflows.DailyDigest",
         "trigger" => "daily_digest"
       }
     }
 
-    assert :ok = SquidMesh.Workers.CronTriggerWorker.perform(job)
+    assert :ok = MinimalHostApp.Workers.SquidMeshWorker.perform(job)
 
     assert_enqueued(
-      worker: SquidMesh.Workers.StepWorker,
+      worker: MinimalHostApp.Workers.SquidMeshWorker,
       queue: "squid_mesh",
-      args: %{"step" => "announce_digest"}
+      args: %{"kind" => "step", "step" => "announce_digest"}
     )
 
     assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
