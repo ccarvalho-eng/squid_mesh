@@ -111,6 +111,16 @@ defmodule SquidMesh.Step do
   defp validate_schema(value, [], _target), do: {:ok, value}
 
   defp validate_schema(value, schema, target) when is_list(schema) do
+    if valid_schema?(schema) do
+      validate_schema_entries(value, schema, target)
+    else
+      invalid_schema_error(target)
+    end
+  end
+
+  defp validate_schema(_value, _schema, target), do: invalid_schema_error(target)
+
+  defp validate_schema_entries(value, schema, target) do
     errors =
       Enum.reduce(schema, %{}, fn {field, opts}, acc ->
         acc
@@ -132,12 +142,19 @@ defmodule SquidMesh.Step do
     end
   end
 
-  defp validate_schema(_value, _schema, target) do
+  defp invalid_schema_error(target) do
     {:error,
      %{
        message: "native step #{target} schema is invalid",
        retryable?: false
      }}
+  end
+
+  defp valid_schema?(schema) do
+    Enum.all?(schema, fn
+      {field, opts} -> is_atom(field) and Keyword.keyword?(opts)
+      _other -> false
+    end)
   end
 
   defp validate_required_field(errors, value, field, opts, target) do
@@ -189,8 +206,19 @@ defmodule SquidMesh.Step do
     |> Map.put(:retryable?, false)
   end
 
+  defp normalize_error(%{__struct__: module} = reason) do
+    reason
+    |> Map.from_struct()
+    |> Map.delete(:__exception__)
+    |> Map.put_new(:message, struct_message(reason))
+    |> Map.put_new(:type, inspect(module))
+  end
+
   defp normalize_error(%{} = reason), do: reason
   defp normalize_error(reason), do: %{message: inspect(reason)}
+
+  defp struct_message(%{__exception__: true} = reason), do: Exception.message(reason)
+  defp struct_message(reason), do: inspect(reason)
 
   defp maybe_put_retry_after(error, opts) do
     case Keyword.fetch(opts, :retry_after) do

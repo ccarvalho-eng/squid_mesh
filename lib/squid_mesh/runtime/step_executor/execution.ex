@@ -83,6 +83,7 @@ defmodule SquidMesh.Runtime.StepExecutor.Execution do
 
     case Jido.Exec.run(action, input, context, opts) do
       {:ok, output} when is_map(output) -> {:ok, output, []}
+      {:ok, output, extras} when is_map(output) and is_list(extras) -> {:ok, output, extras}
       {:ok, output, _extras} when is_map(output) -> {:ok, output, []}
       {:error, reason} -> {:error, reason}
     end

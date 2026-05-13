@@ -220,10 +220,12 @@ defmodule SquidMesh.Workflow do
 
     quote do
       @doc false
-      def workflow_definition, do: unquote(Macro.escape(definition))
+      def workflow_definition do
+        SquidMesh.Workflow.__resolve_runtime_definition__(unquote(Macro.escape(definition)))
+      end
 
       @doc false
-      def __workflow__(:definition), do: unquote(Macro.escape(definition))
+      def __workflow__(:definition), do: workflow_definition()
 
       @doc false
       def __workflow__(:contract), do: unquote(Macro.escape(@contract))
@@ -235,7 +237,7 @@ defmodule SquidMesh.Workflow do
       def __workflow__(:triggers), do: unquote(Macro.escape(definition.triggers))
 
       @doc false
-      def __workflow__(:steps), do: unquote(Macro.escape(definition.steps))
+      def __workflow__(:steps), do: workflow_definition().steps
 
       @doc false
       def __workflow__(:transitions), do: unquote(Macro.escape(definition.transitions))
@@ -268,6 +270,21 @@ defmodule SquidMesh.Workflow do
 
   defp maybe_drop_interop_metadata(%{metadata: %{contract: :squid_mesh_step}} = step), do: step
   defp maybe_drop_interop_metadata(step), do: Map.delete(step, :metadata)
+
+  @doc false
+  @spec __resolve_runtime_definition__(map()) :: map()
+  def __resolve_runtime_definition__(definition) when is_map(definition) do
+    Map.update!(definition, :steps, fn steps ->
+      Enum.map(steps, &resolve_step_metadata/1)
+    end)
+  end
+
+  defp resolve_step_metadata(%{module: module} = step) do
+    case SquidMesh.Step.metadata(module) do
+      %{} = metadata -> Map.put(step, :metadata, metadata)
+      nil -> maybe_drop_interop_metadata(step)
+    end
+  end
 
   @doc false
   @spec __push_current_trigger_definition__(module(), map()) :: :ok

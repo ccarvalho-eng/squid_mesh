@@ -3,7 +3,9 @@ defmodule SquidMesh.WorkflowTest do
 
   alias __MODULE__.DependencyWorkflow
   alias __MODULE__.InvoiceReminder
+  alias __MODULE__.MalformedSchemaStep
   alias __MODULE__.NativeStepContractWorkflow
+  alias __MODULE__.NativeStepStructError
 
   defmodule NativeStepContractWorkflow.LoadAccount do
     use SquidMesh.Step,
@@ -32,6 +34,21 @@ defmodule SquidMesh.WorkflowTest do
 
       transition :load_account, on: :ok, to: :complete
     end
+  end
+
+  defmodule MalformedSchemaStep do
+    use SquidMesh.Step,
+      name: :malformed_schema,
+      input_schema: [
+        account_id: :string
+      ]
+
+    @impl true
+    def run(_input, _context), do: {:ok, %{}}
+  end
+
+  defmodule NativeStepStructError do
+    defexception [:message, :code]
   end
 
   test "exposes a declarative workflow definition" do
@@ -163,6 +180,79 @@ defmodule SquidMesh.WorkflowTest do
                }
              }
            ] = SquidMesh.Workflow.Info.steps(NativeStepContractWorkflow)
+  end
+
+  test "resolves native step metadata when a step module is compiled after the workflow" do
+    compiled_modules =
+      Code.compile_string(
+        """
+        defmodule WorkflowWithLateNativeStep do
+          use SquidMesh.Workflow
+
+          workflow do
+            trigger :manual do
+              manual()
+            end
+
+            step :load_account, WorkflowWithLateNativeStep.LoadAccount
+
+            transition :load_account, on: :ok, to: :complete
+          end
+        end
+
+        defmodule WorkflowWithLateNativeStep.LoadAccount do
+          use SquidMesh.Step,
+            name: :load_account,
+            description: "Loads late account details",
+            input_schema: [
+              account_id: [type: :string, required: true]
+            ],
+            output_schema: [
+              account: [type: :map, required: true]
+            ]
+
+          @impl true
+          def run(_input, _context), do: {:ok, %{account: %{id: "acct_late"}}}
+        end
+        """,
+        "test/support/late_native_step_workflow.exs"
+      )
+
+    workflow = compiled_module!(compiled_modules, WorkflowWithLateNativeStep)
+    step_module = compiled_module!(compiled_modules, WorkflowWithLateNativeStep.LoadAccount)
+
+    assert [
+             %{
+               name: :load_account,
+               module: ^step_module,
+               metadata: %{
+                 contract: :squid_mesh_step,
+                 description: "Loads late account details",
+                 input_schema: [account_id: [type: :string, required: true]]
+               }
+             }
+           ] = workflow.workflow_definition().steps
+  end
+
+  test "returns structured errors for malformed native step schemas" do
+    assert {:error,
+            %{
+              message: "native step input schema is invalid",
+              retryable?: false
+            }} = SquidMesh.Step.validate_input(MalformedSchemaStep, %{})
+  end
+
+  test "normalizes native step struct errors before adding retry metadata" do
+    assert {:error,
+            %{
+              message: "declined",
+              code: "card_declined",
+              type: "SquidMesh.WorkflowTest.NativeStepStructError",
+              retryable?: false
+            }} =
+             SquidMesh.Step.normalize_result(
+               {:error, %NativeStepStructError{message: "declined", code: "card_declined"}}
+             )
   end
 
   test "supports explicit irreversible and non-compensatable step markers" do
@@ -1399,6 +1489,18 @@ defmodule SquidMesh.WorkflowTest do
   defp compile_module(source) do
     [{module, _bytecode}] = Code.compile_string(source, "test/support/valid_workflow.exs")
     module
+  end
+
+  defp compiled_module!(compiled_modules, module) do
+    compiled_modules
+    |> Enum.find_value(fn
+      {^module, _bytecode} -> module
+      _other -> nil
+    end)
+    |> case do
+      nil -> flunk("expected #{inspect(module)} to compile")
+      module -> module
+    end
   end
 
   defmodule InvoiceReminder do

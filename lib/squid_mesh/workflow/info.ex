@@ -9,6 +9,15 @@ defmodule SquidMesh.Workflow.Info do
 
   @spec steps(module()) :: [SquidMesh.Workflow.StepSpec.t()]
   def steps(workflow) when is_atom(workflow) do
-    Spark.Dsl.Extension.get_entities(workflow, [:workflow])
+    workflow
+    |> Spark.Dsl.Extension.get_entities([:workflow])
+    |> Enum.map(&resolve_step_metadata/1)
+  end
+
+  defp resolve_step_metadata(%SquidMesh.Workflow.StepSpec{module: module} = step) do
+    case SquidMesh.Step.metadata(module) do
+      %{} = metadata -> %{step | metadata: metadata}
+      nil -> step
+    end
   end
 end
