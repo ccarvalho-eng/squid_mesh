@@ -90,6 +90,9 @@ end
 config :squid_mesh,
   repo: MyApp.Repo,
   executor: MyApp.SquidMeshExecutor
+
+config :my_app, MyApp.SquidMeshExecutor,
+  queue: :squid_mesh
 ```
 
 The executor should enqueue `SquidMesh.Executor.Payload` values and deliver them

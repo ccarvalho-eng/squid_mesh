@@ -58,6 +58,14 @@ defmodule Mix.Tasks.SquidMesh.Install do
           config :squid_mesh,
             repo: YourApp.Repo,
             executor: YourApp.SquidMeshExecutor
+
+          config :your_app, YourApp.SquidMeshExecutor,
+            queue: :squid_mesh
+
+      3. Implement `YourApp.SquidMeshExecutor` with `@behaviour SquidMesh.Executor`
+      4. Have your queued job call `SquidMesh.Runtime.Runner.perform(payload)`
+
+    See docs/host_app_integration.md for a copy-paste executor skeleton.
     """)
   end
 

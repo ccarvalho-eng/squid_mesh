@@ -55,6 +55,12 @@ migrations for the host application's job backend.
 
 ## Configuration
 
+Start with three pieces:
+
+1. Squid Mesh config points at the host repo and executor.
+2. The executor config owns the queue name.
+3. The host job calls `SquidMesh.Runtime.Runner.perform/1`.
+
 The host application configures Squid Mesh under the `:squid_mesh` application:
 
 ```elixir
@@ -79,8 +85,9 @@ Optional keys:
 
 ## Executor Contract
 
-The host executor is the only queue boundary Squid Mesh calls. It receives
-already-validated run intent and returns metadata about the enqueued work:
+The host executor is the only queue boundary Squid Mesh calls. Copy this module,
+replace `MyApp.JobQueue.enqueue/1` with the host app's job backend, and keep the
+queued job generic:
 
 ```elixir
 defmodule MyApp.SquidMeshExecutor do
@@ -140,8 +147,19 @@ defmodule MyApp.SquidMeshExecutor do
 end
 ```
 
-The queued job should be generic. It should deliver the stored payload back to
-Squid Mesh without knowing workflow details:
+The executor callbacks receive:
+
+- `run` - the persisted Squid Mesh run
+- `step` - the next step name, for step jobs
+- `workflow` and `trigger` - the cron workflow activation target
+- `opts[:schedule_in]` - seconds to delay a retry or wait continuation
+
+Return `{:ok, metadata}` after enqueueing. Metadata is included in dispatch
+telemetry, so useful values are `:job_id`, `:queue`, `:worker`, and
+`:schedule_in`.
+
+The queued job should deliver the stored payload back to Squid Mesh without
+knowing workflow details:
 
 ```elixir
 defmodule MyApp.SquidMeshJob do
@@ -155,6 +173,9 @@ end
 with the app's durable job backend and make sure delayed jobs honor
 `:schedule_in`. Cron activation is also host-owned; the host scheduler should
 call `enqueue_cron/4` or enqueue `SquidMesh.Executor.Payload.cron/2`.
+
+That is the whole execution contract. Workflow modules, context modules, and
+controllers should not need to know which job backend the executor uses.
 
 ## First Run Checklist
 
