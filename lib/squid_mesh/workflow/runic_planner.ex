@@ -62,7 +62,7 @@ defmodule SquidMesh.Workflow.RunicPlanner do
         %Runnable{runic_runnable: %Runic.Workflow.Runnable{} = runic_runnable},
         {:ok, result}
       ) do
-    completed = complete_runic_runnable(runic_runnable, result)
+    completed = complete_runic_runnable(planner.spec, runic_runnable, :ok, result)
     {:ok, %{planner | runic_workflow: Workflow.apply_runnable(planner.runic_workflow, completed)}}
   end
 
@@ -71,8 +71,8 @@ defmodule SquidMesh.Workflow.RunicPlanner do
         %Runnable{runic_runnable: %Runic.Workflow.Runnable{} = runic_runnable},
         {:error, reason}
       ) do
-    failed = Runic.Workflow.Runnable.fail(runic_runnable, reason)
-    {:ok, %{planner | runic_workflow: Workflow.apply_runnable(planner.runic_workflow, failed)}}
+    completed = complete_runic_runnable(planner.spec, runic_runnable, :error, reason)
+    {:ok, %{planner | runic_workflow: Workflow.apply_runnable(planner.runic_workflow, completed)}}
   end
 
   @doc false
@@ -116,10 +116,16 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   end
 
   defp parent_map(%Spec{} = spec) do
+    step_names = spec.steps |> Enum.map(& &1.name) |> MapSet.new()
+
     transition_parents =
       Enum.reduce(spec.transitions, %{}, fn
-        %{from: from, on: :ok, to: to}, acc when is_atom(to) ->
-          Map.update(acc, to, [from], fn parents -> parents ++ [from] end)
+        %{from: from, to: to}, acc when is_atom(to) ->
+          if MapSet.member?(step_names, to) do
+            Map.update(acc, to, [from], fn parents -> parents ++ [from] end)
+          else
+            acc
+          end
 
         _transition, acc ->
           acc
@@ -176,10 +182,16 @@ defmodule SquidMesh.Workflow.RunicPlanner do
   defp prepare_external_runnables(%__MODULE__{} = planner) do
     {workflow, runnables} = Workflow.prepare_for_dispatch(planner.runic_workflow)
     {external, internal} = Enum.split_with(runnables, &external_runnable?(&1, planner.spec))
+    {allowed, blocked} = Enum.split_with(external, &runnable_allowed?(&1, planner.spec))
 
-    if internal == [] do
+    workflow =
+      Enum.reduce(blocked, workflow, fn runic_runnable, acc ->
+        Workflow.apply_runnable(acc, consume_blocked_runnable(runic_runnable))
+      end)
+
+    if internal == [] and blocked == [] do
       planner = %{planner | runic_workflow: workflow}
-      {:ok, planner, Enum.map(external, &to_squid_mesh_runnable(&1, planner.spec))}
+      {:ok, planner, Enum.map(allowed, &to_squid_mesh_runnable(&1, planner.spec))}
     else
       workflow =
         Enum.reduce(internal, workflow, fn runic_runnable, acc ->
@@ -199,16 +211,73 @@ defmodule SquidMesh.Workflow.RunicPlanner do
 
   defp external_runnable?(_runnable, _spec), do: false
 
+  defp runnable_allowed?(
+         %Runic.Workflow.Runnable{input_fact: %Fact{ancestry: nil}},
+         %Spec{}
+       ) do
+    true
+  end
+
+  defp runnable_allowed?(
+         %Runic.Workflow.Runnable{
+           input_fact: %Fact{ancestry: {producer_hash, _fact_hash}} = fact,
+           node: %{name: target}
+         },
+         %Spec{} = spec
+       ) do
+    with {:ok, from} <- step_name_by_hash(spec, producer_hash),
+         transitions when transitions != [] <- transitions_between(spec, from, target) do
+      outcome = fact_outcome(fact)
+      Enum.any?(transitions, &(&1.on == outcome))
+    else
+      _no_outcome_specific_transition -> true
+    end
+  end
+
+  defp runnable_allowed?(_runnable, _spec), do: true
+
   defp to_squid_mesh_runnable(%Runic.Workflow.Runnable{} = runic_runnable, %Spec{} = spec) do
     step = Enum.find(spec.steps, &(&1.name == runic_runnable.node.name))
 
     %Runnable{
       id: runic_runnable.id,
       step: step.name,
-      input: normalize_step_input(runic_runnable.input_fact.value),
+      input:
+        runic_runnable.input_fact
+        |> fact_context()
+        |> apply_input_mapping(step),
       metadata: Map.get(step, :metadata, %{}),
       runic_runnable: runic_runnable
     }
+  end
+
+  defp consume_blocked_runnable(%Runic.Workflow.Runnable{} = runic_runnable) do
+    event = %ActivationConsumed{
+      fact_hash: runic_runnable.input_fact.hash,
+      node_hash: runic_runnable.node.hash,
+      from_label: :runnable
+    }
+
+    Runic.Workflow.Runnable.complete(runic_runnable, :blocked, [event])
+  end
+
+  defp fact_context(%Fact{meta: %{squid_mesh_context: context}}) when is_map(context) do
+    context
+  end
+
+  defp fact_context(%Fact{value: value}), do: normalize_step_input(value)
+
+  defp fact_outcome(%Fact{meta: %{squid_mesh_outcome: outcome}}) when outcome in [:ok, :error] do
+    outcome
+  end
+
+  defp fact_outcome(%Fact{}), do: :ok
+
+  defp apply_input_mapping(input, %{opts: opts}) do
+    case Keyword.get(opts, :input) do
+      nil -> input
+      input_mapping when is_list(input_mapping) -> Map.take(input, input_mapping)
+    end
   end
 
   defp normalize_step_input(values) when is_list(values) do
@@ -221,11 +290,23 @@ defmodule SquidMesh.Workflow.RunicPlanner do
 
   defp normalize_step_input(value), do: value
 
-  defp complete_runic_runnable(%Runic.Workflow.Runnable{} = runic_runnable, result) do
+  defp complete_runic_runnable(
+         %Spec{} = spec,
+         %Runic.Workflow.Runnable{} = runic_runnable,
+         outcome,
+         result
+       ) do
     node = runic_runnable.node
     input_fact = runic_runnable.input_fact
     context = runic_runnable.context
-    result_fact = Fact.new(value: result, ancestry: {node.hash, input_fact.hash})
+    next_context = next_context(spec, node.name, input_fact, outcome, result)
+
+    result_fact =
+      Fact.new(
+        value: next_context,
+        ancestry: {node.hash, input_fact.hash},
+        meta: %{squid_mesh_context: next_context, squid_mesh_outcome: outcome}
+      )
 
     events = [
       %FactProduced{
@@ -233,7 +314,8 @@ defmodule SquidMesh.Workflow.RunicPlanner do
         value: result_fact.value,
         ancestry: result_fact.ancestry,
         producer_label: :produced,
-        weight: context.ancestry_depth + 1
+        weight: context.ancestry_depth + 1,
+        meta: result_fact.meta
       },
       %ActivationConsumed{
         fact_hash: input_fact.hash,
@@ -243,5 +325,36 @@ defmodule SquidMesh.Workflow.RunicPlanner do
     ]
 
     Runic.Workflow.Runnable.complete(runic_runnable, result_fact, events)
+  end
+
+  defp next_context(%Spec{} = spec, step_name, input_fact, :ok, result) do
+    input_fact
+    |> fact_context()
+    |> Map.merge(mapped_step_output(spec, step_name, result))
+  end
+
+  defp next_context(%Spec{}, _step_name, input_fact, :error, _reason),
+    do: fact_context(input_fact)
+
+  defp mapped_step_output(%Spec{} = spec, step_name, result) when is_map(result) do
+    step = Enum.find(spec.steps, &(&1.name == step_name))
+
+    case Keyword.get(step.opts, :output) do
+      nil -> result
+      output_key when is_atom(output_key) -> %{output_key => result}
+    end
+  end
+
+  defp mapped_step_output(%Spec{}, _step_name, _result), do: %{}
+
+  defp transitions_between(%Spec{} = spec, from, to) do
+    Enum.filter(spec.transitions, &(&1.from == from and &1.to == to))
+  end
+
+  defp step_name_by_hash(%Spec{} = spec, hash) do
+    case Enum.find(spec.steps, &(stable_step_hash(spec, &1) == hash)) do
+      %{name: name} -> {:ok, name}
+      nil -> :error
+    end
   end
 end

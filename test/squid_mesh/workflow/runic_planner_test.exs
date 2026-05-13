@@ -28,6 +28,7 @@ defmodule SquidMesh.Workflow.RunicPlannerTest do
     use SquidMesh.Step,
       name: :send_email,
       input_schema: [
+        account_id: [type: :string, required: false],
         account: [type: :map, required: true],
         invoice: [type: :map, required: false]
       ],
@@ -35,6 +36,34 @@ defmodule SquidMesh.Workflow.RunicPlannerTest do
 
     @impl true
     def run(_input, _context), do: {:ok, %{delivery: %{status: "sent"}}}
+  end
+
+  defmodule LookupAccount do
+    use SquidMesh.Step,
+      name: :lookup_account,
+      input_schema: [account_id: [type: :string, required: true]],
+      output_schema: [id: [type: :string, required: true]]
+
+    @impl true
+    def run(_input, _context), do: {:ok, %{id: "acct_123"}}
+  end
+
+  defmodule CheckGateway do
+    use SquidMesh.Step,
+      name: :check_gateway,
+      output_schema: [status: [type: :string, required: true]]
+
+    @impl true
+    def run(_input, _context), do: {:ok, %{status: "available"}}
+  end
+
+  defmodule IssueCredit do
+    use SquidMesh.Step,
+      name: :issue_credit,
+      output_schema: [credit: [type: :map, required: true]]
+
+    @impl true
+    def run(_input, _context), do: {:ok, %{credit: %{status: "issued"}}}
   end
 
   defmodule LinearWorkflow do
@@ -73,6 +102,49 @@ defmodule SquidMesh.Workflow.RunicPlannerTest do
       step :load_account, LoadAccount
       step :load_invoice, LoadInvoice
       step :send_email, SendEmail, after: [:load_account, :load_invoice]
+    end
+  end
+
+  defmodule MappedWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+          field :invoice_id, :string
+        end
+      end
+
+      step :lookup_account, LookupAccount,
+        input: [:account_id],
+        output: :account
+
+      step :send_email, SendEmail, input: [:account_id, :invoice_id, :account]
+
+      transition :lookup_account, on: :ok, to: :send_email
+      transition :send_email, on: :ok, to: :complete
+    end
+  end
+
+  defmodule ErrorRoutingWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+      end
+
+      step :check_gateway, CheckGateway
+      step :send_email, SendEmail
+      step :issue_credit, IssueCredit
+
+      transition :check_gateway, on: :ok, to: :send_email
+      transition :check_gateway, on: :error, to: :issue_credit, recovery: :compensation
+      transition :send_email, on: :ok, to: :complete
+      transition :issue_credit, on: :ok, to: :complete
     end
   end
 
@@ -125,7 +197,54 @@ defmodule SquidMesh.Workflow.RunicPlannerTest do
     {:ok, _planned, [send_email]} = RunicPlanner.plan(after_load)
 
     assert send_email.step == :send_email
-    assert send_email.input == %{account: %{id: "acct_123"}}
+
+    assert send_email.input == %{
+             account_id: "acct_123",
+             account: %{id: "acct_123"}
+           }
+  end
+
+  test "plans mapped step inputs from payload and mapped outputs" do
+    {:ok, planner} = RunicPlanner.new(MappedWorkflow)
+
+    {:ok, planned, [lookup_account]} =
+      RunicPlanner.plan(planner, %{account_id: "acct_123", invoice_id: "inv_123"})
+
+    assert lookup_account.step == :lookup_account
+    assert lookup_account.input == %{account_id: "acct_123"}
+
+    {:ok, planned} =
+      RunicPlanner.apply_result(planned, lookup_account, {:ok, %{id: "acct_123"}})
+
+    {:ok, _planned, [send_email]} = RunicPlanner.plan(planned)
+
+    assert send_email.step == :send_email
+
+    assert send_email.input == %{
+             account_id: "acct_123",
+             invoice_id: "inv_123",
+             account: %{id: "acct_123"}
+           }
+  end
+
+  test "routes successful and failed outcomes to their declared transition targets" do
+    {:ok, planner} = RunicPlanner.new(ErrorRoutingWorkflow)
+    {:ok, planned, [check_gateway]} = RunicPlanner.plan(planner, %{})
+
+    assert check_gateway.step == :check_gateway
+
+    {:ok, success_planned} =
+      RunicPlanner.apply_result(planned, check_gateway, {:ok, %{status: "available"}})
+
+    assert {:ok, _planned, [%{step: :send_email}]} = RunicPlanner.plan(success_planned)
+
+    {:ok, planner} = RunicPlanner.new(ErrorRoutingWorkflow)
+    {:ok, planned, [check_gateway]} = RunicPlanner.plan(planner, %{})
+
+    {:ok, failure_planned} =
+      RunicPlanner.apply_result(planned, check_gateway, {:error, %{message: "gateway timeout"}})
+
+    assert {:ok, _planned, [%{step: :issue_credit}]} = RunicPlanner.plan(failure_planned)
   end
 
   test "plans dependency branches and unlocks joins after completed runnable results" do
@@ -149,6 +268,8 @@ defmodule SquidMesh.Workflow.RunicPlannerTest do
     assert send_email.step == :send_email
 
     assert send_email.input == %{
+             account_id: "acct_123",
+             invoice_id: "inv_123",
              account: %{id: "acct_123"},
              invoice: %{id: "inv_123"}
            }
