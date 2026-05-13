@@ -8,13 +8,13 @@ applications to own.
 Squid Mesh currently guarantees:
 
 - durable run, step, and attempt state in Postgres
-- durable queued and scheduled work through Oban
+- durable queued and scheduled work through the configured host executor
 - workflow-level retry, replay, inspection, and cancellation on top of that durable state
 
 Squid Mesh does not currently claim:
 
 - exactly-once external side effects
-- custom worker leases or heartbeats beyond Oban
+- custom worker leases or heartbeats beyond the host executor backend
 - dynamic cron registration after boot
 
 ## Idempotent Step Design
@@ -37,12 +37,12 @@ Avoid:
 
 ## Queue Sizing
 
-Squid Mesh runs on the host app's `Oban` instance, so queue sizing stays a
-host-app decision.
+Squid Mesh calls the host app's executor, so queue sizing stays a host-app
+decision.
 
 Recommended starting point:
 
-- dedicate a `:squid_mesh` queue
+- dedicate a workflow queue in the host executor, such as `:squid_mesh`
 - isolate higher-cost workflow traffic from unrelated app jobs
 - size concurrency conservatively, then increase based on observed queue depth
 
@@ -57,8 +57,8 @@ If workflows call slow external systems:
 
 ## Retries And Backoff
 
-Workflow-step retries are owned by Squid Mesh, not by Oban worker
-`max_attempts`.
+Workflow-step retries are owned by Squid Mesh, not by the host job backend's
+retry counter.
 
 Jido action retries are also disabled at the Squid Mesh runtime boundary so one
 workflow attempt maps to one persisted step attempt.
@@ -117,7 +117,7 @@ Operational boundary:
 - a crash after local commit but before Squid Mesh persists progress can still
   be redelivered, so local transaction groups should use natural keys,
   uniqueness, or other idempotency guards when duplicate local writes matter
-- this option does not cover external APIs, downstream steps, Oban dispatch, or
+- this option does not cover external APIs, downstream steps, executor dispatch, or
   saga compensation callbacks
 
 Keep this option for small local write groups. If a boundary crosses services,
@@ -154,7 +154,7 @@ By default, Squid Mesh does not reclaim a step that is already marked
 `running`. A duplicate or redelivered job skips the running step instead of
 starting another attempt.
 
-Host applications can opt in with `execution[:stale_step_timeout]`, measured in
+Host applications can opt in with `:stale_step_timeout`, measured in
 milliseconds. When enabled, a later redelivery can reclaim a `running` step whose
 step-run row has not been updated within that timeout. Reclaim marks the
 previous running attempt and step as failed with `reason: "stale_running_step"`,
@@ -173,8 +173,8 @@ strategy.
 
 ## Long Waits
 
-Built-in `:wait` steps are non-blocking because they reschedule continuation
-through Oban instead of sleeping inside a worker.
+Built-in `:wait` steps are non-blocking because they ask the host executor to
+reschedule continuation instead of sleeping inside a worker.
 
 Still, long waits have real operational cost:
 
@@ -190,19 +190,19 @@ Recommended practice:
 
 ## Cron Activation
 
-Cron triggers are declared in the workflow but activated by the host app
-through `SquidMesh.Plugins.Cron`.
+Cron triggers are declared in the workflow but activated by the host app through
+its scheduler and executor.
 
 Current boundary:
 
 - activation is static at boot
-- Oban owns recurring scheduling
+- the host scheduler owns recurring scheduling
 - Squid Mesh turns the cron tick into a normal `start_run/3` call
 
 Recommended practice:
 
 - treat cron workflows as deploy-time configuration
-- review cron registrations alongside the host app's Oban setup
+- review cron registrations alongside the host app's scheduler setup
 - keep payload defaults complete so cron runs do not rely on manual input
 
 ## Observability
@@ -211,7 +211,7 @@ At minimum, production deployments should capture:
 
 - run lifecycle telemetry
 - step lifecycle telemetry
-- queue depth and throughput from Oban
+- queue depth and throughput from the host executor backend
 - structured logs with run and step metadata
 
 Recommended reading:

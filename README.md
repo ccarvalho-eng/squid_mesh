@@ -23,13 +23,13 @@
   </p>
 </div>
 
-Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications. It persists run, step, attempt, and audit state in Postgres and schedules execution through Oban. Workflows can model retries, waits, HITL approval gates, dependency joins, failure routes, replay, and inspection without running a separate workflow service.
+Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications. It persists run, step, attempt, and audit state in Postgres and delegates runnable work to a host-provided executor. Workflows can model retries, waits, HITL approval gates, dependency joins, failure routes, replay, and inspection without running a separate workflow service.
 
 ## Capabilities
 
 - workflow DSL with manual and cron triggers
 - Postgres-backed run, step, attempt, and audit history
-- Oban-based step execution, delayed scheduling, redelivery, and retries
+- pluggable executor boundary for step execution, delayed scheduling, redelivery, and cron activation
 - retries, waits, failure routes, dependency joins, and HITL approval gates
 - explicit step input selection and output mapping
 - same-process host repo transactions for small local step groups
@@ -38,7 +38,7 @@ Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications.
 
 ## Fit
 
-- workflow state should survive app restarts, deploys, retries, and Oban redelivery
+- workflow state should survive app restarts, deploys, retries, and executor redelivery
 - a Phoenix context needs durable approval, recovery, notification, or back-office flow state
 - step history and manual decisions need to be inspectable after execution
 - workflow state belongs in the host app's Postgres database, not a separate service
@@ -50,8 +50,8 @@ Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications.
 ## Runtime Shape
 
 - Squid Mesh owns workflow structure, payload validation, runtime state, and retry policy
-- Oban owns durable execution, queueing, delayed scheduling, and redelivery
-- your host app keeps its existing `Repo`, `Oban`, and application boundaries
+- the host app owns durable execution, queueing, delayed scheduling, and redelivery through a `SquidMesh.Executor` implementation
+- your host app keeps its existing `Repo`, job system, and application boundaries
 
 ## Quick Start
 
@@ -60,7 +60,7 @@ Requirements:
 - an existing Elixir application
 - an existing Ecto `Repo`
 - Postgres for persisted runtime state
-- an existing `Oban` setup for background execution
+- a host executor module that implements `SquidMesh.Executor`
 
 ### 1. Install from Hex.pm
 
@@ -84,23 +84,21 @@ defp deps do
 end
 ```
 
-### 2. Configure Squid Mesh and Oban
+### 2. Configure Squid Mesh And An Executor
 
 ```elixir
 config :squid_mesh,
   repo: MyApp.Repo,
-  execution: [
-    name: Oban,
-    queue: :squid_mesh
-  ]
+  executor: MyApp.SquidMeshExecutor
 
-config :my_app, Oban,
-  repo: MyApp.Repo,
-  queues: [squid_mesh: 10]
+config :my_app, MyApp.SquidMeshExecutor,
+  queue: :squid_mesh
 ```
 
-The host app's `Oban` config must include the `:squid_mesh` queue when Squid
-Mesh is using that queue name.
+The executor should enqueue `SquidMesh.Executor.Payload` values and deliver them
+back to `SquidMesh.Runtime.Runner.perform/1`. See
+[Host App Integration](docs/host_app_integration.md) for a minimal executor
+shape.
 
 ### 3. Install migrations
 
@@ -111,8 +109,8 @@ mix ecto.migrate
 ```
 
 `mix squid_mesh.install` creates one current-schema Squid Mesh migration in the
-host app's `priv/repo/migrations`. The host app still owns its `Oban` setup and
-`oban_jobs` migration.
+host app's `priv/repo/migrations`. The host app still owns migrations for its
+chosen job system.
 
 ### 4. Import formatter rules
 
@@ -178,7 +176,7 @@ defmodule Content.Workflows.PostDailyDigest do
 end
 ```
 
-Step modules implement domain work. Squid Mesh records durable state, schedules jobs through Oban, applies step retry policy, routes failures after retry
+Step modules implement domain work. Squid Mesh records durable state, asks the configured executor to schedule work, applies step retry policy, routes failures after retry
 exhaustion, and exposes run inspection.
 
 For approval or manual-review gates, use `approval_step/2` in transition-based workflows and resume the paused run through `SquidMesh.approve_run/3` or `SquidMesh.reject_run/3`. Approval steps persist their resolved `:ok` and `:error` targets plus output-mapping metadata, so already-paused review runs keep the same decision semantics across restarts and deploys. Generic `SquidMesh.unblock_run/2` remains available for lower-level `:pause` steps when you need manual intervention without an explicit approve/reject contract.

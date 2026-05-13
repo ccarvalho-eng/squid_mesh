@@ -301,11 +301,20 @@ defmodule SquidMesh do
       SquidMesh.Observability.emit_run_replayed(run)
       {:ok, run}
     else
+      {:error, reason} = error when reason in [:not_found, :invalid_run_id] ->
+        error
+
+      {:error, {:unsafe_replay, _details} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_run, _changeset} = reason} ->
+        {:error, reason}
+
       {:error, %_{} = reason} ->
         {:error, {:dispatch_failed, reason}}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, {:dispatch_failed, reason}}
     end
   end
 end

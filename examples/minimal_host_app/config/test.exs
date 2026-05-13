@@ -16,15 +16,16 @@ config :minimal_host_app, Oban,
   repo: MinimalHostApp.Repo,
   testing: :manual,
   plugins: [
-    {SquidMesh.Plugins.Cron, workflows: [MinimalHostApp.Workflows.DailyDigest]}
+    {MinimalHostApp.CronPlugin, workflows: [MinimalHostApp.Workflows.DailyDigest]}
   ],
   queues: [squid_mesh: 5]
 
+config :minimal_host_app, MinimalHostApp.SquidMeshExecutor,
+  oban_name: Oban,
+  queue: :squid_mesh
+
 config :squid_mesh,
   repo: MinimalHostApp.Repo,
-  execution: [
-    name: Oban,
-    queue: :squid_mesh
-  ]
+  executor: MinimalHostApp.SquidMeshExecutor
 
 config :logger, level: :warning

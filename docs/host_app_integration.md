@@ -12,7 +12,6 @@ Current CI and onboarding smoke tests run with:
 
 - Erlang/OTP `28.4.1`
 - Elixir `1.19.5-otp-28`
-- `Oban 2.21` and `2.22`
 - `Jido 2.0+`
 
 ## Installation
@@ -52,54 +51,131 @@ mix ecto.migrate
 
 `mix squid_mesh.install` creates one current-schema Squid Mesh migration in the
 host application's `priv/repo/migrations` directory. It does not install or run
-`Oban` migrations.
-
-For a fresh host app, add the host app's own `Oban` migration before running
-`mix ecto.migrate`:
-
-```elixir
-defmodule MyApp.Repo.Migrations.AddObanJobs do
-  use Ecto.Migration
-
-  def up, do: Oban.Migrations.up()
-  def down, do: Oban.Migrations.down()
-end
-```
+migrations for the host application's job backend.
 
 ## Configuration
+
+Start with three pieces:
+
+1. Squid Mesh config points at the host repo and executor.
+2. The executor config owns the queue name.
+3. The host job calls `SquidMesh.Runtime.Runner.perform/1`.
 
 The host application configures Squid Mesh under the `:squid_mesh` application:
 
 ```elixir
 config :squid_mesh,
   repo: MyApp.Repo,
-  execution: [
-    name: Oban,
-    queue: :squid_mesh
-  ]
-```
+  executor: MyApp.SquidMeshExecutor
 
-The host application's `Oban` config must also include the queue Squid Mesh is
-configured to use. For the default queue name:
-
-```elixir
-config :my_app, Oban,
-  repo: MyApp.Repo,
-  queues: [squid_mesh: 10]
+config :my_app, MyApp.SquidMeshExecutor,
+  queue: :squid_mesh
 ```
 
 Required keys:
 
 - `:repo` - the Ecto repo Squid Mesh uses for persisted runtime state
+- `:executor` - the host module that implements `SquidMesh.Executor`
 
 Optional keys:
 
-- `:execution` - execution system settings
-- `:execution[:name]` - the background job system name to target
-- `:execution[:queue]` - queue used for Squid Mesh jobs, defaults to `:squid_mesh`
-- `:execution[:stale_step_timeout]` - `:disabled` by default; set a
-  non-negative millisecond timeout to let redelivered jobs reclaim stale
-  `running` steps after worker interruption
+- `:stale_step_timeout` - `:disabled` by default; set a non-negative
+  millisecond timeout to let redelivered jobs reclaim stale `running` steps
+  after worker interruption
+
+## Executor Contract
+
+The host executor is the only queue boundary Squid Mesh calls. Copy this module,
+replace `MyApp.JobQueue.enqueue/1` with the host app's job backend, and keep the
+queued job generic:
+
+```elixir
+defmodule MyApp.SquidMeshExecutor do
+  @behaviour SquidMesh.Executor
+
+  alias SquidMesh.Executor.Payload
+
+  def enqueue_step(_config, run, step, opts) do
+    run
+    |> Payload.step(step)
+    |> enqueue(opts)
+  end
+
+  def enqueue_steps(config, run, steps, opts) do
+    steps
+    |> Enum.reduce_while({:ok, []}, fn step, {:ok, metadata} ->
+      case enqueue_step(config, run, step, opts) do
+        {:ok, job_metadata} -> {:cont, {:ok, [job_metadata | metadata]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, metadata} -> {:ok, Enum.reverse(metadata)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def enqueue_compensation(_config, run, opts) do
+    run
+    |> Payload.compensation()
+    |> enqueue(opts)
+  end
+
+  def enqueue_cron(_config, workflow, trigger, opts) do
+    workflow
+    |> Payload.cron(trigger)
+    |> enqueue(opts)
+  end
+
+  defp enqueue(payload, opts) do
+    job = %{payload: payload, queue: queue(), schedule_in: opts[:schedule_in]}
+
+    case MyApp.JobQueue.enqueue(job) do
+      {:ok, job} ->
+        {:ok, %{job_id: job.id, queue: job.queue, schedule_in: opts[:schedule_in]}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp queue do
+    :my_app
+    |> Application.get_env(__MODULE__, [])
+    |> Keyword.get(:queue, :squid_mesh)
+  end
+end
+```
+
+The executor callbacks receive:
+
+- `run` - the persisted Squid Mesh run
+- `step` - the next step name, for step jobs
+- `workflow` and `trigger` - the cron workflow activation target
+- `opts[:schedule_in]` - seconds to delay a retry or wait continuation
+
+Return `{:ok, metadata}` after enqueueing. Metadata is included in dispatch
+telemetry, so useful values are `:job_id`, `:queue`, `:worker`, and
+`:schedule_in`.
+
+The queued job should deliver the stored payload back to Squid Mesh without
+knowing workflow details:
+
+```elixir
+defmodule MyApp.SquidMeshJob do
+  def perform(%{payload: payload}) do
+    SquidMesh.Runtime.Runner.perform(payload)
+  end
+end
+```
+
+`MyApp.JobQueue` is intentionally a placeholder. In a real host app, replace it
+with the app's durable job backend and make sure delayed jobs honor
+`:schedule_in`. Cron activation is also host-owned; the host scheduler should
+call `enqueue_cron/4` or enqueue `SquidMesh.Executor.Payload.cron/2`.
+
+That is the whole execution contract. Workflow modules, context modules, and
+controllers should not need to know which job backend the executor uses.
 
 ## First Run Checklist
 
@@ -107,13 +183,13 @@ For a new integration, the shortest path to a successful first run is:
 
 1. Add `:squid_mesh` to the host app's dependencies.
 2. Add or confirm a working Postgres-backed `Repo`.
-3. Add or confirm a working `Oban` instance.
-4. Add the host app's `Oban` migration if the app does not already have `oban_jobs`.
+3. Add or confirm a working job system for the host executor.
+4. Add the host app's job-system migrations, if needed.
 5. Run `mix squid_mesh.install`.
 6. Run `mix ecto.migrate`.
-7. Configure `:squid_mesh` with the host app's `Repo` and `Oban` queue.
-8. Configure the host app's `Oban` queues to include `:squid_mesh`.
-9. Start the host app's `Repo` and `Oban` under supervision.
+7. Configure `:squid_mesh` with the host app's `Repo` and executor module.
+8. Configure the host executor's queue, worker, and scheduler.
+9. Start the host app's `Repo` and job system under supervision.
 10. Start one workflow through the public API and inspect it with history enabled.
 
 ## Existing Application Setup
@@ -122,7 +198,7 @@ For an existing Phoenix or OTP application:
 
 1. Add the `:squid_mesh` dependency.
 2. Configure `:repo` to point at the app's existing repo.
-3. Configure `:execution` to point at the app's existing background job setup.
+3. Configure `:executor` to point at the app's executor module.
 4. Call `SquidMesh.config!/0` during boot or integration setup to verify the
    required contract is present.
 5. Integrate Squid Mesh from the host application's contexts, services,
@@ -131,23 +207,24 @@ For an existing Phoenix or OTP application:
 The host application is responsible for:
 
 - database setup and migrations
-- background job infrastructure lifecycle
+- executor and background job infrastructure lifecycle
 - any HTTP or internal API endpoints exposed to end users
 
 That means the embedded install path assumes:
 
 - the host app already owns its `Repo`
-- the host app already owns its `Oban` configuration
-- the host app already manages its `oban_jobs` table
+- the host app already owns its executor and job-system configuration
+- the host app already manages its job-system tables, if any
 
 ## Minimal OTP Host Skeleton
 
 For a plain OTP application, the minimum moving pieces are:
 
 - a `Repo` module
-- an `Oban` configuration
-- `Repo` and `Oban` in the application supervision tree
-- `:squid_mesh` configuration pointing at that `Repo` and queue
+- an executor module implementing `SquidMesh.Executor`
+- a worker or equivalent delivery adapter that calls `SquidMesh.Runtime.Runner.perform/1`
+- `Repo` and the chosen job system in the application supervision tree
+- `:squid_mesh` configuration pointing at that `Repo` and executor
 - one host-facing module that calls `SquidMesh`
 
 Dependency shape:
@@ -157,19 +234,19 @@ defp deps do
   [
     {:ecto_sql, "~> 3.13"},
     {:postgrex, "~> 0.20"},
-    {:oban, "~> 2.21"},
     {:jido, "~> 2.0"},
     {:squid_mesh, "~> 0.1.0-alpha.6"}
   ]
 end
 ```
+Add the host job backend separately.
 
 Application supervision shape:
 
 ```elixir
 children = [
   MyApp.Repo,
-  {Oban, Application.fetch_env!(:my_app, Oban)}
+  MyApp.JobQueue
 ]
 ```
 
@@ -237,10 +314,10 @@ that Squid Mesh usually sits behind a context or controller boundary.
 
 Typical shape:
 
-- add `:squid_mesh`, `:oban`, and `:jido` to the Phoenix app
+- add `:squid_mesh`, `:jido`, and the chosen job backend to the Phoenix app
 - keep using the Phoenix app's existing `Repo`
-- start `Oban` in the application supervision tree
-- configure `:squid_mesh` to use that `Repo` and queue
+- start the job backend in the application supervision tree
+- configure `:squid_mesh` to use that `Repo` and executor
 - expose workflow operations through a context or controller
 
 Context boundary:
@@ -292,8 +369,9 @@ For local development and examples, a minimal host app can provide:
 - direct application code calls into Squid Mesh
 
 This uses the same configuration contract as an existing application setup.
-In that mode, the example app may also own its own `Oban` migration because it
-is acting as a standalone development harness rather than an embedded install.
+In that mode, the example app may also own its job-backend migrations because
+it is acting as a standalone development harness rather than an embedded
+install.
 
 ## Validation
 
@@ -331,7 +409,8 @@ Fast verification path:
 The example app wires:
 
 - its own `MinimalHostApp.Repo`
-- its own `Oban` instance
+- `MinimalHostApp.SquidMeshExecutor` as the host-owned executor
+- one generic worker that calls `SquidMesh.Runtime.Runner.perform/1`
 - Squid Mesh through `MinimalHostApp.WorkflowRuns`
 
 ## Inspecting History

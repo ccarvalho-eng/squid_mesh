@@ -76,7 +76,7 @@ Current boundary:
 
 - trigger metadata is validated and stored in the workflow definition
 - manual triggers are runnable through the public API
-- cron triggers are activated by opting workflows into `SquidMesh.Plugins.Cron`
+- cron triggers are activated by the host app's scheduler and executor
 
 Cron workflow example:
 
@@ -107,24 +107,23 @@ defmodule Content.Workflows.PostDailyDigest do
 end
 ```
 
-Host-app opt-in example:
+Host-app scheduler example:
 
 ```elixir
-config :my_app, Oban,
-  repo: MyApp.Repo,
-  plugins: [
-    {SquidMesh.Plugins.Cron,
-     workflows: [
-       MyApp.Workflows.DailyStandup
-     ]}
-  ],
-  queues: [squid_mesh: 10]
+def handle_cron_tick do
+  MyApp.SquidMeshExecutor.enqueue_cron(
+    SquidMesh.config!(),
+    MyApp.Workflows.DailyStandup,
+    :daily_standup,
+    []
+  )
+end
 ```
 
 Current cron boundary:
 
 - Squid Mesh declares cron intent in the workflow DSL
-- Oban performs the actual recurring scheduling
+- the host app performs the actual recurring scheduling
 - cron workflow registration is static at boot today
 
 ## Payload
@@ -184,7 +183,7 @@ Built-in step options supported today:
 - `:log` requires `message` and accepts `level`
 - `:pause` intentionally stops the run at that step until an operator resumes it
 - `approval_step/2` pauses the run for an explicit approve/reject decision and uses `:ok` or `:error` transitions to continue
-- `:wait` uses Oban-delayed continuation so long waits do not block a worker slot
+- `:wait` uses executor-delayed continuation so long waits do not block a worker slot
 - `:pause` is supported in transition-based workflows; dependency-based workflows cannot declare `:pause`
 - `approval_step/2` is also transition-based only; dependency-based workflows cannot declare built-in `:approval` steps
 
@@ -520,8 +519,8 @@ Supported retry options today:
 - `max_attempts`
 - `backoff: [type: :exponential, min: ..., max: ...]`
 
-Squid Mesh resolves workflow retry policy and uses Oban to schedule the next
-step attempt. If a step also declares an `on: :error` transition, Squid Mesh
+Squid Mesh resolves workflow retry policy and asks the host executor to
+schedule the next step attempt. If a step also declares an `on: :error` transition, Squid Mesh
 takes that route only after retries are exhausted.
 
 ## Starting Runs

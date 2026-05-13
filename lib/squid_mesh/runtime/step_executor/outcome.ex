@@ -730,8 +730,8 @@ defmodule SquidMesh.Runtime.StepExecutor.Outcome do
     Observability.emit_run_transition(run, from_status, to_status)
   end
 
-  defp emit_post_commit_event({:run_dispatched, run, job, queue, schedule_in}) do
-    Observability.emit_run_dispatched(run, job, queue, schedule_in)
+  defp emit_post_commit_event({:run_dispatched, run, metadata}) do
+    Observability.emit_run_dispatched(run, metadata)
   end
 
   defp step_completed_event(run, step_name, attempt_number, duration) do

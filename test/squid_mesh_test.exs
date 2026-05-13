@@ -11,9 +11,8 @@ defmodule SquidMeshTest do
   alias SquidMesh.StepRun, as: PublicStepRun
   alias SquidMesh.RunStepState
   alias SquidMesh.TestSupport.LazyWorkflow
-  alias SquidMesh.Workers.CronTriggerWorker
-  alias SquidMesh.Workers.StepWorker
-  alias Oban.Job
+  alias SquidMesh.Test.StepWorker
+  alias SquidMesh.Test.Job
 
   defmodule InvoiceReminderWorkflow do
     use SquidMesh.Workflow
@@ -285,7 +284,24 @@ defmodule SquidMeshTest do
     end
   end
 
-  defmodule MissingOban do
+  defmodule MissingExecutor do
+    @behaviour SquidMesh.Executor
+
+    @impl true
+    def enqueue_step(_config, _run, _step, _opts), do: {:error, :executor_unavailable}
+
+    @impl true
+    def enqueue_steps(_config, _run, _steps, _opts), do: {:error, :executor_unavailable}
+
+    @impl true
+    def enqueue_compensation(_config, _run, _opts), do: {:error, :executor_unavailable}
+
+    @impl true
+    def enqueue_cron(_config, _workflow, _trigger, _opts), do: {:error, :executor_unavailable}
+  end
+
+  defmodule IncompleteExecutor do
+    def enqueue_step(_config, _run, _step, _opts), do: {:ok, %{}}
   end
 
   test "configures an application supervisor" do
@@ -298,60 +314,62 @@ defmodule SquidMeshTest do
 
   describe "config/1" do
     test "returns the validated host app contract with defaults" do
-      assert {:ok, config} = SquidMesh.config(repo: SquidMeshTest.Repo)
+      assert {:ok, config} =
+               SquidMesh.config(repo: SquidMeshTest.Repo, executor: SquidMesh.Test.Executor)
 
       assert config.repo == SquidMeshTest.Repo
-      assert config.execution_name == Oban
-      assert config.execution_queue == :squid_mesh
+      assert config.executor == SquidMesh.Test.Executor
       assert config.stale_step_timeout == :disabled
     end
 
-    test "allows host applications to override execution settings" do
+    test "allows host applications to configure stale step timeout" do
       overrides = [
         repo: SquidMeshTest.Repo,
-        execution: [name: MyApp.Oban, queue: :workflows, stale_step_timeout: 60_000]
+        executor: SquidMesh.Test.Executor,
+        stale_step_timeout: 60_000
       ]
 
       assert {:ok, config} = SquidMesh.config(overrides)
 
-      assert config.execution_name == MyApp.Oban
-      assert config.execution_queue == :workflows
       assert config.stale_step_timeout == 60_000
-    end
-
-    test "treats nil execution settings as defaults" do
-      assert {:ok, config} = SquidMesh.config(repo: SquidMeshTest.Repo, execution: nil)
-
-      assert config.execution_name == Oban
-      assert config.execution_queue == :squid_mesh
-      assert config.stale_step_timeout == :disabled
-    end
-
-    test "reports non-keyword execution settings" do
-      assert {:error, {:invalid_config, [execution: %{queue: :workflows}]}} =
-               SquidMesh.config(repo: SquidMeshTest.Repo, execution: %{queue: :workflows})
-
-      assert {:error, {:invalid_config, [execution: [:bad]]}} =
-               SquidMesh.config(repo: SquidMeshTest.Repo, execution: [:bad])
     end
 
     test "reports missing required configuration keys" do
       original_repo = Application.get_env(:squid_mesh, :repo)
+      original_executor = Application.get_env(:squid_mesh, :executor)
 
       on_exit(fn ->
         Application.put_env(:squid_mesh, :repo, original_repo)
+        Application.put_env(:squid_mesh, :executor, original_executor)
       end)
 
       Application.delete_env(:squid_mesh, :repo)
+      Application.delete_env(:squid_mesh, :executor)
 
-      assert {:error, {:missing_config, [:repo]}} = SquidMesh.config()
+      assert {:error, {:missing_config, [:repo, :executor]}} = SquidMesh.config()
+    end
+
+    test "reports executor modules missing required callbacks" do
+      assert {:error, {:invalid_config, [executor: {:missing_callbacks, missing}]}} =
+               SquidMesh.config(repo: SquidMeshTest.Repo, executor: IncompleteExecutor)
+
+      assert :enqueue_steps in missing
+      assert :enqueue_compensation in missing
+      assert :enqueue_cron in missing
+    end
+
+    test "reports unloadable executor modules" do
+      assert {:error,
+              {:invalid_config, [executor: {:module_not_loaded, SquidMeshTest.UnknownExecutor}]}} =
+               SquidMesh.config(repo: SquidMeshTest.Repo, executor: SquidMeshTest.UnknownExecutor)
     end
 
     test "reports invalid stale step timeout settings" do
       assert {:error, {:invalid_config, [stale_step_timeout: -1]}} =
                SquidMesh.config(
                  repo: SquidMeshTest.Repo,
-                 execution: [stale_step_timeout: -1]
+                 executor: SquidMesh.Test.Executor,
+                 stale_step_timeout: -1
                )
     end
   end
@@ -485,13 +503,13 @@ defmodule SquidMeshTest do
 
     test "rolls back run creation when dispatching the first step fails" do
       before_count = Repo.aggregate(RunRecord, :count, :id)
+      SquidMesh.Test.Executor.fail_next!()
 
-      assert {:error, {:dispatch_failed, %RuntimeError{}}} =
+      assert {:error, {:dispatch_failed, :executor_unavailable}} =
                SquidMesh.start_run(
                  InvoiceReminderWorkflow,
                  %{account_id: "acct_123", invoice_id: "inv_456"},
-                 repo: Repo,
-                 execution: [name: MissingOban]
+                 repo: Repo
                )
 
       assert Repo.aggregate(RunRecord, :count, :id) == before_count
@@ -499,28 +517,16 @@ defmodule SquidMeshTest do
   end
 
   describe "cron trigger activation" do
-    test "validates cron plugin workflows before startup" do
-      assert :ok = SquidMesh.Plugins.Cron.validate(workflows: [DailyStandupWorkflow])
-      assert :ok = SquidMesh.Plugins.Cron.validate(workflows: [ManualAndScheduledDigestWorkflow])
-
-      assert {:error, message} =
-               SquidMesh.Plugins.Cron.validate(workflows: [InvoiceReminderWorkflow])
-
-      assert message =~ "must define a cron trigger"
-    end
-
-    test "starts a cron workflow run from an Oban cron job" do
-      job = %Oban.Job{
-        args: %{
-          "workflow" => "Elixir.SquidMeshTest.DailyStandupWorkflow",
-          "trigger" => "daily_standup"
-        }
-      }
-
-      assert :ok = CronTriggerWorker.perform(job)
+    test "starts a cron workflow run from the neutral runner" do
+      assert :ok =
+               SquidMesh.Runtime.Runner.start_cron_trigger(
+                 "Elixir.SquidMeshTest.DailyStandupWorkflow",
+                 "daily_standup",
+                 repo: Repo
+               )
 
       assert_enqueued(
-        worker: SquidMesh.Workers.StepWorker,
+        worker: SquidMesh.Test.StepWorker,
         queue: "squid_mesh",
         args: %{"step" => "announce_prompt"}
       )
@@ -534,14 +540,12 @@ defmodule SquidMeshTest do
     end
 
     test "starts a selected cron trigger from a multi-trigger workflow" do
-      job = %Oban.Job{
-        args: %{
-          "workflow" => "Elixir.SquidMeshTest.ManualAndScheduledDigestWorkflow",
-          "trigger" => "scheduled_digest"
-        }
-      }
-
-      assert :ok = CronTriggerWorker.perform(job)
+      assert :ok =
+               SquidMesh.Runtime.Runner.start_cron_trigger(
+                 "Elixir.SquidMeshTest.ManualAndScheduledDigestWorkflow",
+                 "scheduled_digest",
+                 repo: Repo
+               )
 
       assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
 
@@ -606,7 +610,7 @@ defmodule SquidMeshTest do
                )
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, inspected_run} =
                SquidMesh.inspect_run(created_run.id, include_history: true, repo: Repo)
@@ -669,7 +673,7 @@ defmodule SquidMeshTest do
       assert resumed_run.status == :running
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -696,7 +700,7 @@ defmodule SquidMeshTest do
                )
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, inspected_run} =
                SquidMesh.inspect_run(created_run.id, include_history: true, repo: Repo)
@@ -748,7 +752,7 @@ defmodule SquidMeshTest do
                )
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -791,7 +795,7 @@ defmodule SquidMeshTest do
                SquidMesh.approve_run(run.id, %{actor: "ops_123", comment: "approved"}, repo: Repo)
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -834,7 +838,7 @@ defmodule SquidMeshTest do
                SquidMesh.approve_run(run.id, %{actor: "ops_123", comment: "approved"}, repo: Repo)
 
       assert %{success: success, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert success >= 1
 
@@ -1040,11 +1044,11 @@ defmodule SquidMeshTest do
 
       before_count = Repo.aggregate(RunRecord, :count, :id)
 
-      assert {:error, {:dispatch_failed, %RuntimeError{}}} =
+      assert {:error, {:dispatch_failed, :executor_unavailable}} =
                SquidMesh.replay_run(
                  source_run.id,
                  repo: Repo,
-                 execution: [name: MissingOban]
+                 executor: MissingExecutor
                )
 
       assert Repo.aggregate(RunRecord, :count, :id) == before_count
@@ -1059,7 +1063,7 @@ defmodule SquidMeshTest do
                )
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       before_count = Repo.aggregate(RunRecord, :count, :id)
 
@@ -1091,7 +1095,7 @@ defmodule SquidMeshTest do
                )
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {1, _rows} =
                Repo.update_all(
@@ -1123,7 +1127,7 @@ defmodule SquidMeshTest do
                )
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       assert {:ok, replay_run} =
                SquidMesh.replay_run(source_run.id, repo: Repo, allow_irreversible: true)
@@ -1141,7 +1145,7 @@ defmodule SquidMeshTest do
                )
 
       assert %{success: 2, failure: 0} =
-               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+               SquidMesh.Test.Executor.drain()
 
       before_count = Repo.aggregate(RunRecord, :count, :id)
 
@@ -1184,8 +1188,8 @@ defmodule SquidMeshTest do
       assert {:ok, paused_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
       assert paused_run.status == :paused
 
-      assert {:error, {:dispatch_failed, %RuntimeError{}}} =
-               SquidMesh.unblock_run(run.id, repo: Repo, execution: [name: MissingOban])
+      assert {:error, {:dispatch_failed, :executor_unavailable}} =
+               SquidMesh.unblock_run(run.id, repo: Repo, executor: MissingExecutor)
 
       assert {:ok, current_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
       assert current_run.status == :paused

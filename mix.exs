@@ -70,7 +70,6 @@ defmodule SquidMesh.MixProject do
       {:bypass, "~> 2.1", only: :test},
       {:jason, "~> 1.4"},
       {:jido, "~> 2.0"},
-      {:oban, "~> 2.21"},
       {:req, "~> 0.5"},
       {:postgrex, "~> 0.20", only: :test},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}

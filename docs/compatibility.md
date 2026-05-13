@@ -9,7 +9,6 @@ This matrix defines the currently supported baseline for Squid Mesh.
 | Elixir | `1.19.5-otp-28` |
 | Erlang/OTP | `28.4.1` |
 | Postgres | `15+` |
-| Oban | `2.21` and `2.22` |
 | Jido | `2.0+` |
 
 ## What Supported Means
@@ -26,7 +25,8 @@ Supported host apps are expected to provide:
 
 - an Ecto `Repo`
 - Postgres for durable state
-- an `Oban` instance and `oban_jobs` table
+- a module implementing `SquidMesh.Executor`
+- a durable job backend for queued and scheduled work
 - step modules that conform to the current Squid Mesh action contract
 
 ## Version Evaluation Policy

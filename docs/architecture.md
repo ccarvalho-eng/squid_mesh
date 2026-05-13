@@ -27,7 +27,15 @@ inside a host application's supervision tree and infrastructure.
 
 `SquidMesh.Runtime.Dispatcher`
 
-- turns workflow execution intent into Oban jobs
+- turns workflow execution intent into calls to the configured host executor
+
+`SquidMesh.Executor`
+
+- host-implemented behaviour for enqueueing step, compensation, and cron work
+
+`SquidMesh.Runtime.Runner`
+
+- backend-neutral entrypoint that host jobs call when queued work is delivered
 
 `SquidMesh.Runtime.StepExecutor`
 
@@ -53,7 +61,7 @@ Squid Mesh owns:
 - retry policy at the workflow-step layer
 - telemetry and structured log metadata
 
-Oban owns:
+The host executor owns:
 
 - durable job execution
 - queueing
@@ -74,25 +82,26 @@ Postgres owns:
 1. A host application starts a run through `SquidMesh.start_run/2`, `start_run/3`, or `start_run/4`.
 2. Squid Mesh validates the workflow definition and payload.
 3. Squid Mesh persists a pending run in Postgres.
-4. The dispatcher enqueues one Oban job for the current workflow step.
-5. The worker loads the run and executes the current step.
+4. The dispatcher asks the configured executor to enqueue the current workflow step.
+5. The host job delivers the payload to `SquidMesh.Runtime.Runner.perform/1`.
 6. Step output is merged into run context.
 7. The runtime decides whether the run completes, advances, retries, fails, or no-ops.
-8. If more work is required, the dispatcher schedules the next step job through Oban.
+8. If more work is required, the dispatcher asks the executor to enqueue the next step or delayed retry.
 
 ## Recovery Boundary
 
-Squid Mesh is intentionally not a replacement for Oban's worker coordination.
+Squid Mesh is intentionally not a replacement for worker coordination in the
+host job backend.
 
 Current guarantees:
 
 - run, step, and attempt history is durable
-- queued and scheduled work survives deploys and restarts through Oban
+- queued and scheduled work can survive deploys and restarts when the host executor uses a durable backend
 - stale or duplicate deliveries are treated as workflow-level no-ops when possible
 
 Current non-goals:
 
-- custom heartbeats or leases beyond Oban's own lifecycle
+- custom heartbeats or leases beyond the host backend's own lifecycle
 - automatic reclamation of a step that died mid-side-effect
 - exactly-once external side effects without idempotent step implementations
 

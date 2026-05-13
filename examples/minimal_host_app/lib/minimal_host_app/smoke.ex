@@ -9,7 +9,7 @@ defmodule MinimalHostApp.Smoke do
   alias MinimalHostApp.Repo
   alias MinimalHostApp.RuntimeHarness
   alias MinimalHostApp.WorkflowRuns
-  alias SquidMesh.Workers.CronTriggerWorker
+  alias MinimalHostApp.Workers.SquidMeshWorker
 
   @poll_attempts 20
 
@@ -252,11 +252,12 @@ defmodule MinimalHostApp.Smoke do
 
       %Oban.Job{
         args: %{
+          "kind" => "cron",
           "workflow" => "Elixir.MinimalHostApp.Workflows.DailyDigest",
           "trigger" => "daily_digest"
         }
       }
-      |> CronTriggerWorker.perform()
+      |> SquidMeshWorker.perform()
       |> case do
         :ok -> wait_for_execution()
         {:error, reason} -> raise "manual cron smoke trigger failed: #{inspect(reason)}"

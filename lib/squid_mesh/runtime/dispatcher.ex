@@ -3,7 +3,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
   Enqueues durable workflow step execution.
 
   The workflow contract stays declarative while this module bridges runtime
-  intent into Oban-backed execution jobs.
+  intent into the host application's configured executor.
   """
 
   alias SquidMesh.Config
@@ -12,15 +12,15 @@ defmodule SquidMesh.Runtime.Dispatcher do
   alias SquidMesh.Runtime.StepInput
   alias SquidMesh.StepRunStore
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
-  alias SquidMesh.Workers.StepWorker
 
   @type dispatch_error :: Ecto.Changeset.t() | term()
   @type dispatch_opts :: [schedule_in: pos_integer()]
   @type dispatch_target :: atom()
-  @type dispatch_event :: {:run_dispatched, Run.t(), Oban.Job.t(), atom(), pos_integer() | nil}
+  @type dispatch_metadata :: SquidMesh.Executor.metadata()
+  @type dispatch_event :: {:run_dispatched, Run.t(), dispatch_metadata()}
 
   @spec dispatch_run(Config.t(), Run.t(), dispatch_opts()) ::
-          {:ok, Oban.Job.t() | [Oban.Job.t()]} | {:error, dispatch_error()}
+          {:ok, dispatch_metadata() | [dispatch_metadata()]} | {:error, dispatch_error()}
   def dispatch_run(config, run, opts \\ [])
 
   def dispatch_run(%Config{} = config, %Run{} = run, opts) do
@@ -35,7 +35,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
   end
 
   @spec dispatch_run_with_events(Config.t(), Run.t(), dispatch_opts()) ::
-          {:ok, Oban.Job.t() | [Oban.Job.t()], [dispatch_event()]}
+          {:ok, dispatch_metadata() | [dispatch_metadata()], [dispatch_event()]}
           | {:error, dispatch_error()}
   def dispatch_run_with_events(config, run, opts \\ [])
 
@@ -66,7 +66,7 @@ defmodule SquidMesh.Runtime.Dispatcher do
   end
 
   @spec dispatch_steps(Config.t(), Run.t(), [dispatch_target()], keyword()) ::
-          {:ok, Oban.Job.t() | [Oban.Job.t()]} | {:error, dispatch_error()}
+          {:ok, dispatch_metadata() | [dispatch_metadata()]} | {:error, dispatch_error()}
   def dispatch_steps(%Config{} = config, %Run{} = run, steps, opts \\ []) when is_list(steps) do
     case dispatch_steps_with_events(config, run, steps, opts) do
       {:ok, jobs, events} ->
@@ -79,20 +79,22 @@ defmodule SquidMesh.Runtime.Dispatcher do
   end
 
   @spec dispatch_steps_with_events(Config.t(), Run.t(), [dispatch_target()], keyword()) ::
-          {:ok, Oban.Job.t() | [Oban.Job.t()], [dispatch_event()]}
+          {:ok, dispatch_metadata() | [dispatch_metadata()], [dispatch_event()]}
           | {:error, dispatch_error()}
   def dispatch_steps_with_events(%Config{} = config, %Run{} = run, steps, opts \\ [])
       when is_list(steps) do
     schedule_in = Keyword.get(opts, :schedule_in)
     schedule_pending? = Keyword.get(opts, :schedule_pending, false)
 
-    job_opts =
-      [queue: config.execution_queue]
-      |> maybe_put_schedule_in(schedule_in)
-
     with {:ok, jobs} <-
-           dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?) do
-      events = Enum.map(jobs, &run_dispatched_event(run, &1, config.execution_queue, schedule_in))
+           dispatch_steps_transaction(
+             config,
+             run,
+             steps,
+             dispatch_opts(schedule_in),
+             schedule_pending?
+           ) do
+      events = Enum.map(jobs, &run_dispatched_event(run, &1, schedule_in))
 
       case jobs do
         [job] -> {:ok, job, events}
@@ -109,32 +111,29 @@ defmodule SquidMesh.Runtime.Dispatcher do
   successor-step dispatch.
   """
   @spec dispatch_compensation_with_events(Config.t(), Run.t()) ::
-          {:ok, Oban.Job.t(), [dispatch_event()]} | {:error, dispatch_error()}
+          {:ok, dispatch_metadata(), [dispatch_event()]} | {:error, dispatch_error()}
   def dispatch_compensation_with_events(%Config{} = config, %Run{} = run) do
-    changeset = StepWorker.new(%{run_id: run.id, compensate: true}, queue: config.execution_queue)
-
-    with :ok <- validate_job_changesets([changeset]),
-         {:ok, [job]} <- do_insert_step_jobs(config, [changeset]) do
-      {:ok, job, [run_dispatched_event(run, job, config.execution_queue, nil)]}
+    with {:ok, metadata} <- config.executor.enqueue_compensation(config, run, []) do
+      {:ok, metadata, [run_dispatched_event(run, metadata, nil)]}
     end
   end
 
   defp emit_dispatch_events(events) do
-    Enum.each(events, fn {:run_dispatched, run, job, queue, schedule_in} ->
-      Observability.emit_run_dispatched(run, job, queue, schedule_in)
+    Enum.each(events, fn {:run_dispatched, run, metadata} ->
+      Observability.emit_run_dispatched(run, metadata)
     end)
   end
 
-  defp run_dispatched_event(run, job, queue, schedule_in) do
-    {:run_dispatched, run, job, queue, schedule_in}
+  defp run_dispatched_event(run, metadata, schedule_in) do
+    {:run_dispatched, run, dispatch_metadata(metadata, schedule_in)}
   end
 
   defp dispatch_steps_transaction(config, run, steps, job_opts, schedule_pending?) do
     if config.repo.in_transaction?() do
       dispatch_steps_without_transaction(config, run, steps, job_opts, schedule_pending?)
     else
-      # Pending step rows and Oban jobs are one dispatch unit. Direct callers
-      # need the same rollback behavior that run progression already provides.
+      # Pending step rows and executor enqueue are one dispatch unit when the
+      # host executor uses the same repo transaction.
       case config.repo.transaction(fn ->
              case dispatch_steps_without_transaction(
                     config,
@@ -199,45 +198,37 @@ defmodule SquidMesh.Runtime.Dispatcher do
 
   defp insert_step_jobs(_config, _run, [], _job_opts), do: {:ok, []}
 
-  defp insert_step_jobs(config, %Run{id: run_id}, steps, job_opts) do
-    changesets =
-      Enum.map(steps, fn step ->
-        StepWorker.new(%{run_id: run_id, step: step}, job_opts)
-      end)
-
-    with :ok <- validate_job_changesets(changesets) do
-      do_insert_step_jobs(config, changesets)
-    end
-  end
-
-  defp validate_job_changesets(changesets) do
-    case Enum.find(changesets, &(not &1.valid?)) do
-      nil -> :ok
-      invalid_changeset -> {:error, invalid_changeset}
-    end
-  end
-
-  defp do_insert_step_jobs(config, changesets) do
+  defp insert_step_jobs(config, %Run{} = run, steps, job_opts) do
     try do
-      config.execution_name
-      |> Oban.insert_all(changesets)
-      |> normalize_insert_all_result()
+      case steps do
+        [step] -> enqueue_single_step(config, run, step, job_opts)
+        multiple_steps -> config.executor.enqueue_steps(config, run, multiple_steps, job_opts)
+      end
     rescue
       exception -> {:error, exception}
     end
   end
 
-  defp normalize_insert_all_result({:ok, jobs}) when is_list(jobs), do: {:ok, jobs}
-  defp normalize_insert_all_result(jobs) when is_list(jobs), do: {:ok, jobs}
-  defp normalize_insert_all_result({:error, reason}), do: {:error, reason}
-  defp normalize_insert_all_result(other), do: {:error, {:unexpected_insert_all_result, other}}
-
-  defp maybe_put_schedule_in(opts, schedule_in)
-       when is_integer(schedule_in) and schedule_in > 0 do
-    Keyword.put(opts, :schedule_in, schedule_in)
+  defp enqueue_single_step(config, run, step, opts) do
+    with {:ok, metadata} <- config.executor.enqueue_step(config, run, step, opts) do
+      {:ok, [metadata]}
+    end
   end
 
-  defp maybe_put_schedule_in(opts, _schedule_in), do: opts
+  defp dispatch_opts(schedule_in)
+       when is_integer(schedule_in) and schedule_in > 0 do
+    [schedule_in: schedule_in]
+  end
+
+  defp dispatch_opts(_schedule_in), do: []
+
+  defp dispatch_metadata(metadata, schedule_in) when is_map(metadata) do
+    Map.put_new(metadata, :schedule_in, schedule_in)
+  end
+
+  defp dispatch_metadata(metadata, schedule_in) do
+    %{result: metadata, schedule_in: schedule_in}
+  end
 
   defp scheduled_step_input(%Config{repo: repo}, %Run{workflow: workflow} = run, step_name)
        when is_atom(workflow) do
