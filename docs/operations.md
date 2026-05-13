@@ -96,6 +96,34 @@ When Squid Mesh routes through one of these transitions, inspection history
 shows the failed step's `recovery.failure` decision and emits either
 `:compensation_routed` or `:undo_routed` in `audit_events`.
 
+## Local Transaction Boundaries
+
+`transaction: :repo` gives one custom step a same-process host repo transaction.
+It is useful for local database groups that should commit or roll back together
+before Squid Mesh advances the durable workflow:
+
+```elixir
+step :post_local_ledger_entries, MyApp.Steps.PostLocalLedgerEntries,
+  transaction: :repo
+```
+
+Operational boundary:
+
+- the action callback runs in the worker process inside `config.repo.transaction/1`
+- `{:ok, output}` commits the host repo transaction, then Squid Mesh persists
+  the step result and dispatches successors in its normal durable transaction
+- `{:error, reason}` rolls back the host repo transaction, then Squid Mesh
+  persists the failed step and applies retry or failure routing
+- a crash after local commit but before Squid Mesh persists progress can still
+  be redelivered, so local transaction groups should use natural keys,
+  uniqueness, or other idempotency guards when duplicate local writes matter
+- this option does not cover external APIs, downstream steps, Oban dispatch, or
+  saga compensation callbacks
+
+Keep this option for small local write groups. If a boundary crosses services,
+queues, or later workflow steps, model recovery explicitly with retries,
+compensation callbacks, or `:error` transitions.
+
 ## Replay After Irreversible Side Effects
 
 Replay starts a new run from the original payload. That is useful for

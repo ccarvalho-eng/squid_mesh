@@ -41,6 +41,11 @@ defmodule MinimalHostApp.WorkflowRuns do
           required(:order_id) => String.t()
         }
 
+  @type local_ledger_checkout_attrs :: %{
+          required(:account_id) => String.t(),
+          optional(:fail_after_reserve) => boolean()
+        }
+
   @spec start_payment_recovery(payment_recovery_attrs()) ::
           {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_payment_recovery(attrs) when is_map(attrs) do
@@ -83,6 +88,19 @@ defmodule MinimalHostApp.WorkflowRuns do
   @spec start_saga_checkout(saga_checkout_attrs()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}
   def start_saga_checkout(attrs) when is_map(attrs) do
     SquidMesh.start_run(MinimalHostApp.Workflows.SagaCheckout, :saga_checkout, attrs)
+  end
+
+  @doc """
+  Starts the local ledger checkout example that uses one host repo transaction.
+  """
+  @spec start_local_ledger_checkout(local_ledger_checkout_attrs()) ::
+          {:ok, SquidMesh.Run.t()} | {:error, term()}
+  def start_local_ledger_checkout(attrs) when is_map(attrs) do
+    SquidMesh.start_run(
+      MinimalHostApp.Workflows.LocalLedgerCheckout,
+      :local_ledger_checkout,
+      attrs
+    )
   end
 
   @spec inspect_payment_recovery(Ecto.UUID.t()) :: {:ok, SquidMesh.Run.t()} | {:error, term()}

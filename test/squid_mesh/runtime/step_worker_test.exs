@@ -26,6 +26,8 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   alias __MODULE__.PauseWorkflow
   alias __MODULE__.RetrySurfaceWorkflow
   alias __MODULE__.SuccessfulWorkflow
+  alias __MODULE__.TransactionalFailureWorkflow
+  alias __MODULE__.TransactionalSuccessWorkflow
   alias __MODULE__.UndoRoutingWorkflow
 
   alias SquidMesh.AttemptStore
@@ -977,6 +979,50 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
       assert step_run.status == "failed"
       assert step_run.last_error == %{"message" => "gateway timeout", "code" => "gateway_timeout"}
       assert AttemptStore.attempt_count(Repo, step_run.id) == 1
+    end
+
+    test "wraps local repo-backed step groups in one transaction" do
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 TransactionalSuccessWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 1, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, completed_run} = SquidMesh.inspect_run(run.id, repo: Repo)
+
+      assert completed_run.status == :completed
+      assert completed_run.context.local_transaction == %{status: "committed", rows: 2}
+      assert local_transaction_events(run.id) == ["reserved", "captured"]
+    end
+
+    test "rolls back local repo-backed step groups when the action fails" do
+      assert {:ok, run} =
+               SquidMesh.start_run(
+                 TransactionalFailureWorkflow,
+                 %{account_id: "acct_123"},
+                 repo: Repo
+               )
+
+      assert %{success: 1, failure: 0} =
+               Oban.drain_queue(queue: :squid_mesh, with_recursion: true)
+
+      assert {:ok, failed_run} = SquidMesh.inspect_run(run.id, include_history: true, repo: Repo)
+
+      assert failed_run.status == :failed
+      assert failed_run.current_step == :write_local_records
+
+      assert failed_run.last_error == %{
+               message: "local group failed",
+               type: "Jido.Action.Error.ExecutionFailureError"
+             }
+
+      assert local_transaction_events(run.id) == []
+
+      assert [%{step: :write_local_records, status: :failed}] = failed_run.step_runs
     end
 
     test "compensates completed reversible steps in reverse order after terminal failure" do
@@ -2071,6 +2117,18 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     end
   end
 
+  defp local_transaction_events(run_id) do
+    dumped_run_id = Ecto.UUID.dump!(run_id)
+
+    Repo.all(
+      from(event in "transactional_events",
+        where: event.run_id == ^dumped_run_id,
+        order_by: [asc: event.id],
+        select: event.event
+      )
+    )
+  end
+
   defmodule DependencyWorkflow do
     use SquidMesh.Workflow
 
@@ -2669,6 +2727,112 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
     @impl true
     def run(_params, _context) do
       {:error, %{message: "gateway timeout", code: "gateway_timeout"}}
+    end
+  end
+
+  defmodule TransactionalSuccessWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :write_local_records, TransactionalSuccessWorkflow.WriteLocalRecords,
+        transaction: :repo
+
+      transition :write_local_records, on: :ok, to: :complete
+    end
+  end
+
+  defmodule TransactionalFailureWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :manual do
+        manual()
+
+        payload do
+          field :account_id, :string
+        end
+      end
+
+      step :write_local_records, TransactionalFailureWorkflow.WriteLocalRecords,
+        transaction: :repo
+
+      transition :write_local_records, on: :ok, to: :complete
+    end
+  end
+
+  defmodule TransactionalSuccessWorkflow.WriteLocalRecords do
+    use Jido.Action,
+      name: "write_local_records",
+      description: "Writes a local group of records",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, %{run_id: run_id}) do
+      write_events!(run_id, account_id, ["reserved", "captured"])
+      {:ok, %{local_transaction: %{status: "committed", rows: 2}}}
+    end
+
+    defp write_events!(run_id, account_id, events) do
+      dumped_run_id = Ecto.UUID.dump!(run_id)
+      now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
+      entries =
+        Enum.map(events, fn event ->
+          %{
+            run_id: dumped_run_id,
+            account_id: account_id,
+            event: event,
+            inserted_at: now,
+            updated_at: now
+          }
+        end)
+
+      {2, nil} = SquidMesh.Test.Repo.insert_all("transactional_events", entries)
+      :ok
+    end
+  end
+
+  defmodule TransactionalFailureWorkflow.WriteLocalRecords do
+    use Jido.Action,
+      name: "write_local_records",
+      description: "Writes a local group of records before failing",
+      schema: [
+        account_id: [type: :string, required: true]
+      ]
+
+    @impl true
+    def run(%{account_id: account_id}, %{run_id: run_id}) do
+      write_events!(run_id, account_id, ["reserved", "captured"])
+      {:error, %{message: "local group failed"}}
+    end
+
+    defp write_events!(run_id, account_id, events) do
+      dumped_run_id = Ecto.UUID.dump!(run_id)
+      now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
+      entries =
+        Enum.map(events, fn event ->
+          %{
+            run_id: dumped_run_id,
+            account_id: account_id,
+            event: event,
+            inserted_at: now,
+            updated_at: now
+          }
+        end)
+
+      {2, nil} = SquidMesh.Test.Repo.insert_all("transactional_events", entries)
+      :ok
     end
   end
 

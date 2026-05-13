@@ -69,11 +69,13 @@ The smoke task:
 - approves the paused run through `MinimalHostApp.WorkflowRuns.approve_run/2`
 - starts a manual digest run through
   `MinimalHostApp.WorkflowRuns.start_manual_digest/1`
+- starts the local ledger checkout workflow through
+  `MinimalHostApp.WorkflowRuns.start_local_ledger_checkout/1`
 - starts a saga checkout run through
   `MinimalHostApp.WorkflowRuns.start_saga_checkout/1`
 - waits for execution, inspects all completed manual workflows, and
-  verifies the paused approval run's durable audit history and saga rollback
-  compensation history
+  verifies the paused approval run's durable audit history, local transaction
+  rollback, and saga rollback compensation history
 - activates the same digest workflow through the host app's Oban-backed cron plugin
 - verifies both digest triggers complete through the same workflow graph
 
@@ -165,6 +167,21 @@ When that path runs, `inspect_run(run_id, include_history: true)` exposes a
 `:compensation_routed` audit event and the failed step's
 `recovery.failure.strategy`.
 
+The local ledger checkout workflow demonstrates a same-process host repo
+transaction group:
+
+```elixir
+step :post_local_ledger_entries, MinimalHostApp.Steps.PostLocalLedgerEntries,
+  transaction: :repo
+```
+
+The step writes two local ledger rows through `MinimalHostApp.Repo`. When the
+step returns `{:ok, output}`, both rows commit before Squid Mesh records the
+completed step. When the step returns `{:error, reason}`, both rows roll back
+and Squid Mesh records the durable step failure. This is a local database
+boundary only; saga compensation and later workflow steps remain explicit
+workflow concerns.
+
 Host apps can expose diagnostics through the same boundary:
 
 ```elixir
@@ -178,6 +195,7 @@ The reference workflow and step modules live in:
 - `lib/minimal_host_app/workflows/payment_recovery.ex`
 - `lib/minimal_host_app/workflows/dependency_recovery.ex`
 - `lib/minimal_host_app/workflows/manual_approval.ex`
+- `lib/minimal_host_app/workflows/local_ledger_checkout.ex`
 - `lib/minimal_host_app/workflows/saga_checkout.ex`
 - `lib/minimal_host_app/workflows/daily_digest.ex`
 - `lib/minimal_host_app/steps/`

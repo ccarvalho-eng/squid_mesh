@@ -143,6 +143,42 @@ defmodule MinimalHostApp.WorkflowRunsTest do
            ]
   end
 
+  test "commits local repo transaction groups through the host boundary" do
+    assert {:ok, run} =
+             WorkflowRuns.start_local_ledger_checkout(%{
+               account_id: "acct_local_123",
+               fail_after_reserve: false
+             })
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+    assert {:ok, completed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+
+    assert completed_run.status == :completed
+    assert completed_run.context.local_ledger == %{status: "committed", entries: 2}
+    assert local_ledger_entries(run.id) == ["reserve", "capture"]
+  end
+
+  test "rolls back local repo transaction groups when the step fails" do
+    assert {:ok, run} =
+             WorkflowRuns.start_local_ledger_checkout(%{
+               account_id: "acct_local_456",
+               fail_after_reserve: true
+             })
+
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+    assert {:ok, failed_run} = MinimalHostApp.RuntimeHarness.await_terminal_run(run.id)
+
+    assert failed_run.status == :failed
+    assert failed_run.current_step == :post_local_ledger_entries
+
+    assert failed_run.last_error == %{
+             message: "local ledger capture failed",
+             type: "Jido.Action.Error.ExecutionFailureError"
+           }
+
+    assert local_ledger_entries(run.id) == []
+  end
+
   test "approves a manual approval workflow through the host boundary" do
     assert {:ok, run} = WorkflowRuns.start_manual_approval(%{account_id: "acct_approval_123"})
 
@@ -291,6 +327,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
              dependency_recovery: dependency_recovery,
              manual_approval: manual_approval,
              manual_digest: manual_digest,
+             local_ledger_checkout: local_ledger_checkout,
+             local_ledger_rollback: local_ledger_rollback,
              daily_digest: daily_digest
            } =
              Smoke.run_all!()
@@ -308,6 +346,12 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert manual_digest.status == :completed
     assert manual_digest.trigger == :manual_digest
 
+    assert local_ledger_checkout.status == :completed
+    assert local_ledger_checkout.context.local_ledger.entries == 2
+
+    assert local_ledger_rollback.status == :failed
+    assert local_ledger_rollback.current_step == :post_local_ledger_entries
+
     assert daily_digest.status == :completed
     assert daily_digest.trigger == :daily_digest
   end
@@ -319,5 +363,15 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
   defp endpoint_url(port, path) do
     "http://127.0.0.1:#{port}#{path}"
+  end
+
+  defp local_ledger_entries(run_id) do
+    Repo.all(
+      from(entry in "local_ledger_entries",
+        where: entry.run_id == ^run_id,
+        order_by: [asc: entry.id],
+        select: entry.entry
+      )
+    )
   end
 end
