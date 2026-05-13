@@ -42,7 +42,7 @@ Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications.
 ## Fit
 
 - workflow state should survive app restarts, deploys, retries, and executor redelivery
-- a Phoenix context needs durable approval, recovery, notification, or back-office flow state
+- a Phoenix context needs durable approval, recovery, notification, or long-running flow state
 - step history and manual decisions need to be inspectable after execution
 - workflow state belongs in the host app's Postgres database, not a separate service
 
@@ -91,10 +91,10 @@ end
 
 ```elixir
 config :squid_mesh,
-  repo: MyApp.Repo,
-  executor: MyApp.SquidMeshExecutor
+  repo: MiddleEarth.Repo,
+  executor: MiddleEarth.SquidMeshExecutor
 
-config :my_app, MyApp.SquidMeshExecutor,
+config :middle_earth, MiddleEarth.SquidMeshExecutor,
   queue: :squid_mesh
 ```
 
@@ -128,63 +128,160 @@ formatter configuration from the host app:
 ]
 ```
 
-## Example: Daily RSS To Discord
+## Example: The Ring Errand
 
-This example shows the core runtime shape: one cron trigger, typed payload
-defaults, built-in steps, custom steps, explicit failure routing, step-level
-retry on the external side-effect step, and compensation for a successfully
-posted Discord message if a later bookkeeping step fails.
+Before the longer example, here is the workflow API in small pieces.
+
+Manual triggers declare an entrypoint and a payload contract. Payload fields are
+validated before Squid Mesh persists the run, and defaults are resolved at run
+creation time:
 
 ```elixir
-defmodule Content.Workflows.PostDailyDigest do
+defmodule MiddleEarth.Workflows.RingErrand do
   use SquidMesh.Workflow
 
   workflow do
-    trigger :daily_digest do
-      cron "0 9 * * 1-5", timezone: "Etc/UTC"
+    trigger :leave_shire do
+      manual()
 
       payload do
-        field :feed_url, :string, default: "https://example.com/feed.xml"
-        field :discord_webhook_url, :string
-        field :posted_on, :string, default: {:today, :iso8601}
+        field :bearer, :string, default: "Frodo"
+        field :ring_id, :string
+        field :snack_count, :integer, default: 11
+        field :panic_level, :float, required: false
+        field :eagle_backup?, :boolean, default: false
+        field :fellowship, :list, default: ["Sam"]
+        field :map_marks, :map, default: %{}
+        field :mood, :atom, default: :peckish
+        field :started_on, :string, default: {:today, :iso8601}
       end
     end
 
-    step :fetch_feed, Content.Steps.FetchFeed, output: :feed
-    
-    step :build_digest, Content.Steps.BuildDigest,
-      input: [:feed, :posted_on],
-      output: :digest
-    
-    step :announce_post, :log, message: "Posting digest to Discord", level: :info
-    step :record_successful_delivery, Content.Steps.RecordSuccessfulDelivery,
-      input: [:discord_message, :posted_on]
+    step :pack_lembas, Hobbiton.Steps.PackLembas,
+      input: [:snack_count],
+      output: :provisions,
+      transaction: :repo
 
-    step :record_failed_delivery, Content.Steps.RecordFailedDelivery
+    step :announce_departure, :log,
+      message: "Leaving the Shire with suspicious jewelry",
+      level: :info
 
-    step :post_to_discord, Content.Steps.PostToDiscord,
-      input: [:digest, :discord_webhook_url],
-      output: :discord_message,
-      compensate: Content.Steps.DeleteDiscordMessage,
-      retry: [max_attempts: 5, backoff: [type: :exponential, min: 1_000, max: 30_000]]
+    step :wait_for_gandalf, :wait, duration: 5_000
+    step :hide_at_prancing_pony, :pause
 
-    transition :fetch_feed, on: :ok, to: :build_digest
-    transition :build_digest, on: :ok, to: :announce_post
-    transition :announce_post, on: :ok, to: :post_to_discord
-    transition :post_to_discord, on: :ok, to: :record_successful_delivery
-    transition :post_to_discord, on: :error, to: :record_failed_delivery
-    transition :record_successful_delivery, on: :ok, to: :complete
-    transition :record_failed_delivery, on: :ok, to: :complete
+    approval_step :council_vote, output: :council
+
+    step :cross_moria, Fellowship.Steps.CrossMoria,
+      input: [:bearer, :provisions, :council],
+      output: :moria,
+      retry: [
+        max_attempts: 3,
+        backoff: [type: :exponential, min: 1_000, max: 10_000]
+      ]
+
+    step :reserve_eagle, Eagles.Steps.ReserveRide,
+      compensate: Eagles.Steps.CancelRide
+
+    step :insult_sauron, Gondor.Steps.InsultSauron,
+      compensatable: false
+
+    step :toss_ring, Mordor.Steps.TossRing,
+      irreversible: true
+
+    step :walk_home_awkwardly, Hobbiton.Steps.WalkHomeAwkwardly
+
+    transition :pack_lembas, on: :ok, to: :announce_departure
+    transition :announce_departure, on: :ok, to: :wait_for_gandalf
+    transition :wait_for_gandalf, on: :ok, to: :hide_at_prancing_pony
+    transition :hide_at_prancing_pony, on: :ok, to: :council_vote
+    transition :council_vote, on: :ok, to: :cross_moria
+    transition :council_vote, on: :error, to: :walk_home_awkwardly
+    transition :cross_moria, on: :ok, to: :reserve_eagle
+    transition :cross_moria, on: :error, to: :walk_home_awkwardly, recovery: :undo
+    transition :reserve_eagle, on: :ok, to: :insult_sauron
+    transition :insult_sauron, on: :ok, to: :toss_ring
+    transition :toss_ring, on: :ok, to: :complete
+    transition :walk_home_awkwardly, on: :ok, to: :complete
   end
 end
 ```
 
-Step modules implement domain work. Squid Mesh records durable state, asks the configured executor to schedule work, applies step retry policy, routes failures after retry
-exhaustion, and exposes run inspection.
+Cron triggers use the same workflow shape, but the host app owns recurring
+scheduling and activation:
 
-For approval or manual-review gates, use `approval_step/2` in transition-based workflows and resume the paused run through `SquidMesh.approve_run/3` or `SquidMesh.reject_run/3`. Approval steps persist their resolved `:ok` and `:error` targets plus output-mapping metadata, so already-paused review runs keep the same decision semantics across restarts and deploys. Generic `SquidMesh.unblock_run/2` remains available for lower-level `:pause` steps when you need manual intervention without an explicit approve/reject contract.
+```elixir
+defmodule Gondor.Workflows.BeaconWatch do
+  use SquidMesh.Workflow
 
-When a step needs a narrower contract than the whole payload plus accumulated context, use `input: [...]` to select keys and `output: :key` to namespace the returned map for downstream steps.
+  workflow do
+    trigger :nightly_beacon_check do
+      cron "0 21 * * *", timezone: "Etc/UTC"
+
+      payload do
+        field :steward_mood, :string, default: "dramatic"
+        field :orc_count, :integer, default: 9001
+      end
+    end
+
+    step :inspect_hilltops, Gondor.Steps.InspectHilltops,
+      retry: [max_attempts: 5]
+
+    step :light_first_beacon, Gondor.Steps.LightBeacon,
+      compensate: Gondor.Steps.ExtinguishBeacon
+
+    step :log_call_for_aid, :log,
+      message: "Gondor calls for aid",
+      level: :info
+
+    transition :inspect_hilltops, on: :ok, to: :light_first_beacon
+    transition :light_first_beacon, on: :ok, to: :log_call_for_aid
+    transition :log_call_for_aid, on: :ok, to: :complete
+  end
+end
+```
+
+Dependency-based workflows use `after: [...]` instead of transitions. A step is
+runnable only after all of its declared dependencies complete:
+
+```elixir
+defmodule Mordor.Workflows.FinalDistraction do
+  use SquidMesh.Workflow
+
+  workflow do
+    trigger :start_distraction do
+      manual()
+
+      payload do
+        field :speech, :string, default: "For Frodo."
+      end
+    end
+
+    step :march_to_gate, Gondor.Steps.MarchToGate
+    step :look_very_brave, Gondor.Steps.LookBrave
+    step :sneak_up_volcano, Hobbiton.Steps.SneakUpVolcano
+
+    step :declare_victory, Gondor.Steps.DeclareVictory,
+      after: [:march_to_gate, :look_very_brave, :sneak_up_volcano],
+      irreversible: true
+  end
+end
+```
+
+Step modules implement domain work. Squid Mesh records durable state, asks the
+configured executor to schedule work, applies step retry policy, routes failures
+after retry exhaustion, and exposes run inspection.
+
+For approval or manual-review gates, use `approval_step/2` in transition-based
+workflows and resume the paused run through `SquidMesh.approve_run/3` or
+`SquidMesh.reject_run/3`. Approval steps persist their resolved `:ok` and
+`:error` targets plus output-mapping metadata, so already-paused review runs keep
+the same decision semantics across restarts and deploys. Generic
+`SquidMesh.unblock_run/2` remains available for lower-level `:pause` steps when
+you need manual intervention without an explicit approve/reject contract.
+
+When a step needs a narrower contract than the whole payload plus accumulated
+context, use `input: [...]` to select keys and `output: :key` to namespace the
+returned map for downstream steps.
 
 When a custom step needs several local repo writes to commit or roll back
 together, declare `transaction: :repo`. This wraps only that action callback in
@@ -195,54 +292,91 @@ boundaries.
 For external side effects that cannot be honestly undone, mark the step with
 `irreversible: true` or `compensatable: false`. Squid Mesh exposes that recovery
 policy in inspection and blocks replay by default after such a step completes;
-operators can still replay with `allow_irreversible: true` after reviewing the
-side effect.
+council members can still replay with `allow_irreversible: true` after
+reviewing the side effect.
 
-In the RSS example, the `:error` transition on `:post_to_discord` is a
-same-step fallback for a message that was never posted successfully after
-retries. The compensation callback is different: it is used only if
-`:post_to_discord` completes, stores a deletable Discord message id under
-`:discord_message`, and a later step such as `:record_successful_delivery`
-causes the run to fail.
+In the Ring Errand example, the `:error` transition on `:cross_moria` is a
+same-step fallback after retries are exhausted. The compensation callback is
+different: it is used only if `:reserve_eagle` completes, stores reversible
+reservation output, and a later step causes the run to fail.
 
 For other reversible saga steps, declare compensation callbacks the same way:
 
 ```elixir
-step :reserve_inventory, Checkout.Steps.ReserveInventory,
-  compensate: Checkout.Steps.ReleaseInventory
+step :borrow_elven_rope, Lothlorien.Steps.BorrowRope,
+  compensate: Lothlorien.Steps.ReturnRope
 
-step :authorize_payment, Checkout.Steps.AuthorizePayment,
-  compensate: Checkout.Steps.VoidPaymentAuthorization
+step :reserve_eagle, Eagles.Steps.ReserveRide,
+  compensate: Eagles.Steps.CancelRide
 
-step :capture_payment, Checkout.Steps.CapturePayment,
+step :cross_moria, Fellowship.Steps.CrossMoria,
   retry: [max_attempts: 2]
 
-transition :reserve_inventory, on: :ok, to: :authorize_payment
-transition :authorize_payment, on: :ok, to: :capture_payment
-transition :capture_payment, on: :ok, to: :complete
+transition :borrow_elven_rope, on: :ok, to: :reserve_eagle
+transition :reserve_eagle, on: :ok, to: :cross_moria
+transition :cross_moria, on: :ok, to: :complete
 ```
 
 When a downstream step fails after retries and the workflow has no forward
 `:error` path, Squid Mesh runs completed compensation callbacks in reverse
-completion order. In the checkout example above, a failed `:capture_payment`
-step voids the payment authorization before releasing inventory, and each
-result is persisted under the original step's `recovery.compensation` history.
+completion order. In the example above, a failed `:cross_moria` step cancels the
+eagle reservation before returning the rope, and each result is persisted under
+the original step's `recovery.compensation` history.
 
 Start the workflow through the public API and inspect the result with history:
 
 ```elixir
 {:ok, run} =
-  SquidMesh.start_run(Content.Workflows.PostDailyDigest, %{
-    discord_webhook_url: webhook_url
+  SquidMesh.start_run(MiddleEarth.Workflows.RingErrand, :leave_shire, %{
+    ring_id: "one-ring"
   })
 
 SquidMesh.inspect_run(run.id, include_history: true)
 ```
 
-With history enabled, the inspected run includes chronological `step_runs`, declared `steps` state, and durable `audit_events` for pause, resume, approval,
+With history enabled, the inspected run includes chronological `step_runs`,
+declared `steps` state, and durable `audit_events` for pause, resume, approval,
 and rejection actions.
 
-Use `SquidMesh.explain_run/2` when a host app needs operator-facing diagnostics:
+For workflows paused at a generic `:pause` step, resume with `unblock_run/2`.
+For approval steps, resume through the explicit decision APIs:
+
+```elixir
+{:ok, paused_run} = SquidMesh.inspect_run(run.id, include_history: true)
+
+{:ok, resumed_run} =
+  SquidMesh.unblock_run(paused_run.id, %{
+    actor: "strider",
+    reason: "pipeweed restocked"
+  })
+
+# Once the run pauses at an approval step, choose one path:
+{:ok, approved_run} =
+  SquidMesh.approve_run(resumed_run.id, %{
+    actor: "elrond",
+    note: "approved by council"
+  })
+
+# Or reject it instead:
+{:ok, rejected_run} =
+  SquidMesh.reject_run(resumed_run.id, %{
+    actor: "elrond",
+    note: "too much singing"
+  })
+```
+
+Runs can also be listed, cancelled, or replayed. Replay requires an explicit
+override after irreversible or non-compensatable steps:
+
+```elixir
+{:ok, running_runs} = SquidMesh.list_runs(status: :running)
+{:ok, cancelling_run} = SquidMesh.cancel_run(run.id)
+
+{:ok, replayed_run} = SquidMesh.replay_run(run.id)
+{:ok, reviewed_replay} = SquidMesh.replay_run(run.id, allow_irreversible: true)
+```
+
+Use `SquidMesh.explain_run/2` when a host app needs council-facing diagnostics:
 
 ```elixir
 {:ok, explanation} = SquidMesh.explain_run(run.id)
@@ -251,7 +385,8 @@ explanation.reason
 #=> :waiting_for_retry
 ```
 
-`inspect_run/2` returns the persisted runtime facts. `explain_run/2` summarizes the current reason, valid next actions, and evidence in a structured shape that
+`inspect_run/2` returns the persisted runtime facts. `explain_run/2` summarizes
+the current reason, valid next actions, and evidence in a structured shape that
 dashboards and CLIs can render themselves.
 
 ## Documentation
