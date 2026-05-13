@@ -3,16 +3,19 @@ defmodule MinimalHostApp.Steps.CheckGatewayStatus do
   Example step that checks payment gateway state.
   """
 
-  use Jido.Action,
-    name: "check_gateway_status",
+  use SquidMesh.Step,
+    name: :check_gateway_status,
     description: "Checks gateway state",
-    schema: [
+    input_schema: [
       invoice: [type: :map, required: true],
       gateway_url: [type: :string, required: true]
+    ],
+    output_schema: [
+      gateway_check: [type: :map, required: true]
     ]
 
   @impl true
-  @spec run(map(), map()) :: {:ok, map()} | {:error, map()}
+  @spec run(map(), SquidMesh.Step.Context.t()) :: {:ok, map()} | {:retry, map()}
   def run(%{invoice: invoice, gateway_url: gateway_url}, _context) do
     case SquidMesh.Tools.invoke(SquidMesh.Tools.HTTP, %{method: :get, url: gateway_url}) do
       {:ok, result} ->
@@ -26,7 +29,7 @@ defmodule MinimalHostApp.Steps.CheckGatewayStatus do
          }}
 
       {:error, error} ->
-        {:error, SquidMesh.Tools.Error.to_map(error)}
+        {:retry, SquidMesh.Tools.Error.to_map(error)}
     end
   end
 end

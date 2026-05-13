@@ -173,7 +173,7 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
     assert failed_run.last_error == %{
              message: "local ledger capture failed",
-             type: "Jido.Action.Error.ExecutionFailureError"
+             retryable?: false
            }
 
     assert local_ledger_entries(run.id) == []

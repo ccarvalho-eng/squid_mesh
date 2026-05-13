@@ -129,10 +129,20 @@ defmodule SquidMesh.Runtime.Compensation do
       state: run.context || %{}
     }
 
+    {callback, input} = callback_input(callback, input)
+
     case Jido.Exec.run(callback, input, context, max_retries: 0) do
       {:ok, output} when is_map(output) -> {:ok, output}
       {:ok, output, _extras} when is_map(output) -> {:ok, output}
       {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  defp callback_input(callback, input) do
+    if SquidMesh.Step.native_step?(callback) do
+      {SquidMesh.Step.Action, %{step: callback, input: input}}
+    else
+      {callback, input}
     end
   end
 

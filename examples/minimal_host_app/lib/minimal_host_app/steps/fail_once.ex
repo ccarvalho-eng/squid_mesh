@@ -7,22 +7,26 @@ defmodule MinimalHostApp.Steps.FailOnce do
   clients.
   """
 
-  use Jido.Action,
-    name: "fail_once",
+  use SquidMesh.Step,
+    name: :fail_once,
     description: "Fails once per run and then succeeds",
-    schema: [
+    input_schema: [
       attempt_id: [type: :string, required: true]
+    ],
+    output_schema: [
+      retry_probe: [type: :map, required: true]
     ]
 
   @impl true
-  @spec run(map(), map()) :: {:ok, map()} | {:error, map()}
-  def run(%{attempt_id: attempt_id}, %{run_id: run_id}) when is_binary(run_id) do
+  @spec run(map(), SquidMesh.Step.Context.t()) :: {:ok, map()} | {:retry, map()}
+  def run(%{attempt_id: attempt_id}, %SquidMesh.Step.Context{run_id: run_id})
+      when is_binary(run_id) do
     key = {__MODULE__, run_id}
 
     case :persistent_term.get(key, :first_attempt) do
       :first_attempt ->
         :persistent_term.put(key, :retried)
-        {:error, %{message: "retry later", code: "retry_later"}}
+        {:retry, %{message: "retry later", code: "retry_later"}}
 
       :retried ->
         :persistent_term.erase(key)

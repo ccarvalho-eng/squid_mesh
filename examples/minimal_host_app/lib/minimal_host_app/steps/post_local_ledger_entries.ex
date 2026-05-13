@@ -3,18 +3,24 @@ defmodule MinimalHostApp.Steps.PostLocalLedgerEntries do
   Writes a small local ledger group inside the host repo transaction.
   """
 
-  use Jido.Action,
-    name: "post_local_ledger_entries",
+  use SquidMesh.Step,
+    name: :post_local_ledger_entries,
     description: "Posts two local ledger entries in one host repo transaction",
-    schema: [
+    input_schema: [
       account_id: [type: :string, required: true],
       fail_after_reserve: [type: :boolean, required: true]
+    ],
+    output_schema: [
+      local_ledger: [type: :map, required: true]
     ]
 
   alias MinimalHostApp.Repo
 
   @impl true
-  def run(%{account_id: account_id, fail_after_reserve: fail_after_reserve?}, %{run_id: run_id}) do
+  def run(
+        %{account_id: account_id, fail_after_reserve: fail_after_reserve?},
+        %SquidMesh.Step.Context{run_id: run_id}
+      ) do
     insert_entry!(run_id, account_id, "reserve")
 
     if fail_after_reserve? do

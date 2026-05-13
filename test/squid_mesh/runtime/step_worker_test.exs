@@ -1181,7 +1181,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                failed_step: :charge_card,
                cause: %{message: "card declined", code: "card_declined"},
                compensation_failures: [
-                 %{message: "release failed", code: "release_failed"}
+                 %{message: "release failed", code: "release_failed", retryable?: false}
                ]
              }
 
@@ -1189,7 +1189,7 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
                recovery: %{
                  compensation: %{
                    status: :failed,
-                   error: %{message: "release failed", code: "release_failed"}
+                   error: %{message: "release failed", code: "release_failed", retryable?: false}
                  }
                }
              } = Enum.find(failed_run.step_runs, &(&1.step == :hold_credit))
@@ -2868,10 +2868,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   end
 
   defmodule CompensationWorkflow.ReleaseCreditHold do
-    use Jido.Action,
-      name: "release_credit_hold",
+    use SquidMesh.Step,
+      name: :release_credit_hold,
       description: "Releases a prior credit hold",
-      schema: []
+      input_schema: [
+        payload: [type: :map, required: true]
+      ],
+      output_schema: [
+        released: [type: :string, required: true]
+      ]
 
     @impl true
     def run(%{payload: %{account_id: account_id}}, _context) do
@@ -2891,10 +2896,15 @@ defmodule SquidMesh.Runtime.StepWorkerTest do
   end
 
   defmodule CompensationWorkflow.ReleaseInventory do
-    use Jido.Action,
-      name: "release_inventory",
+    use SquidMesh.Step,
+      name: :release_inventory,
       description: "Releases a prior inventory reservation",
-      schema: []
+      input_schema: [
+        payload: [type: :map, required: true]
+      ],
+      output_schema: [
+        released: [type: :string, required: true]
+      ]
 
     @impl true
     def run(%{payload: %{order_id: order_id}}, _context) do

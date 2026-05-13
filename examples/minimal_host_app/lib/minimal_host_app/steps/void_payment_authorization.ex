@@ -6,10 +6,15 @@ defmodule MinimalHostApp.Steps.VoidPaymentAuthorization do
   rather than a same-step fallback.
   """
 
-  use Jido.Action,
-    name: "void_payment_authorization",
+  use SquidMesh.Step,
+    name: :void_payment_authorization,
     description: "Voids a previous payment authorization",
-    schema: []
+    input_schema: [
+      step: [type: :map, required: true]
+    ],
+    output_schema: [
+      voided_payment_authorization: [type: :map, required: true]
+    ]
 
   @impl true
   def run(%{step: %{output: %{payment_authorization: authorization}}}, _context) do

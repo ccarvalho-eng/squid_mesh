@@ -6,13 +6,12 @@ defmodule MinimalHostApp.Steps.CapturePayment do
   terminal failure persistence, compensation dispatch, and rollback inspection.
   """
 
-  use Jido.Action,
-    name: "capture_payment",
-    description: "Captures an authorized payment",
-    schema: []
+  use SquidMesh.Step,
+    name: :capture_payment,
+    description: "Captures an authorized payment"
 
   @impl true
   def run(_params, _context) do
-    {:error, %{message: "payment capture declined", code: "capture_declined"}}
+    {:retry, %{message: "payment capture declined", code: "capture_declined"}}
   end
 end

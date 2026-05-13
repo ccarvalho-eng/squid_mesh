@@ -6,10 +6,15 @@ defmodule MinimalHostApp.Steps.ReleaseInventory do
   output and records the domain-level rollback result.
   """
 
-  use Jido.Action,
-    name: "release_inventory",
+  use SquidMesh.Step,
+    name: :release_inventory,
     description: "Releases a previous inventory reservation",
-    schema: []
+    input_schema: [
+      step: [type: :map, required: true]
+    ],
+    output_schema: [
+      released_inventory: [type: :map, required: true]
+    ]
 
   @impl true
   def run(%{step: %{output: %{inventory_reservation: reservation}}}, _context) do
