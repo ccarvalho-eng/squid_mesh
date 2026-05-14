@@ -1,0 +1,52 @@
+# Repository Guidelines
+
+## Project Structure & Module Organization
+
+Squid Mesh is an Elixir library for durable workflow execution. Core source
+lives in `lib/squid_mesh`, with Mix tasks under `lib/mix`. Database schema and
+migrations live in `priv/repo`. Tests mirror the source layout under
+`test/squid_mesh`, with shared helpers in `test/support`. Project docs are in
+`docs`, and `examples/minimal_host_app` is the executable host-app harness used
+for integration and smoke testing.
+
+## Build, Test, and Development Commands
+
+- `mix deps.get` installs root project dependencies.
+- `mix compile --warnings-as-errors` compiles the library and fails on warnings.
+- `mix test` runs the ExUnit suite.
+- `mix format --check-formatted` verifies formatting.
+- `cd examples/minimal_host_app && MIX_ENV=test mix example.smoke` runs the
+  example host-app smoke path.
+
+For a full local pass before handoff, run format, compile, tests, and the smoke
+path when runtime, workflow, persistence, or public API behavior changed.
+
+## Coding Style & Naming Conventions
+
+Use `mix format`; `.formatter.exs` defines the project DSL calls that should be
+written without parentheses, such as `workflow`, `step`, `transition`, and
+`payload`. Keep modules small and named by intent. Prefer explicit structs for
+domain data and maps for transport boundaries. Avoid `String.to_atom/1` on
+external input, list index access, hidden global state, and swallowing errors.
+
+## Testing Guidelines
+
+Tests use ExUnit. Name test files with `_test.exs` and place them near the
+behavior they verify, for example `test/squid_mesh/runtime/step_worker_test.exs`.
+Add regression coverage with behavior-focused assertions, especially for retries,
+pause/resume, cancellation, dependency ordering, stale workflow definitions,
+input/output mapping, persistence, and error routing.
+
+## Commit & Pull Request Guidelines
+
+Follow Conventional Commits, for example `feat: add native step contract` or
+`fix: align planner with workflow mappings`. Keep each commit focused on one
+intent. Pull requests should fill the repository template, describe the final net
+change, explain why it is needed, reference related issues when applicable, and
+include the verification commands run.
+
+## Security & Configuration Tips
+
+Do not commit secrets, local machine paths, hostnames, or user-specific config.
+Review dependency and lockfile changes carefully because Squid Mesh is embedded
+inside host applications.
