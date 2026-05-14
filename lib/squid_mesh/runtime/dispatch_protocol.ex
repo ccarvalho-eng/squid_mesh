@@ -16,6 +16,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   """
 
   alias SquidMesh.Runtime.DispatchProtocol.Entry
+  alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type entry_type ::
           :run_started
@@ -100,7 +101,10 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
   @spec new_entry(entry_type(), map() | keyword()) ::
           {:ok, Entry.t()} | {:error, {:unknown_entry_type, atom()} | {:missing_fields, [atom()]}}
   def new_entry(type, attrs) when is_atom(type) and type in @entry_types do
-    attrs = Map.new(attrs)
+    attrs =
+      attrs
+      |> Map.new()
+      |> normalize_attrs(type)
 
     with :ok <- require_fields(type, attrs) do
       {:ok,
@@ -115,11 +119,21 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
 
   def new_entry(type, _attrs) when is_atom(type), do: {:error, {:unknown_entry_type, type}}
 
+  defp normalize_attrs(attrs, type) when type in @dispatch_entry_types do
+    Map.update(attrs, :queue, "default", &normalize_queue/1)
+  end
+
+  defp normalize_attrs(attrs, type) when type in @run_index_entry_types do
+    Map.update(attrs, :workflow, nil, &normalize_workflow/1)
+  end
+
+  defp normalize_attrs(attrs, _type), do: attrs
+
   defp require_fields(type, attrs) do
     missing_fields =
       type
       |> then(&Map.fetch!(@required_fields, &1))
-      |> Enum.reject(&Map.has_key?(attrs, &1))
+      |> Enum.reject(&(Map.has_key?(attrs, &1) and not is_nil(Map.fetch!(attrs, &1))))
 
     case missing_fields do
       [] -> :ok
@@ -133,6 +147,17 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     do: {:run_index, attrs.workflow}
 
   defp thread_for(type, attrs) when type in @dispatch_entry_types do
-    {:dispatch, Map.get(attrs, :queue, "default")}
+    {:dispatch, attrs.queue}
   end
+
+  defp normalize_workflow(workflow) when is_atom(workflow),
+    do: WorkflowDefinition.serialize_workflow(workflow)
+
+  defp normalize_workflow(workflow), do: normalize_thread_id(workflow)
+
+  defp normalize_queue(nil), do: "default"
+  defp normalize_queue(queue), do: normalize_thread_id(queue)
+
+  defp normalize_thread_id(id) when is_binary(id), do: id
+  defp normalize_thread_id(id), do: to_string(id)
 end

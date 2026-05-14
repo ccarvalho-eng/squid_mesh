@@ -12,8 +12,9 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
   @type anomaly :: %{
           required(:reason) => atom(),
-          required(:runnable_key) => String.t(),
           required(:entry_type) => atom(),
+          optional(:runnable_key) => String.t(),
+          optional(:run_id) => String.t(),
           optional(:idempotency_key) => String.t(),
           optional(:claim_id) => String.t(),
           optional(:claim_token_hash) => String.t()
@@ -21,10 +22,11 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
   @type t :: %__MODULE__{
           attempts: %{optional(String.t()) => ActionAttempt.t()},
-          anomalies: [anomaly()]
+          anomalies: [anomaly()],
+          terminal_runs: MapSet.t(String.t())
         }
 
-  defstruct attempts: %{}, anomalies: []
+  defstruct attempts: %{}, anomalies: [], terminal_runs: MapSet.new()
 
   @spec rebuild([Entry.t()]) :: t()
   def rebuild(entries) when is_list(entries) do
@@ -38,6 +40,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     |> Enum.filter(fn attempt ->
       attempt.status in [:available, :retry_scheduled] and not after?(attempt.visible_at, at)
     end)
+    |> Enum.reject(&terminal_run?(projection, &1.run_id))
   end
 
   @spec expired_claims(t(), DateTime.t()) :: [ActionAttempt.t()]
@@ -48,6 +51,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
       attempt.status == :claimed and not is_nil(attempt.lease_until) and
         not after?(attempt.lease_until, at)
     end)
+    |> Enum.reject(&terminal_run?(projection, &1.run_id))
   end
 
   @spec completed_results(t()) :: [ActionAttempt.t()]
@@ -62,29 +66,24 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     projection
     |> completed_results()
     |> Enum.reject(& &1.applied?)
+    |> Enum.reject(&terminal_run?(projection, &1.run_id))
   end
 
   @spec anomalies(t()) :: [anomaly()]
   def anomalies(%__MODULE__{anomalies: anomalies}), do: Enum.reverse(anomalies)
 
-  defp apply_entry(%Entry{type: :attempt_scheduled, data: data}, projection) do
-    put_new_attempt(projection, build_attempt(data), data)
+  defp apply_entry(%Entry{type: :attempt_scheduled, data: data} = entry, projection) do
+    if terminal_run?(projection, data.run_id) do
+      add_anomaly(projection, entry, :terminal_run)
+    else
+      put_new_attempt(projection, build_attempt(data), data)
+    end
   end
 
   defp apply_entry(%Entry{type: :attempt_claimed, data: data} = entry, projection) do
     case Map.fetch(projection.attempts, data.runnable_key) do
-      {:ok, %ActionAttempt{status: status}} when status in [:completed, :failed] ->
-        add_anomaly(projection, entry, :terminal_attempt)
-
-      {:ok, %ActionAttempt{status: :claimed} = attempt} ->
-        if expired_claim?(attempt, data.occurred_at) do
-          put_claimed_attempt(projection, attempt, data)
-        else
-          add_anomaly(projection, entry, :active_claim)
-        end
-
       {:ok, %ActionAttempt{} = attempt} ->
-        put_claimed_attempt(projection, attempt, data)
+        claim_attempt(projection, entry, attempt)
 
       :error ->
         add_anomaly(projection, entry, :unknown_runnable_intent)
@@ -99,23 +98,8 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
   defp apply_entry(%Entry{type: :attempt_completed, data: data} = entry, projection) do
     case Map.fetch(projection.attempts, data.runnable_key) do
-      {:ok, %ActionAttempt{status: :completed, result: result} = attempt}
-      when result == data.result ->
-        if matching_claim?(attempt, data) do
-          projection
-        else
-          add_anomaly(projection, entry, :stale_claim)
-        end
-
-      {:ok, %ActionAttempt{status: :completed} = attempt} ->
-        if matching_claim?(attempt, data) do
-          add_anomaly(projection, entry, :conflicting_completion)
-        else
-          add_anomaly(projection, entry, :stale_claim)
-        end
-
       {:ok, %ActionAttempt{} = attempt} ->
-        complete_matching_claim(projection, entry, attempt)
+        complete_attempt(projection, entry, attempt)
 
       :error ->
         add_anomaly(projection, entry, :unknown_runnable_intent)
@@ -124,17 +108,8 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
   defp apply_entry(%Entry{type: :attempt_failed, data: data} = entry, projection) do
     case Map.fetch(projection.attempts, data.runnable_key) do
-      {:ok, %ActionAttempt{status: :claimed} = attempt} ->
-        if matching_claim?(attempt, data) do
-          projection
-          |> fail_attempt(entry, attempt)
-          |> maybe_schedule_retry(attempt, data)
-        else
-          add_anomaly(projection, entry, :stale_claim)
-        end
-
-      {:ok, %ActionAttempt{}} ->
-        add_anomaly(projection, entry, :stale_claim)
+      {:ok, %ActionAttempt{} = attempt} ->
+        fail_matching_attempt(projection, entry, attempt)
 
       :error ->
         add_anomaly(projection, entry, :unknown_runnable_intent)
@@ -144,7 +119,11 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
   defp apply_entry(%Entry{type: :live_wakeup_emitted, data: data} = entry, projection) do
     case Map.fetch(projection.attempts, data.runnable_key) do
       {:ok, %ActionAttempt{} = attempt} ->
-        put_attempt(projection, %ActionAttempt{attempt | wakeup_emitted?: true})
+        if terminal_attempt?(projection, attempt) do
+          add_anomaly(projection, entry, :terminal_run)
+        else
+          put_attempt(projection, %ActionAttempt{attempt | wakeup_emitted?: true})
+        end
 
       :error ->
         add_anomaly(projection, entry, :unknown_runnable_intent)
@@ -153,15 +132,16 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
   defp apply_entry(%Entry{type: :runnable_applied} = entry, projection) do
     case Map.fetch(projection.attempts, entry.data.runnable_key) do
-      {:ok, %ActionAttempt{status: :completed} = attempt} ->
-        put_attempt(projection, %ActionAttempt{attempt | applied?: true})
-
-      {:ok, %ActionAttempt{}} ->
-        add_anomaly(projection, entry, :result_not_completed)
+      {:ok, %ActionAttempt{} = attempt} ->
+        apply_completed_attempt(projection, entry, attempt)
 
       :error ->
         add_anomaly(projection, entry, :unknown_runnable_intent)
     end
+  end
+
+  defp apply_entry(%Entry{type: :run_terminal, data: data}, %__MODULE__{} = projection) do
+    %__MODULE__{projection | terminal_runs: MapSet.put(projection.terminal_runs, data.run_id)}
   end
 
   defp apply_entry(%Entry{}, projection), do: projection
@@ -180,13 +160,44 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     end
   end
 
+  defp claim_attempt(projection, entry, %ActionAttempt{} = attempt) do
+    cond do
+      terminal_attempt?(projection, attempt) ->
+        add_anomaly(projection, entry, :terminal_run)
+
+      attempt.status in [:completed, :failed] ->
+        add_anomaly(projection, entry, :terminal_attempt)
+
+      attempt.status == :claimed and expired_claim?(attempt, entry.data.occurred_at) ->
+        if claim_visible?(attempt, entry.data.occurred_at) do
+          put_claimed_attempt(projection, attempt, entry.data)
+        else
+          add_anomaly(projection, entry, :attempt_not_visible)
+        end
+
+      attempt.status == :claimed ->
+        add_anomaly(projection, entry, :active_claim)
+
+      claim_visible?(attempt, entry.data.occurred_at) ->
+        put_claimed_attempt(projection, attempt, entry.data)
+
+      true ->
+        add_anomaly(projection, entry, :attempt_not_visible)
+    end
+  end
+
   defp update_matching_claim(projection, entry, fun) when is_function(fun, 1) do
     case Map.fetch(projection.attempts, entry.data.runnable_key) do
       {:ok, %ActionAttempt{status: :claimed} = attempt} ->
-        if matching_claim?(attempt, entry.data) do
-          put_attempt(projection, fun.(attempt))
-        else
-          add_anomaly(projection, entry, :stale_claim)
+        cond do
+          terminal_attempt?(projection, attempt) ->
+            add_anomaly(projection, entry, :terminal_run)
+
+          true ->
+            case claim_fence(attempt, entry.data) do
+              :current -> put_attempt(projection, fun.(attempt))
+              {:error, reason} -> add_anomaly(projection, entry, reason)
+            end
         end
 
       {:ok, %ActionAttempt{}} ->
@@ -194,6 +205,30 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
       :error ->
         add_anomaly(projection, entry, :unknown_runnable_intent)
+    end
+  end
+
+  defp complete_attempt(projection, entry, %ActionAttempt{} = attempt) do
+    cond do
+      terminal_attempt?(projection, attempt) ->
+        add_anomaly(projection, entry, :terminal_run)
+
+      attempt.status == :completed and attempt.result == entry.data.result ->
+        if matching_claim?(attempt, entry.data) do
+          projection
+        else
+          add_anomaly(projection, entry, :stale_claim)
+        end
+
+      attempt.status == :completed ->
+        if matching_claim?(attempt, entry.data) do
+          add_anomaly(projection, entry, :conflicting_completion)
+        else
+          add_anomaly(projection, entry, :stale_claim)
+        end
+
+      true ->
+        complete_matching_claim(projection, entry, attempt)
     end
   end
 
@@ -206,6 +241,40 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
           error: nil
       }
     end)
+  end
+
+  defp fail_matching_attempt(projection, entry, %ActionAttempt{} = attempt) do
+    cond do
+      terminal_attempt?(projection, attempt) ->
+        add_anomaly(projection, entry, :terminal_run)
+
+      attempt.status != :claimed ->
+        add_anomaly(projection, entry, :stale_claim)
+
+      true ->
+        case claim_fence(attempt, entry.data) do
+          :current ->
+            projection
+            |> fail_attempt(entry, attempt)
+            |> maybe_schedule_retry(attempt, entry.data)
+
+          {:error, reason} ->
+            add_anomaly(projection, entry, reason)
+        end
+    end
+  end
+
+  defp apply_completed_attempt(projection, entry, %ActionAttempt{} = attempt) do
+    cond do
+      terminal_attempt?(projection, attempt) ->
+        add_anomaly(projection, entry, :terminal_run)
+
+      attempt.status == :completed ->
+        put_attempt(projection, %ActionAttempt{attempt | applied?: true})
+
+      true ->
+        add_anomaly(projection, entry, :result_not_completed)
+    end
   end
 
   defp fail_attempt(projection, entry, %ActionAttempt{} = attempt) do
@@ -277,6 +346,19 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     attempt.claim_id == data.claim_id and attempt.claim_token_hash == data.claim_token_hash
   end
 
+  defp claim_fence(%ActionAttempt{} = attempt, data) do
+    cond do
+      not matching_claim?(attempt, data) ->
+        {:error, :stale_claim}
+
+      expired_claim?(attempt, data.occurred_at) ->
+        {:error, :expired_claim}
+
+      true ->
+        :current
+    end
+  end
+
   defp same_intent?(%ActionAttempt{} = left, %ActionAttempt{} = right) do
     left.run_id == right.run_id and left.idempotency_key == right.idempotency_key and
       left.attempt_number == right.attempt_number and left.step == right.step and
@@ -289,13 +371,29 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
   defp expired_claim?(%ActionAttempt{}, _at), do: false
 
+  defp claim_visible?(
+         %ActionAttempt{visible_at: %DateTime{} = visible_at},
+         %DateTime{} = occurred_at
+       ) do
+    not after?(visible_at, occurred_at)
+  end
+
+  defp terminal_run?(%__MODULE__{terminal_runs: terminal_runs}, run_id) do
+    MapSet.member?(terminal_runs, run_id)
+  end
+
+  defp terminal_attempt?(projection, %ActionAttempt{run_id: run_id}) do
+    terminal_run?(projection, run_id)
+  end
+
   defp add_anomaly(%__MODULE__{} = projection, %Entry{} = entry, reason) do
     anomaly =
       %{
         reason: reason,
-        runnable_key: entry.data.runnable_key,
         entry_type: entry.type
       }
+      |> maybe_put_run_id(Map.get(entry.data, :run_id))
+      |> maybe_put_runnable_key(Map.get(entry.data, :runnable_key))
       |> maybe_put_claim_id(Map.get(entry.data, :claim_id))
       |> maybe_put_claim_token_hash(Map.get(entry.data, :claim_token_hash))
 
@@ -319,6 +417,15 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
   defp maybe_put_claim_id(anomaly, nil), do: anomaly
   defp maybe_put_claim_id(anomaly, claim_id), do: Map.put(anomaly, :claim_id, claim_id)
+
+  defp maybe_put_run_id(anomaly, nil), do: anomaly
+  defp maybe_put_run_id(anomaly, run_id), do: Map.put(anomaly, :run_id, run_id)
+
+  defp maybe_put_runnable_key(anomaly, nil), do: anomaly
+
+  defp maybe_put_runnable_key(anomaly, runnable_key) do
+    Map.put(anomaly, :runnable_key, runnable_key)
+  end
 
   defp maybe_put_claim_token_hash(anomaly, nil), do: anomaly
 

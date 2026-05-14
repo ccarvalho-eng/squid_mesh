@@ -15,6 +15,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
   @owner_id "worker_1"
   @started_at ~U[2026-05-14 00:00:00Z]
   @visible_at ~U[2026-05-14 00:00:10Z]
+  @claimed_at ~U[2026-05-14 00:00:20Z]
   @lease_until ~U[2026-05-14 00:01:00Z]
   @expired_at ~U[2026-05-14 00:02:00Z]
 
@@ -39,6 +40,40 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
     assert run_entry.thread == {:run, @run_id}
     assert dispatch_entry.thread == {:dispatch, "default"}
     assert index_entry.thread == {:run_index, @workflow}
+  end
+
+  test "normalizes thread identifiers for workflow modules and atom queues" do
+    assert {:ok, dispatch_entry} =
+             DispatchProtocol.new_entry(
+               :attempt_scheduled,
+               scheduled_attrs(queue: :squid_mesh)
+             )
+
+    assert {:ok, index_entry} =
+             DispatchProtocol.new_entry(:run_indexed, %{
+               run_id: @run_id,
+               workflow: __MODULE__,
+               occurred_at: @started_at
+             })
+
+    assert dispatch_entry.thread == {:dispatch, "squid_mesh"}
+    assert dispatch_entry.data.queue == "squid_mesh"
+    assert index_entry.thread == {:run_index, Atom.to_string(__MODULE__)}
+    assert index_entry.data.workflow == Atom.to_string(__MODULE__)
+  end
+
+  test "rejects required fields with nil values" do
+    assert {:error, {:missing_fields, [:visible_at]}} =
+             DispatchProtocol.new_entry(
+               :attempt_scheduled,
+               scheduled_attrs(visible_at: nil)
+             )
+
+    assert {:error, {:missing_fields, [:lease_until]}} =
+             DispatchProtocol.new_entry(
+               :attempt_claimed,
+               claimed_attrs(lease_until: nil)
+             )
   end
 
   test "does not treat a live wakeup as successful before runnable intent exists" do
@@ -127,6 +162,54 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
              Projection.expired_claims(projection, @expired_at)
   end
 
+  test "terminal run entries fence remaining visible work and later claims" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:run_terminal, %{
+          run_id: @run_id,
+          status: :cancelled,
+          occurred_at: @expired_at
+        }),
+        entry!(:attempt_claimed, claimed_attrs(occurred_at: @expired_at))
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.visible_attempts(projection, @expired_at) == []
+    assert Projection.expired_claims(projection, @expired_at) == []
+
+    assert [
+             %{
+               reason: :terminal_run,
+               runnable_key: @runnable_key,
+               run_id: @run_id,
+               entry_type: :attempt_claimed
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "claims cannot be accepted before the attempt is visible" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs(occurred_at: @started_at))
+      ]
+      |> Projection.rebuild()
+
+    assert [%{runnable_key: @runnable_key, status: :available}] =
+             Projection.visible_attempts(projection, @visible_at)
+
+    assert [
+             %{
+               reason: :attempt_not_visible,
+               runnable_key: @runnable_key,
+               claim_id: @claim_id,
+               entry_type: :attempt_claimed
+             }
+           ] = Projection.anomalies(projection)
+  end
+
   test "claim takeover is allowed only after the current lease expires" do
     projection =
       [
@@ -204,6 +287,50 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
                claim_token_hash: @stale_claim_token_hash,
                entry_type: :attempt_heartbeat
              }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "expired claim owners cannot heartbeat complete fail or schedule retries" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:attempt_heartbeat, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          lease_until: ~U[2026-05-14 00:10:00Z],
+          occurred_at: @expired_at
+        }),
+        entry!(:attempt_completed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          result: %{"ok" => true},
+          occurred_at: @expired_at
+        }),
+        entry!(:attempt_failed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          error: %{"reason" => "gateway_timeout"},
+          retry_runnable_key: @retry_key,
+          retry_visible_at: @expired_at,
+          occurred_at: @expired_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.completed_results(projection) == []
+    assert Projection.visible_attempts(projection, @expired_at) == []
+
+    assert [
+             %{reason: :expired_claim, entry_type: :attempt_heartbeat},
+             %{reason: :expired_claim, entry_type: :attempt_completed},
+             %{reason: :expired_claim, entry_type: :attempt_failed}
            ] = Projection.anomalies(projection)
   end
 
@@ -435,17 +562,20 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
            ] = Projection.anomalies(projection)
   end
 
-  defp scheduled_attrs do
-    %{
-      run_id: @run_id,
-      runnable_key: @runnable_key,
-      idempotency_key: @idempotency_key,
-      attempt_number: 1,
-      step: "charge_card",
-      input: %{"payment_id" => "pay_123"},
-      visible_at: @visible_at,
-      occurred_at: @started_at
-    }
+  defp scheduled_attrs(attrs \\ %{}) do
+    Map.merge(
+      %{
+        run_id: @run_id,
+        runnable_key: @runnable_key,
+        idempotency_key: @idempotency_key,
+        attempt_number: 1,
+        step: "charge_card",
+        input: %{"payment_id" => "pay_123"},
+        visible_at: @visible_at,
+        occurred_at: @started_at
+      },
+      Map.new(attrs)
+    )
   end
 
   defp claimed_attrs(attrs \\ %{}) do
@@ -457,7 +587,7 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
         claim_token_hash: @claim_token_hash,
         owner_id: @owner_id,
         lease_until: @lease_until,
-        occurred_at: @started_at
+        occurred_at: @claimed_at
       },
       Map.new(attrs)
     )

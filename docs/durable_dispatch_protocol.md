@@ -56,7 +56,9 @@ claim token, but durable entries record only its hash. A heartbeat extends
 claims are ignored by the projection and surfaced as anomalies. Expired claims
 remain discoverable so a dispatch agent can redeliver work without relying on
 in-memory state. A replacement claim is valid only after the prior lease has
-expired; active claim takeover is an anomaly.
+expired; active claim takeover is an anomaly. Claims are valid only after the
+attempt's `visible_at`, and heartbeat, completion, and failure facts are valid
+only before the current lease expires.
 
 IntentLedger is the intended future integration point for heartbeat execution
 and lease management once its durable Ecto/Postgres path is stable. Until then,
@@ -70,3 +72,10 @@ Conflicting or stale completions are ignored and reported as anomalies. Retry
 scheduling is a durable fact with its own `visible_at`, so retry visibility
 survives restart. A runnable result can be applied to the run thread only after
 the matching completion is durable.
+
+## Terminal Runs
+
+A `run_terminal` entry fences remaining dispatch work for the run. Rebuilt
+projections exclude terminal-run attempts from visible and expired-claim
+redelivery views, and later wakeup, claim, completion, failure, or apply entries
+for that run are surfaced as anomalies.
