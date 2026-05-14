@@ -8,9 +8,6 @@
     <a href="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml">
       <img alt="CI" src="https://github.com/ccarvalho-eng/squid_mesh/actions/workflows/ci.yml/badge.svg" />
     </a>
-    <a href="https://coderabbit.ai">
-      <img alt="CodeRabbit Reviews" src="https://img.shields.io/coderabbit/prs/github/ccarvalho-eng/squid%5Fmesh?utm_source=oss&amp;utm_medium=github&amp;utm_campaign=ccarvalho-eng%2Fsquid_mesh&amp;labelColor=171717&amp;color=FF570A&amp;label=CodeRabbit" />
-    </a>
     <a href="https://hex.pm/packages/squid_mesh">
       <img alt="Hex" src="https://img.shields.io/hexpm/v/squid_mesh" />
     </a>
