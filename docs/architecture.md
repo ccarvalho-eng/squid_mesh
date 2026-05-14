@@ -29,6 +29,12 @@ inside a host application's supervision tree and infrastructure.
 
 - turns workflow execution intent into calls to the configured host executor
 
+`SquidMesh.Runtime.DispatchProtocol`
+
+- defines append-only run, dispatch, and run-index journal entries for the
+  Jido-native runtime path; its claim and heartbeat vocabulary is compatible
+  with IntentLedger-backed dispatch adapters
+
 `SquidMesh.Executor`
 
 - host-implemented behaviour for enqueueing step, compensation, and cron work
@@ -108,6 +114,7 @@ Current non-goals:
 ## Recommended Reading
 
 - [Workflow authoring guide](workflow_authoring.md)
+- [Durable dispatch protocol](durable_dispatch_protocol.md)
 - [Host app integration](host_app_integration.md)
 - [Tool adapters](tool_adapters.md)
 - [Observability](observability.md)

@@ -1,0 +1,470 @@
+defmodule SquidMesh.Runtime.DispatchProtocolTest do
+  use ExUnit.Case, async: true
+
+  alias SquidMesh.Runtime.DispatchProtocol
+  alias SquidMesh.Runtime.DispatchProtocol.Projection
+
+  @run_id "run_123"
+  @workflow "BillingWorkflow"
+  @runnable_key "run_123:charge_card:1"
+  @retry_key "run_123:charge_card:2"
+  @idempotency_key "run_123:charge_card:payment_456"
+  @claim_id "claim_1"
+  @claim_token_hash "token_hash_1"
+  @stale_claim_token_hash "token_hash_stale"
+  @owner_id "worker_1"
+  @started_at ~U[2026-05-14 00:00:00Z]
+  @visible_at ~U[2026-05-14 00:00:10Z]
+  @lease_until ~U[2026-05-14 00:01:00Z]
+  @expired_at ~U[2026-05-14 00:02:00Z]
+
+  test "classifies run, dispatch, and run index thread entries" do
+    assert {:ok, run_entry} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, dispatch_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, index_entry} =
+             DispatchProtocol.new_entry(:run_indexed, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert run_entry.thread == {:run, @run_id}
+    assert dispatch_entry.thread == {:dispatch, "default"}
+    assert index_entry.thread == {:run_index, @workflow}
+  end
+
+  test "does not treat a live wakeup as successful before runnable intent exists" do
+    projection =
+      [
+        entry!(:live_wakeup_emitted, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          occurred_at: @started_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.visible_attempts(projection, @visible_at) == []
+
+    assert [
+             %{
+               reason: :unknown_runnable_intent,
+               runnable_key: @runnable_key,
+               entry_type: :live_wakeup_emitted
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "rebuilds visible runnable intent after restart" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs())
+      ]
+      |> Projection.rebuild()
+
+    assert [%{runnable_key: @runnable_key, status: :available}] =
+             Projection.visible_attempts(projection, @visible_at)
+  end
+
+  test "duplicate runnable intent is idempotent when the scheduled fields match" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_scheduled, scheduled_attrs())
+      ]
+      |> Projection.rebuild()
+
+    assert [%{runnable_key: @runnable_key}] = Projection.visible_attempts(projection, @visible_at)
+    assert Projection.anomalies(projection) == []
+  end
+
+  test "conflicting runnable intent for the same key is reported" do
+    conflicting_attrs =
+      scheduled_attrs()
+      |> Map.put(:idempotency_key, "different-idempotency-key")
+      |> Map.put(:input, %{"payment_id" => "pay_999"})
+
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_scheduled, conflicting_attrs)
+      ]
+      |> Projection.rebuild()
+
+    assert [%{runnable_key: @runnable_key, idempotency_key: @idempotency_key}] =
+             Projection.visible_attempts(projection, @visible_at)
+
+    assert [
+             %{
+               reason: :conflicting_runnable_intent,
+               runnable_key: @runnable_key,
+               idempotency_key: "different-idempotency-key",
+               entry_type: :attempt_scheduled
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "current leases hide attempts from redelivery and expired leases are recoverable" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs())
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.visible_attempts(projection, @visible_at) == []
+    assert Projection.expired_claims(projection, @visible_at) == []
+
+    assert [%{runnable_key: @runnable_key, claim_id: @claim_id, owner_id: @owner_id}] =
+             Projection.expired_claims(projection, @expired_at)
+  end
+
+  test "claim takeover is allowed only after the current lease expires" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(
+          :attempt_claimed,
+          claimed_attrs(
+            claim_id: "claim_2",
+            claim_token_hash: "token_hash_2",
+            owner_id: "worker_2",
+            lease_until: ~U[2026-05-14 00:03:00Z]
+          )
+        ),
+        entry!(
+          :attempt_claimed,
+          claimed_attrs(
+            claim_id: "claim_3",
+            claim_token_hash: "token_hash_3",
+            owner_id: "worker_3",
+            lease_until: ~U[2026-05-14 00:04:00Z],
+            occurred_at: @expired_at
+          )
+        )
+      ]
+      |> Projection.rebuild()
+
+    assert [%{claim_id: "claim_3", claim_token_hash: "token_hash_3", owner_id: "worker_3"}] =
+             Projection.expired_claims(projection, ~U[2026-05-14 00:05:00Z])
+
+    assert [
+             %{
+               reason: :active_claim,
+               runnable_key: @runnable_key,
+               claim_id: "claim_2",
+               claim_token_hash: "token_hash_2",
+               entry_type: :attempt_claimed
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "heartbeats extend only the current claim lease" do
+    extended_lease = ~U[2026-05-14 00:05:00Z]
+
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:attempt_heartbeat, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @stale_claim_token_hash,
+          lease_until: ~U[2026-05-14 00:10:00Z],
+          occurred_at: @started_at
+        }),
+        entry!(:attempt_heartbeat, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          lease_until: extended_lease,
+          occurred_at: @started_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.expired_claims(projection, @expired_at) == []
+
+    assert [
+             %{
+               reason: :stale_claim,
+               runnable_key: @runnable_key,
+               claim_id: @claim_id,
+               claim_token_hash: @stale_claim_token_hash,
+               entry_type: :attempt_heartbeat
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "duplicate completions are idempotent for the same claim and result" do
+    completed = %{
+      "status" => "charged",
+      "payment_id" => "pay_123"
+    }
+
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:attempt_completed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          result: completed,
+          occurred_at: @started_at
+        }),
+        entry!(:attempt_completed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          result: completed,
+          occurred_at: @started_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert [%{runnable_key: @runnable_key, result: ^completed}] =
+             Projection.completed_results(projection)
+
+    assert Projection.anomalies(projection) == []
+  end
+
+  test "completion appended without a live wakeup remains recoverable after restart" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:attempt_completed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          result: %{"ok" => true},
+          occurred_at: @started_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert [%{runnable_key: @runnable_key}] = Projection.results_ready_to_apply(projection)
+  end
+
+  test "applied completed results are removed from the apply projection" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:attempt_completed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          result: %{"ok" => true},
+          occurred_at: @started_at
+        }),
+        entry!(:runnable_applied, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          occurred_at: @expired_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.results_ready_to_apply(projection) == []
+
+    assert [%{runnable_key: @runnable_key, applied?: true}] =
+             Projection.completed_results(projection)
+  end
+
+  test "runnable apply entries cannot precede completion" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:runnable_applied, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          occurred_at: @started_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.results_ready_to_apply(projection) == []
+
+    assert [
+             %{
+               reason: :result_not_completed,
+               runnable_key: @runnable_key,
+               entry_type: :runnable_applied
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "stale completion is fenced out by claim token hash" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:attempt_completed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @stale_claim_token_hash,
+          result: %{"ok" => true},
+          occurred_at: @started_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.completed_results(projection) == []
+
+    assert [
+             %{
+               reason: :stale_claim,
+               runnable_key: @runnable_key,
+               claim_id: @claim_id,
+               claim_token_hash: @stale_claim_token_hash,
+               entry_type: :attempt_completed
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "claim entries cannot reopen completed attempts" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:attempt_completed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          result: %{"ok" => true},
+          occurred_at: @started_at
+        }),
+        entry!(:attempt_claimed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: "claim_2",
+          claim_token_hash: "token_hash_2",
+          owner_id: "worker_2",
+          lease_until: @expired_at,
+          occurred_at: @started_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert [%{runnable_key: @runnable_key, status: :completed}] =
+             Projection.completed_results(projection)
+
+    assert Projection.expired_claims(projection, @expired_at) == []
+
+    assert [
+             %{
+               reason: :terminal_attempt,
+               runnable_key: @runnable_key,
+               claim_id: "claim_2",
+               entry_type: :attempt_claimed
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  test "retry scheduling survives projection rebuild" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:attempt_failed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @claim_token_hash,
+          error: %{"reason" => "gateway_timeout"},
+          retry_runnable_key: @retry_key,
+          retry_visible_at: @expired_at,
+          occurred_at: @started_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.visible_attempts(projection, @visible_at) == []
+
+    assert [%{runnable_key: @retry_key, status: :retry_scheduled, visible_at: @expired_at}] =
+             Projection.visible_attempts(projection, @expired_at)
+  end
+
+  test "stale failures cannot schedule retry attempts" do
+    projection =
+      [
+        entry!(:attempt_scheduled, scheduled_attrs()),
+        entry!(:attempt_claimed, claimed_attrs()),
+        entry!(:attempt_failed, %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          claim_id: @claim_id,
+          claim_token_hash: @stale_claim_token_hash,
+          error: %{"reason" => "gateway_timeout"},
+          retry_runnable_key: @retry_key,
+          retry_visible_at: @expired_at,
+          occurred_at: @started_at
+        })
+      ]
+      |> Projection.rebuild()
+
+    assert Projection.visible_attempts(projection, @expired_at) == []
+
+    assert [
+             %{
+               reason: :stale_claim,
+               runnable_key: @runnable_key,
+               claim_id: @claim_id,
+               claim_token_hash: @stale_claim_token_hash,
+               entry_type: :attempt_failed
+             }
+           ] = Projection.anomalies(projection)
+  end
+
+  defp scheduled_attrs do
+    %{
+      run_id: @run_id,
+      runnable_key: @runnable_key,
+      idempotency_key: @idempotency_key,
+      attempt_number: 1,
+      step: "charge_card",
+      input: %{"payment_id" => "pay_123"},
+      visible_at: @visible_at,
+      occurred_at: @started_at
+    }
+  end
+
+  defp claimed_attrs(attrs \\ %{}) do
+    Map.merge(
+      %{
+        run_id: @run_id,
+        runnable_key: @runnable_key,
+        claim_id: @claim_id,
+        claim_token_hash: @claim_token_hash,
+        owner_id: @owner_id,
+        lease_until: @lease_until,
+        occurred_at: @started_at
+      },
+      Map.new(attrs)
+    )
+  end
+
+  defp entry!(type, attrs) do
+    assert {:ok, entry} = DispatchProtocol.new_entry(type, attrs)
+    entry
+  end
+end

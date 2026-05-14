@@ -28,6 +28,8 @@ reference material.
 
 - [Architecture](architecture.md) for runtime responsibilities and execution
   flow
+- [Durable dispatch protocol](durable_dispatch_protocol.md) for the Jido-native
+  dispatch journal contract
 - [Tool adapters](tool_adapters.md) for integration boundaries
 
 ## Examples
