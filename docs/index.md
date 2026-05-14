@@ -9,6 +9,8 @@ reference material.
   host-app contract
 - [Workflow authoring](workflow_authoring.md) for the workflow DSL, payloads,
   steps, transitions, and cron triggers
+- [Positioning](positioning.md) for Squid Mesh's product lane relative to Jido,
+  Runic, Reactor, Sage, and FlowStone
 - [Compatibility matrix](compatibility.md) for the supported baseline
 
 ## Example Workflow Shapes
@@ -28,6 +30,8 @@ reference material.
 
 - [Architecture](architecture.md) for runtime responsibilities and execution
   flow
+- [Positioning](positioning.md) for supported, planned, and out-of-scope
+  workflow capabilities
 - [Durable dispatch protocol](durable_dispatch_protocol.md) for the Jido-native
   dispatch journal contract
 - [Tool adapters](tool_adapters.md) for integration boundaries
