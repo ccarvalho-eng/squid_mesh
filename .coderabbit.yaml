@@ -1,0 +1,193 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+---
+language: "en-US"
+tone_instructions: >-
+  Be direct and evidence-driven. Prioritize correctness, data loss, security,
+  concurrency, and public API compatibility over style.
+early_access: false
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  review_details: true
+  commit_status: true
+  fail_commit_status: true
+  collapse_walkthrough: false
+  changed_files_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: true
+  in_progress_fortune: false
+  enable_prompt_for_ai_agents: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    drafts: true
+  slop_detection:
+    enabled: true
+  path_filters:
+    - "!deps/**"
+    - "!_build/**"
+    - "!examples/minimal_host_app/deps/**"
+    - "!examples/minimal_host_app/_build/**"
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Review Squid Mesh as an embeddable Elixir workflow/runtime library. Prioritize
+        blocking findings for behavior regressions, broken public contracts, invalid
+        persisted data handling, duplicate delivery, stale definitions, race conditions,
+        missing rollback behavior, swallowed errors, unsafe atom creation, secrets, and
+        dependency changes that can break host applications.
+
+        Treat style-only comments as optional unless they hide a correctness, security,
+        maintainability, or reviewability problem. Prefer concrete reproduction paths and
+        point to the exact invariant being violated.
+    - path: "lib/**/*.ex"
+      instructions: |
+        Focus on workflow correctness, durable runtime semantics, public API boundaries,
+        error handling, and input/output mapping behavior. For runtime, persistence,
+        retry, pause/resume, cancellation, or planner changes, check replay safety,
+        duplicate delivery behavior, terminal-state handling, and restart implications.
+        Verify side effects stay at boundaries and that domain logic does not leak into
+        delivery adapters.
+    - path: "lib/squid_mesh/runtime/**/*.ex"
+      instructions: |
+        Review process, retry, dependency dispatch, pause/resume, cancellation, and
+        terminal-state transitions aggressively. Flag unlocked read-before-write races,
+        non-idempotent replay paths, missing audit or telemetry terminal symmetry, and
+        ordering bugs between step completion, run completion, and successor dispatch.
+    - path: "lib/squid_mesh/workflow/**/*.ex"
+      instructions: |
+        Check DSL and planner changes for deterministic compilation, serializable workflow
+        specs, stale or incompatible workflow definitions, dependency graph correctness,
+        branch/join semantics, and input/output mapping behavior. Internal planner changes
+        should not accidentally surface as public API unless documented and tested.
+    - path: "test/**/*.exs"
+      instructions: |
+        Check that tests exercise behavior rather than implementation details and cover
+        meaningful failure modes, especially stale definitions, invalid input, retries,
+        cancellation, manual intervention, and dependency/branching behavior.
+        For runtime or planner changes, expect regression coverage for at least one
+        failure path, not only a happy path.
+    - path: "examples/**"
+      instructions: |
+        Treat examples as executable integration documentation. Verify they continue to
+        use public Squid Mesh APIs and remain aligned with README and docs guidance.
+    - path: "docs/**/*.md"
+      instructions: |
+        Check documentation for accuracy, stale API references, and consistency with the
+        current public DSL and runtime behavior.
+    - path: "mix.exs"
+      instructions: |
+        Review dependency and release-impact changes carefully. Flag unexpected runtime
+        dependencies, lockfile churn, or version constraints that could break host apps.
+    - path: "mix.lock"
+      instructions: |
+        Review dependency and release-impact changes carefully. Flag unexpected runtime
+        dependencies, lockfile churn, or version constraints that could break host apps.
+    - path: "examples/**/mix.exs"
+      instructions: |
+        Review dependency and release-impact changes carefully. Flag unexpected runtime
+        dependencies, lockfile churn, or version constraints that could break host apps.
+    - path: "examples/**/mix.lock"
+      instructions: |
+        Review dependency and release-impact changes carefully. Flag unexpected runtime
+        dependencies, lockfile churn, or version constraints that could break host apps.
+  pre_merge_checks:
+    docstrings:
+      mode: "warning"
+      threshold: 65
+    title:
+      mode: "warning"
+      requirements: "Use a concise conventional-commit style title without local machine details."
+    description:
+      mode: "warning"
+    issue_assessment:
+      mode: "warning"
+    custom_checks:
+      - mode: "warning"
+        name: "Runtime durability"
+        instructions: |
+          If the PR changes workflow planning, runtime execution, stores, retries,
+          cancellation, pause/resume, dependency dispatch, telemetry, or audit history,
+          verify that the diff includes tests or executable smoke coverage for terminal
+          behavior, replay or retry behavior, duplicate delivery, stale inputs, and
+          successor-step ordering.
+      - mode: "warning"
+        name: "Public API compatibility"
+        instructions: |
+          If the PR changes public modules, macros, examples, docs, dependency versions,
+          or serialized workflow data, verify that compatibility impact is explicit and
+          that docs, examples, and tests are updated together.
+      - mode: "warning"
+        name: "Host app safety"
+        instructions: |
+          For changes to mix.exs, mix.lock, runtime dependencies, supervision, process
+          names, configuration, or application startup, verify the change is safe for
+          libraries embedded in host applications and does not assume app ownership.
+  tools:
+    ast-grep:
+      essential_rules: true
+    github-checks:
+      enabled: true
+      timeout_ms: 180000
+    markdownlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    osvScanner:
+      enabled: true
+    languagetool:
+      enabled: true
+      level: "default"
+    presidio:
+      enabled: true
+
+chat:
+  art: false
+  auto_reply: true
+
+knowledge_base:
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - ".github/copilot-instructions.md"
+      - ".github/instructions/*.md"
+  learnings:
+    scope: "local"
+  issues:
+    scope: "local"
+  pull_requests:
+    scope: "local"
+
+code_generation:
+  docstrings:
+    language: "en-US"
+    path_instructions:
+      - path: "lib/**/*.ex"
+        instructions: |
+          Generate concise moduledocs and docs that explain intent, public contracts, and
+          failure behavior. Do not restate obvious implementation details.
+  unit_tests:
+    path_instructions:
+      - path: "test/**/*.exs"
+        instructions: |
+          Generate behavior-focused ExUnit tests with one reason to fail per test. Include
+          regression coverage for error paths, stale data, retries, dependency ordering,
+          and public API compatibility when those behaviors are touched.
