@@ -33,7 +33,8 @@ inside a host application's supervision tree and infrastructure.
 
 - defines append-only run, dispatch, and run-index journal entries for the
   Jido-native runtime path; its claim and heartbeat vocabulary is compatible
-  with IntentLedger-backed dispatch adapters
+  with IntentLedger-backed dispatch adapters and refers only to durable
+  dispatch fencing metadata, not host-backend worker lifecycle management
 
 `SquidMesh.Executor`
 
@@ -107,7 +108,9 @@ Current guarantees:
 
 Current non-goals:
 
-- custom heartbeats or leases beyond the host backend's own lifecycle
+- custom worker-lifecycle heartbeats or lease managers beyond the host
+  backend's own lifecycle; durable dispatch-protocol claim and lease fencing is
+  separate metadata for replay and stale-owner rejection
 - automatic reclamation of a step that died mid-side-effect
 - exactly-once external side effects without idempotent step implementations
 

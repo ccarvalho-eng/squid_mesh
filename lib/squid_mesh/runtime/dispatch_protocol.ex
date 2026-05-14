@@ -55,6 +55,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
       :runnable_key,
       :idempotency_key,
       :attempt_number,
+      :queue,
       :step,
       :input,
       :visible_at,
@@ -66,6 +67,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
       :claim_id,
       :claim_token_hash,
       :owner_id,
+      :queue,
       :lease_until,
       :occurred_at
     ],
@@ -74,6 +76,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
       :runnable_key,
       :claim_id,
       :claim_token_hash,
+      :queue,
       :lease_until,
       :occurred_at
     ],
@@ -82,6 +85,7 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
       :runnable_key,
       :claim_id,
       :claim_token_hash,
+      :queue,
       :result,
       :occurred_at
     ],
@@ -90,10 +94,11 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
       :runnable_key,
       :claim_id,
       :claim_token_hash,
+      :queue,
       :error,
       :occurred_at
     ],
-    live_wakeup_emitted: [:run_id, :runnable_key, :occurred_at]
+    live_wakeup_emitted: [:run_id, :runnable_key, :queue, :occurred_at]
   }
 
   @entry_types @run_entry_types ++ @dispatch_entry_types ++ @run_index_entry_types
@@ -150,12 +155,14 @@ defmodule SquidMesh.Runtime.DispatchProtocol do
     {:dispatch, attrs.queue}
   end
 
+  defp normalize_workflow(nil), do: nil
+
   defp normalize_workflow(workflow) when is_atom(workflow),
     do: WorkflowDefinition.serialize_workflow(workflow)
 
   defp normalize_workflow(workflow), do: normalize_thread_id(workflow)
 
-  defp normalize_queue(nil), do: "default"
+  defp normalize_queue(nil), do: nil
   defp normalize_queue(queue), do: normalize_thread_id(queue)
 
   defp normalize_thread_id(id) when is_binary(id), do: id

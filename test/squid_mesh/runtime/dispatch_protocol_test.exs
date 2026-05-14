@@ -74,6 +74,19 @@ defmodule SquidMesh.Runtime.DispatchProtocolTest do
                :attempt_claimed,
                claimed_attrs(lease_until: nil)
              )
+
+    assert {:error, {:missing_fields, [:queue]}} =
+             DispatchProtocol.new_entry(
+               :attempt_scheduled,
+               scheduled_attrs(queue: nil)
+             )
+
+    assert {:error, {:missing_fields, [:workflow]}} =
+             DispatchProtocol.new_entry(:run_indexed, %{
+               run_id: @run_id,
+               workflow: nil,
+               occurred_at: @started_at
+             })
   end
 
   test "does not treat a live wakeup as successful before runnable intent exists" do
