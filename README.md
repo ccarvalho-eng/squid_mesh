@@ -397,6 +397,7 @@ Use the docs index for setup, workflow authoring, operations, and architecture:
 - [Docs index](docs/index.md)
 - [Host app integration](docs/host_app_integration.md)
 - [Workflow authoring guide](docs/workflow_authoring.md)
+- [Positioning guide](docs/positioning.md)
 - [Example host app](https://github.com/ccarvalho-eng/squid_mesh/tree/main/examples/minimal_host_app)
 
 ## Contributing

@@ -116,6 +116,7 @@ Current non-goals:
 
 ## Recommended Reading
 
+- [Positioning](positioning.md)
 - [Workflow authoring guide](workflow_authoring.md)
 - [Durable dispatch protocol](durable_dispatch_protocol.md)
 - [Host app integration](host_app_integration.md)
