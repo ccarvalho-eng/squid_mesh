@@ -3,10 +3,61 @@ defmodule SquidMesh.Workflow.Info do
   Read helpers for compiled Squid Mesh workflow Spark metadata.
 
   The runtime still exposes `workflow_definition/0` for durable execution, while
-  this module gives tests and tooling direct access to the Spark step entities
-  produced by the workflow DSL.
+  this module gives tests, tooling, and planner adapters direct access to the
+  normalized workflow specification produced by the workflow DSL.
   """
 
+  alias SquidMesh.Workflow.Definition
+  alias SquidMesh.Workflow.Spec
+
+  @doc """
+  Returns the normalized, serializable workflow spec.
+  """
+  @spec spec(module()) :: Spec.t()
+  def spec(workflow) when is_atom(workflow) do
+    case fetch_spec(workflow) do
+      {:ok, spec} -> spec
+      {:error, reason} -> raise ArgumentError, "invalid Squid Mesh workflow: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Fetches the normalized workflow spec.
+  """
+  @spec fetch_spec(module()) :: {:ok, Spec.t()} | {:error, Definition.load_error()}
+  def fetch_spec(workflow) when is_atom(workflow) do
+    with {:ok, definition} <- Definition.load(workflow) do
+      {:ok, Spec.from_definition(workflow, definition)}
+    end
+  end
+
+  @doc """
+  Returns normalized workflow triggers.
+  """
+  @spec triggers(module()) :: [Definition.trigger()]
+  def triggers(workflow) when is_atom(workflow), do: spec(workflow).triggers
+
+  @doc """
+  Returns the merged workflow payload contract.
+  """
+  @spec payload(module()) :: [Definition.payload_field()]
+  def payload(workflow) when is_atom(workflow), do: spec(workflow).payload
+
+  @doc """
+  Returns normalized workflow transitions.
+  """
+  @spec transitions(module()) :: [Definition.transition()]
+  def transitions(workflow) when is_atom(workflow), do: spec(workflow).transitions
+
+  @doc """
+  Returns normalized retry policies.
+  """
+  @spec retries(module()) :: [Definition.retry()]
+  def retries(workflow) when is_atom(workflow), do: spec(workflow).retries
+
+  @doc """
+  Returns Spark step entities with runtime-resolved native step metadata.
+  """
   @spec steps(module()) :: [SquidMesh.Workflow.StepSpec.t()]
   def steps(workflow) when is_atom(workflow) do
     workflow
