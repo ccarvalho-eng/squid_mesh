@@ -184,10 +184,47 @@ defmodule SquidMesh.RunExplanationTest do
       assert explanation.reason == :waiting_for_dependencies
       assert explanation.step == :send_email
       assert explanation.details.waiting_on == [:load_invoice]
+
+      assert explanation.details.dependency_statuses == %{
+               load_account: :completed,
+               load_invoice: :pending
+             }
+
       assert explanation.next_actions == [:wait_for_dependencies, :cancel_run]
 
       assert %{steps: [%{step: :load_account}, %{step: :load_invoice}, %{step: :send_email}]} =
                explanation.evidence
+    end
+
+    test "explains dependency joins scheduled after prerequisites complete" do
+      assert {:ok, run} =
+               SquidMesh.start_run(DependencyWorkflow, %{account_id: "acct_123"}, repo: Repo)
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_account"}
+               })
+
+      assert :ok =
+               StepWorker.perform(%Job{
+                 args: %{"run_id" => run.id, "step" => "load_invoice"}
+               })
+
+      assert {:ok, explanation} = SquidMesh.explain_run(run.id, repo: Repo)
+
+      assert explanation.status == :running
+      assert explanation.reason == :step_scheduled
+      assert explanation.step == :send_email
+      assert explanation.details.satisfied_dependencies == [:load_account, :load_invoice]
+      assert explanation.next_actions == [:wait_for_step, :cancel_run]
+
+      assert %{
+               steps: [
+                 %{step: :load_account, status: :completed},
+                 %{step: :load_invoice, status: :completed},
+                 %{step: :send_email, status: :pending}
+               ]
+             } = explanation.evidence
     end
 
     test "explains running, cancelling, cancelled, and completed states" do

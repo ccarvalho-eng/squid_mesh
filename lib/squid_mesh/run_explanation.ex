@@ -149,6 +149,9 @@ defmodule SquidMesh.RunExplanation do
       dependency_wait?(run) ->
         explain_dependency_wait(run)
 
+      dependency_join_scheduled?(run) ->
+        explain_dependency_join_scheduled(run)
+
       current_step_running?(run) ->
         explain_running_step(config, run)
 
@@ -303,7 +306,11 @@ defmodule SquidMesh.RunExplanation do
       waiting_step.depends_on
       |> Enum.filter(&dependency_incomplete?(run, &1))
 
-    details = %{waiting_on: waiting_on}
+    details = %{
+      waiting_on: waiting_on,
+      dependency_statuses: dependency_statuses(run, waiting_step.depends_on)
+    }
+
     evidence = Map.put(base_evidence(run), :steps, Enum.map(run.steps, &step_state_evidence/1))
 
     explanation(
@@ -312,6 +319,22 @@ defmodule SquidMesh.RunExplanation do
       waiting_step.step,
       details,
       [:wait_for_dependencies, :cancel_run],
+      evidence
+    )
+  end
+
+  defp explain_dependency_join_scheduled(%Run{} = run) do
+    scheduled_step = scheduled_dependency_join(run)
+
+    details = %{satisfied_dependencies: scheduled_step.depends_on}
+    evidence = Map.put(base_evidence(run), :steps, Enum.map(run.steps, &step_state_evidence/1))
+
+    explanation(
+      run,
+      :step_scheduled,
+      scheduled_step.step,
+      details,
+      [:wait_for_step, :cancel_run],
       evidence
     )
   end
@@ -349,6 +372,22 @@ defmodule SquidMesh.RunExplanation do
 
   defp dependency_wait?(_run), do: false
 
+  defp dependency_join_scheduled?(%Run{} = run), do: not is_nil(scheduled_dependency_join(run))
+
+  defp dependency_join_scheduled?(_run), do: false
+
+  defp scheduled_dependency_join(%Run{steps: steps}) when is_list(steps) do
+    Enum.find(steps, fn
+      %RunStepState{status: :pending, depends_on: dependencies} when dependencies != [] ->
+        Enum.all?(dependencies, &(not dependency_incomplete?(steps, &1)))
+
+      _step ->
+        false
+    end)
+  end
+
+  defp scheduled_dependency_join(_run), do: nil
+
   defp dependency_incomplete?(%Run{steps: steps}, dependency),
     do: dependency_incomplete?(steps, dependency)
 
@@ -357,6 +396,19 @@ defmodule SquidMesh.RunExplanation do
       %RunStepState{status: :completed} -> false
       %RunStepState{} -> true
       nil -> true
+    end
+  end
+
+  defp dependency_statuses(%Run{steps: steps}, dependencies) when is_list(dependencies) do
+    Map.new(dependencies, fn dependency ->
+      {dependency, dependency_status(steps, dependency)}
+    end)
+  end
+
+  defp dependency_status(steps, dependency) when is_list(steps) do
+    case Enum.find(steps, &(&1.step == dependency)) do
+      %RunStepState{status: status} -> status
+      nil -> :missing
     end
   end
 

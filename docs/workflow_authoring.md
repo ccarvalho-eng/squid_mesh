@@ -515,6 +515,39 @@ completes successfully. Omit the option entirely for root steps; `after: []` is
 not valid because it changes execution semantics without adding a dependency
 edge. Dependency workflows do not mix with `transition/2` in this slice.
 
+### Fan-Out And Fan-In Contract
+
+Dependency-based workflows model static graph fan-out and fan-in. A root step is
+any declared step without `after: [...]`. Multiple root steps may be scheduled
+as independent runnable work for the same run. A join step is any step with one
+or more dependencies; it becomes runnable only after every declared dependency
+has completed successfully.
+
+Squid Mesh treats Runic-ready work as workflow runnable intent. In the current
+runtime, that intent is represented by scheduled step rows and host-executor
+jobs. In the Jido-native runtime path, the same readiness maps to durable
+dispatch entries before live wakeups are considered successful. Either way, the
+workflow contract is the same: readiness comes from persisted step state, not
+from Oban or any other specific executor's concurrency model.
+
+Sibling behavior:
+
+- sibling root steps may run in either order, or concurrently when the host
+  executor delivers them concurrently
+- a join waits while any dependency is still pending or running
+- a join is not scheduled after a sibling reaches terminal failure
+- a sibling retry keeps the run in retrying state until the retry is delivered
+  and the dependency completes
+- cancellation and terminal run transitions prevent newly unlocked join work
+  from being dispatched
+
+Inspection and explanation reflect this graph state. With history enabled,
+`inspect_run/2` shows declared dependency edges and whether each step is
+pending, running, completed, failed, or waiting. `explain_run/2` reports a
+waiting join with the dependencies it is waiting on and their current statuses;
+once the join is scheduled, the explanation points at the runnable join step
+and lists the dependencies that satisfied it.
+
 Current dependency validation requires:
 
 - every `after:` reference names a declared step
@@ -522,6 +555,8 @@ Current dependency validation requires:
 - workflows may define multiple entry steps when dependency execution is used
 - `after: []` is rejected because it changes execution semantics without adding an edge
 - dependency-based workflows cannot also declare `transition/2`
+- dependency-based workflows cannot declare built-in `:pause` or `:approval`
+  steps; use transition-based workflows for those manual wait points today
 
 Current execution boundary:
 

@@ -23,6 +23,13 @@ projection can still rediscover the visible attempt after restart. Duplicate
 runnable intent entries are idempotent when their scheduled fields match;
 conflicting entries for the same `runnable_key` are anomalies.
 
+For dependency-based workflows, Runic-ready runnables map to durable runnable
+intent. Independent root steps may produce sibling runnable intents for the same
+run, and a join step produces intent only after every dependency result has
+already become durable. The dispatch protocol does not use host-job concurrency
+as the source of truth for fan-out or fan-in readiness; persisted workflow facts
+do.
+
 ## IntentLedger Alignment
 
 Squid Mesh models workflow-specific facts, but its dispatch vocabulary is
