@@ -80,7 +80,7 @@ reviews:
       instructions: |
         Treat examples as executable integration documentation. Verify they continue to
         use public Squid Mesh APIs and remain aligned with README and docs guidance.
-    - path: "docs/**.md"
+    - path: "docs/**/*.md"
       instructions: |
         Check documentation for accuracy, stale API references, and consistency with the
         current public DSL and runtime behavior.
