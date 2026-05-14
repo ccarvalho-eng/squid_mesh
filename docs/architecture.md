@@ -29,6 +29,13 @@ inside a host application's supervision tree and infrastructure.
 
 - turns workflow execution intent into calls to the configured host executor
 
+`SquidMesh.Runtime.DispatchProtocol`
+
+- defines append-only run, dispatch, and run-index journal entries for the
+  Jido-native runtime path; its claim and heartbeat vocabulary is compatible
+  with IntentLedger-backed dispatch adapters and refers only to durable
+  dispatch fencing metadata, not host-backend worker lifecycle management
+
 `SquidMesh.Executor`
 
 - host-implemented behaviour for enqueueing step, compensation, and cron work
@@ -101,13 +108,16 @@ Current guarantees:
 
 Current non-goals:
 
-- custom heartbeats or leases beyond the host backend's own lifecycle
+- custom worker-lifecycle heartbeats or lease managers beyond the host
+  backend's own lifecycle; durable dispatch-protocol claim and lease fencing is
+  separate metadata for replay and stale-owner rejection
 - automatic reclamation of a step that died mid-side-effect
 - exactly-once external side effects without idempotent step implementations
 
 ## Recommended Reading
 
 - [Workflow authoring guide](workflow_authoring.md)
+- [Durable dispatch protocol](durable_dispatch_protocol.md)
 - [Host app integration](host_app_integration.md)
 - [Tool adapters](tool_adapters.md)
 - [Observability](observability.md)

@@ -49,6 +49,7 @@ defmodule SquidMesh.MixProject do
         "docs/index.md",
         "README.md",
         "docs/architecture.md",
+        "docs/durable_dispatch_protocol.md",
         "docs/compatibility.md",
         "docs/tool_adapters.md",
         "docs/observability.md",
