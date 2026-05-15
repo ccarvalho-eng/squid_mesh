@@ -107,8 +107,10 @@ or expired attempt from a rebuilt dispatch-agent projection and appends an
 `attempt_claimed` entry with Jido's optimistic `:expected_rev` fence. Heartbeat,
 completion, and failure appends validate the current claim fence before writing,
 then append the matching lifecycle entry with the same optimistic thread fence.
-On success, each API returns the post-append dispatch-agent projection;
-concurrent stale callers receive `{:error, :conflict}` from the journal append.
+On success, each API returns a lifecycle update map containing the updated
+`:agent`, the lifecycle `:attempt`, and `:lease_until` for heartbeat calls. The
+post-append projection is available at `agent.state.projection`; concurrent
+stale callers receive `{:error, :conflict}` from the journal append.
 
 IntentLedger is the intended future integration point for heartbeat execution
 and lease management once its durable Ecto/Postgres path is stable. Until then,

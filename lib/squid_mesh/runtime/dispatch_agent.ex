@@ -231,21 +231,30 @@ defmodule SquidMesh.Runtime.DispatchAgent do
              is_binary(claim_token) and is_map(result) and is_integer(thread_rev) and
              thread_rev >= 0 and is_list(opts) do
     with {:ok, now} <- lifecycle_now(opts),
-         {:ok, attempt} <- current_claim(projection, runnable_key, claim_id, claim_token, now),
-         :ok <- active_run(storage, attempt.run_id),
-         {:ok, completed_entry} <-
-           DispatchProtocol.new_entry(:attempt_completed, %{
-             run_id: attempt.run_id,
-             runnable_key: attempt.runnable_key,
-             claim_id: claim_id,
-             claim_token_hash: claim_token_hash(claim_token),
-             queue: queue,
-             result: result,
-             occurred_at: now
-           }),
-         {:ok, completed_agent} <-
-           persist_dispatch_entry(storage, agent, projection, thread_rev, completed_entry) do
-      {:ok, %{agent: completed_agent, attempt: claimed_attempt!(completed_agent, runnable_key)}}
+         {:ok, completion_target} <-
+           completion_target(projection, runnable_key, claim_id, claim_token, result, now) do
+      case completion_target do
+        {:completed, %ActionAttempt{} = attempt} ->
+          {:ok, %{agent: agent, attempt: attempt}}
+
+        {:claimed, %ActionAttempt{} = attempt} ->
+          with :ok <- active_run(storage, attempt.run_id),
+               {:ok, completed_entry} <-
+                 DispatchProtocol.new_entry(:attempt_completed, %{
+                   run_id: attempt.run_id,
+                   runnable_key: attempt.runnable_key,
+                   claim_id: claim_id,
+                   claim_token_hash: claim_token_hash(claim_token),
+                   queue: queue,
+                   result: result,
+                   occurred_at: now
+                 }),
+               {:ok, completed_agent} <-
+                 persist_dispatch_entry(storage, agent, projection, thread_rev, completed_entry) do
+            {:ok,
+             %{agent: completed_agent, attempt: claimed_attempt!(completed_agent, runnable_key)}}
+          end
+      end
     end
   end
 
@@ -528,6 +537,42 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     case Map.fetch(projection.attempts, runnable_key) do
       {:ok, %ActionAttempt{status: :claimed} = attempt} ->
         validate_current_claim(attempt, claim_id, claim_token, now)
+
+      {:ok, %ActionAttempt{}} ->
+        {:error, :stale_claim}
+
+      :error ->
+        {:error, :unknown_runnable_intent}
+    end
+  end
+
+  defp completion_target(
+         %Projection{} = projection,
+         runnable_key,
+         claim_id,
+         claim_token,
+         result,
+         %DateTime{} = now
+       ) do
+    case Map.fetch(projection.attempts, runnable_key) do
+      {:ok, %ActionAttempt{status: :claimed} = attempt} ->
+        with {:ok, current_attempt} <- validate_current_claim(attempt, claim_id, claim_token, now) do
+          {:ok, {:claimed, current_attempt}}
+        end
+
+      {:ok, %ActionAttempt{status: :completed, result: ^result} = attempt} ->
+        if matching_claim_token?(attempt, claim_id, claim_token) do
+          {:ok, {:completed, attempt}}
+        else
+          {:error, :stale_claim}
+        end
+
+      {:ok, %ActionAttempt{status: :completed} = attempt} ->
+        if matching_claim_token?(attempt, claim_id, claim_token) do
+          {:error, :conflicting_completion}
+        else
+          {:error, :stale_claim}
+        end
 
       {:ok, %ActionAttempt{}} ->
         {:error, :stale_claim}

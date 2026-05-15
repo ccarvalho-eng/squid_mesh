@@ -356,6 +356,48 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
     refute completed_entry.data.claim_token_hash == claim_token
   end
 
+  test "treats duplicate completion for the same claim and result as idempotent" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: claimed_agent, claim_id: claim_id, claim_token: claim_token}} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    result = %{"status" => "captured"}
+
+    assert {:ok, %{agent: completed_agent, attempt: completed_attempt}} =
+             DispatchAgent.complete(
+               @storage,
+               claimed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               result,
+               now: @claimed_at
+             )
+
+    assert {:ok, %{agent: ^completed_agent, attempt: ^completed_attempt}} =
+             DispatchAgent.complete(
+               @storage,
+               completed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               result,
+               now: @claimed_at
+             )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:dispatch, "default"})
+    assert Enum.count(entries, &(&1.type == :attempt_completed)) == 1
+  end
+
   test "fails the current claim and schedules a retry attempt" do
     assert {:ok, scheduled_entry} =
              DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
@@ -536,6 +578,9 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
                %{"status" => "captured"},
                now: @claimed_at
              )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:dispatch, "default"})
+    refute Enum.any?(entries, &(&1.type == :attempt_completed))
   end
 
   test "replays entries newer than a stale dispatch checkpoint" do
