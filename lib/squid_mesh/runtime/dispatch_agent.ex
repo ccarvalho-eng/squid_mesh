@@ -42,6 +42,19 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   @spec agent_id(queue() | atom()) :: String.t()
   def agent_id(queue), do: "squid_mesh.dispatch.#{normalize_queue(queue)}"
 
+  @spec put_checkpoint(storage_config(), Agent.t(), keyword()) :: :ok | {:error, term()}
+  def put_checkpoint(
+        storage,
+        %Agent{
+          agent_module: __MODULE__,
+          state: %{queue: queue, projection: projection, thread_rev: thread_rev}
+        },
+        opts \\ []
+      )
+      when is_binary(queue) and is_integer(thread_rev) and thread_rev >= 0 and is_list(opts) do
+    Journal.put_checkpoint(storage, {:dispatch, queue}, projection, thread_rev, opts)
+  end
+
   @spec visible_attempts(Agent.t(), DateTime.t()) :: [
           SquidMesh.Runtime.DispatchProtocol.ActionAttempt.t()
         ]
