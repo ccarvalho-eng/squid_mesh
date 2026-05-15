@@ -62,6 +62,12 @@ agent derives planned-but-unscheduled runnables from the run projection, and the
 dispatch agent appends the missing dispatch intents with its current dispatch
 thread revision as the optimistic fence.
 
+`SquidMesh.Runtime.AgentRecovery.recover/4` is the restart coordinator for the
+current Jido-native agent slices. It rebuilds the run's workflow agent and the
+queue's dispatch agent, schedules planned-but-missing dispatch intents first,
+and only then applies completed dispatch results that are still missing from the
+run thread.
+
 For dependency-based workflows, Runic-ready runnables map to durable runnable
 intent. Independent root steps may produce sibling runnable intents for the same
 run, and a join step produces intent only after every dependency result has
@@ -72,13 +78,15 @@ do.
 ## IntentLedger Alignment
 
 Squid Mesh models workflow-specific facts, but its dispatch vocabulary is
-compatible with IntentLedger's durable intent model:
+compatible with IntentLedger's durable intent model and its `bedrock_job_queue`
+runtime boundary:
 
-- `attempt_scheduled` maps to a visible intent.
-- `runnable_key` is the Squid workflow identity for an intent.
+- `attempt_scheduled` maps to an enqueued intent.
+- `runnable_key` maps to the Squid workflow identity carried as an Intent key
+  or lineage field.
 - `step` and `input` map to intent kind and payload.
 - `claim_id`, `claim_token_hash`, `owner_id`, and `lease_until` mirror
-  IntentLedger claim fencing and lease state.
+  the queue lease state behind IntentLedger.
 - `attempt_heartbeat`, `attempt_completed`, and `attempt_failed` require the
   current claim fence.
 
@@ -120,9 +128,9 @@ On success, each API returns a lifecycle update map containing the updated
 post-append projection is available at `agent.state.projection`; concurrent
 stale callers receive `{:error, :conflict}` from the journal append.
 
-IntentLedger is the intended future integration point for heartbeat execution
-and lease management once its durable Ecto/Postgres path is stable. Until then,
-Squid Mesh keeps the protocol dependency-free.
+IntentLedger is the intended future integration point for lease-backed
+execution once its Bedrock and `bedrock_job_queue` recovery contracts settle.
+Until then, Squid Mesh keeps the protocol dependency-free.
 
 ## Completion And Retry
 
