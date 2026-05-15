@@ -359,6 +359,7 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     wrong_run_attempt = completed_attempt(run_id: "run_456")
     unplanned_attempt = completed_attempt(runnable_key: "run_123:stale_step:1")
     claimed_attempt = %{completed_attempt() | status: :claimed}
+    missing_result_attempt = completed_attempt(result: nil)
 
     assert {:error, :wrong_run} =
              WorkflowAgent.apply_result(@storage, workflow_agent, wrong_run_attempt,
@@ -372,6 +373,11 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
 
     assert {:error, :result_not_completed} =
              WorkflowAgent.apply_result(@storage, workflow_agent, claimed_attempt,
+               now: @completed_at
+             )
+
+    assert {:error, :missing_result} =
+             WorkflowAgent.apply_result(@storage, workflow_agent, missing_result_attempt,
                now: @completed_at
              )
 

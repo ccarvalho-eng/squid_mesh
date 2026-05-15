@@ -178,6 +178,9 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
       attempt.status != :completed ->
         {:error, :result_not_completed}
 
+      not is_map(attempt.result) ->
+        {:error, :missing_result}
+
       attempt.run_id != run_id ->
         {:error, :wrong_run}
 
