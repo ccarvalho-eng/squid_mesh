@@ -1,0 +1,89 @@
+defmodule SquidMesh.Runtime.WorkflowAgent do
+  @moduledoc """
+  Jido-native workflow coordination state for one durable workflow run.
+
+  The agent rebuilds from run-thread journal entries and checkpoints. It does
+  not execute workflow steps or mutate the existing runtime tables; it provides
+  the restartable coordination state needed by the Jido-native runtime path.
+  """
+
+  use Jido.Agent,
+    name: "squid_mesh_workflow_agent",
+    description: "Rebuildable workflow coordination state for one Squid Mesh run.",
+    default_plugins: false
+
+  alias Jido.Agent
+  alias SquidMesh.Runtime.DispatchAgent
+  alias SquidMesh.Runtime.WorkflowAgent.Projection
+  alias SquidMesh.Runtime.Journal
+  alias SquidMesh.Runtime.Journal.Checkpoint
+
+  @type run_id :: String.t()
+  @type storage_config :: Journal.storage_config()
+
+  @spec rebuild(storage_config(), run_id()) :: {:ok, Agent.t()} | {:error, term()}
+  def rebuild(storage, run_id) when is_binary(run_id) do
+    with {:ok, loaded_thread} <- Journal.load_thread(storage, {:run, run_id}) do
+      projection = current_projection(storage, loaded_thread)
+
+      {:ok,
+       new(
+         id: agent_id(run_id),
+         state: %{
+           run_id: run_id,
+           workflow: projection.workflow,
+           projection: projection,
+           thread_rev: loaded_thread.rev
+         }
+       )}
+    end
+  end
+
+  @spec agent_id(run_id()) :: String.t()
+  def agent_id(run_id), do: "squid_mesh.workflow.#{run_id}"
+
+  @spec status(Agent.t()) :: atom()
+  def status(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
+    Projection.status(projection)
+  end
+
+  @spec planned_runnable_keys(Agent.t()) :: [String.t()]
+  def planned_runnable_keys(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
+    Projection.planned_runnable_keys(projection)
+  end
+
+  @spec applied_runnable_keys(Agent.t()) :: MapSet.t(String.t())
+  def applied_runnable_keys(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
+    Projection.applied_runnable_keys(projection)
+  end
+
+  @spec pending_results(Agent.t(), Agent.t()) :: [
+          SquidMesh.Runtime.DispatchProtocol.ActionAttempt.t()
+        ]
+  def pending_results(
+        %Agent{agent_module: __MODULE__, state: %{run_id: run_id, projection: projection}},
+        %Agent{agent_module: DispatchAgent} = dispatch_agent
+      ) do
+    applied_keys = Projection.applied_runnable_keys(projection)
+
+    dispatch_agent
+    |> DispatchAgent.completed_results()
+    |> Enum.filter(&(&1.run_id == run_id))
+    |> Enum.reject(&MapSet.member?(applied_keys, &1.runnable_key))
+    |> reject_when_terminal(projection)
+  end
+
+  defp reject_when_terminal(results, %Projection{} = projection) do
+    if Projection.terminal?(projection), do: [], else: results
+  end
+
+  defp current_projection(storage, %{thread: thread, rev: rev, entries: entries}) do
+    case Journal.fetch_checkpoint(storage, thread) do
+      {:ok, %Checkpoint{thread_rev: ^rev, projection: %Projection{} = projection}} ->
+        projection
+
+      _missing_or_stale ->
+        Projection.rebuild(entries)
+    end
+  end
+end
