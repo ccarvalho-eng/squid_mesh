@@ -299,6 +299,44 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert Enum.count(entries, &(&1.type == :runnable_applied)) == 1
   end
 
+  test "rejects duplicate result application when the persisted result differs" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, applied} =
+             DispatchProtocol.new_entry(:runnable_applied, %{
+               run_id: @run_id,
+               runnable_key: @runnable_key,
+               result: %{"status" => "captured"},
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, _thread} =
+             Journal.append_entries(@storage, [run_started, runnables_planned, applied])
+
+    assert {:ok, workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+    conflicting_attempt = completed_attempt(result: %{"status" => "declined"})
+
+    assert {:error, {:conflicting_result, @runnable_key}} =
+             WorkflowAgent.apply_result(@storage, workflow_agent, conflicting_attempt,
+               now: @completed_at
+             )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:run, @run_id})
+    assert Enum.count(entries, &(&1.type == :runnable_applied)) == 1
+  end
+
   test "returns conflict when applying a result from a stale workflow projection" do
     assert {:ok, run_started} =
              DispatchProtocol.new_entry(:run_started, %{

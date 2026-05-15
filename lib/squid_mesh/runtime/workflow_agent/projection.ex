@@ -22,6 +22,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
           status: atom(),
           planned_runnables: %{optional(String.t()) => map()},
           applied_runnable_keys: MapSet.t(String.t()),
+          applied_results: %{optional(String.t()) => map() | nil},
           terminal_status: atom() | nil,
           anomalies: [anomaly()]
         }
@@ -31,6 +32,7 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
             status: :new,
             planned_runnables: %{},
             applied_runnable_keys: MapSet.new(),
+            applied_results: %{},
             terminal_status: nil,
             anomalies: []
 
@@ -67,6 +69,11 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   @spec applied_runnable_keys(t()) :: MapSet.t(String.t())
   def applied_runnable_keys(%__MODULE__{applied_runnable_keys: applied_runnable_keys}) do
     applied_runnable_keys
+  end
+
+  @spec applied_result(t(), String.t()) :: {:ok, map() | nil} | :error
+  def applied_result(%__MODULE__{} = projection, runnable_key) when is_binary(runnable_key) do
+    Map.fetch(applied_results(projection), runnable_key)
   end
 
   @spec anomalies(t()) :: [anomaly()]
@@ -120,6 +127,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
           :applied_runnable_keys,
           MapSet.put(projection.applied_runnable_keys, runnable_key)
         )
+        |> Map.put(
+          :applied_results,
+          Map.put(applied_results(projection), runnable_key, Map.get(data, :result))
+        )
         |> refresh_status()
       else
         add_anomaly(projection, entry, :unknown_runnable_intent)
@@ -145,6 +156,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   end
 
   defp apply_entry(%Entry{}, %__MODULE__{} = projection), do: projection
+
+  defp applied_results(%__MODULE__{} = projection) do
+    Map.get(projection, :applied_results, %{})
+  end
 
   defp refresh_status(%__MODULE__{terminal_status: terminal_status} = projection)
        when not is_nil(terminal_status) do

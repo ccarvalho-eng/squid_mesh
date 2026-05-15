@@ -191,10 +191,23 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
         {:error, :unknown_runnable_intent}
 
       MapSet.member?(Projection.applied_runnable_keys(projection), attempt.runnable_key) ->
-        {:ok, {:applied, attempt}}
+        apply_duplicate_target(projection, attempt)
 
       true ->
         {:ok, {:pending, attempt}}
+    end
+  end
+
+  defp apply_duplicate_target(%Projection{} = projection, %ActionAttempt{} = attempt) do
+    case Projection.applied_result(projection, attempt.runnable_key) do
+      {:ok, result} when result == attempt.result ->
+        {:ok, {:applied, attempt}}
+
+      {:ok, _other_result} ->
+        {:error, {:conflicting_result, attempt.runnable_key}}
+
+      :error ->
+        {:error, {:conflicting_result, attempt.runnable_key}}
     end
   end
 
