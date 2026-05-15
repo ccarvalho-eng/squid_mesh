@@ -94,19 +94,26 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   defp load_run_terminal_entries(storage, entries) do
     entries
     |> run_ids()
-    |> Enum.reduce_while({:ok, []}, fn run_id, {:ok, terminal_entries} ->
+    |> Enum.reduce_while({:ok, []}, fn run_id, {:ok, terminal_entry_chunks} ->
       case Journal.load_thread(storage, {:run, run_id}) do
         {:ok, %{entries: run_entries}} ->
-          {:cont,
-           {:ok, terminal_entries ++ Enum.filter(run_entries, &(&1.type == :run_terminal))}}
+          terminal_entries = Enum.filter(run_entries, &(&1.type == :run_terminal))
+          {:cont, {:ok, [terminal_entries | terminal_entry_chunks]}}
 
         {:error, :not_found} ->
-          {:cont, {:ok, terminal_entries}}
+          {:cont, {:ok, terminal_entry_chunks}}
 
         {:error, _reason} = error ->
           {:halt, error}
       end
     end)
+    |> case do
+      {:ok, terminal_entry_chunks} ->
+        {:ok, terminal_entry_chunks |> Enum.reverse() |> Enum.flat_map(& &1)}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp run_ids(entries) do

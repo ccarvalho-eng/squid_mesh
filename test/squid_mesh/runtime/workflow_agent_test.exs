@@ -3,6 +3,7 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
 
   alias SquidMesh.Runtime.DispatchAgent
   alias SquidMesh.Runtime.DispatchProtocol
+  alias SquidMesh.Runtime.DispatchProtocol.Entry
   alias SquidMesh.Runtime.Journal
   alias SquidMesh.Runtime.WorkflowAgent
   alias SquidMesh.Runtime.WorkflowAgent.Projection
@@ -271,6 +272,28 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert WorkflowAgent.pending_results(workflow_agent, dispatch_agent) == []
   end
 
+  test "records anomalies instead of raising for malformed persisted workflow entries" do
+    malformed_entries = [
+      workflow_entry(:run_started, %{}),
+      workflow_entry(:runnables_planned, %{run_id: @run_id, runnables: :not_a_list}),
+      workflow_entry(:runnable_applied, %{run_id: @run_id}),
+      workflow_entry(:run_terminal, %{run_id: @run_id})
+    ]
+
+    projection = Projection.rebuild(malformed_entries)
+
+    assert Projection.status(projection) == :new
+    assert Projection.planned_runnable_keys(projection) == []
+    assert Projection.applied_runnable_keys(projection) == MapSet.new()
+
+    assert [
+             %{entry_type: :run_started, reason: :malformed_entry},
+             %{entry_type: :runnables_planned, reason: :malformed_entry, run_id: @run_id},
+             %{entry_type: :runnable_applied, reason: :malformed_entry, run_id: @run_id},
+             %{entry_type: :run_terminal, reason: :malformed_entry, run_id: @run_id}
+           ] = Projection.anomalies(projection)
+  end
+
   defp scheduled_attrs(attrs \\ %{}) do
     Map.merge(
       %{
@@ -317,6 +340,15 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
       },
       Map.new(attrs)
     )
+  end
+
+  defp workflow_entry(type, data) do
+    %Entry{
+      type: type,
+      thread: {:run, @run_id},
+      data: data,
+      occurred_at: @started_at
+    }
   end
 
   defp cleanup_storage do

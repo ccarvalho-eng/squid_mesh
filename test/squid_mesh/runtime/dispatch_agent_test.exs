@@ -127,6 +127,23 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
     assert DispatchAgent.expired_claims(agent, @expired_at) == []
   end
 
+  test "returns an error when a related run thread has incompatible persisted entries" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+
+    assert {:ok, _thread} =
+             Jido.Storage.ETS.append_thread(
+               Journal.thread_id({:run, @run_id}),
+               [%{kind: :note, payload: %{}}],
+               table: :squid_mesh_dispatch_agent_test
+             )
+
+    assert {:error, {:invalid_journal_entry, 0, :missing_data}} =
+             DispatchAgent.rebuild(@storage, "default")
+  end
+
   defp scheduled_attrs(attrs \\ %{}) do
     Map.merge(
       %{

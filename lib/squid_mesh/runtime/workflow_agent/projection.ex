@@ -72,52 +72,76 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   @spec anomalies(t()) :: [anomaly()]
   def anomalies(%__MODULE__{anomalies: anomalies}), do: Enum.reverse(anomalies)
 
-  defp apply_entry(%Entry{type: :run_started, data: data}, %__MODULE__{} = projection) do
-    projection
-    |> Map.put(:run_id, data.run_id)
-    |> Map.put(:workflow, data.workflow)
-    |> refresh_status()
+  defp apply_entry(%Entry{type: :run_started, data: data} = entry, %__MODULE__{} = projection) do
+    if required_present?(data, [:run_id, :workflow]) do
+      projection
+      |> Map.put(:run_id, Map.fetch!(data, :run_id))
+      |> Map.put(:workflow, Map.fetch!(data, :workflow))
+      |> refresh_status()
+    else
+      add_anomaly(projection, entry, :malformed_entry)
+    end
   end
 
-  defp apply_entry(%Entry{type: :runnables_planned, data: data}, %__MODULE__{} = projection) do
-    planned_runnables =
-      data.runnables
-      |> Enum.reduce(projection.planned_runnables, fn runnable, acc ->
-        case runnable_key(runnable) do
-          key when is_binary(key) -> Map.put_new(acc, key, normalize_runnable(runnable))
-          _missing_key -> acc
-        end
-      end)
+  defp apply_entry(
+         %Entry{type: :runnables_planned, data: data} = entry,
+         %__MODULE__{} = projection
+       ) do
+    if required_present?(data, [:run_id, :runnables]) and is_list(Map.fetch!(data, :runnables)) do
+      planned_runnables =
+        data
+        |> Map.fetch!(:runnables)
+        |> Enum.reduce(projection.planned_runnables, fn runnable, acc ->
+          case runnable_key(runnable) do
+            key when is_binary(key) -> Map.put_new(acc, key, normalize_runnable(runnable))
+            _missing_key -> acc
+          end
+        end)
 
-    projection
-    |> Map.put(:planned_runnables, planned_runnables)
-    |> Map.put(:run_id, projection.run_id || data.run_id)
-    |> refresh_status()
+      projection
+      |> Map.put(:planned_runnables, planned_runnables)
+      |> Map.put(:run_id, projection.run_id || Map.fetch!(data, :run_id))
+      |> refresh_status()
+    else
+      add_anomaly(projection, entry, :malformed_entry)
+    end
   end
 
   defp apply_entry(
          %Entry{type: :runnable_applied, data: data} = entry,
          %__MODULE__{} = projection
        ) do
-    if Map.has_key?(projection.planned_runnables, data.runnable_key) do
-      projection
-      |> Map.put(
-        :applied_runnable_keys,
-        MapSet.put(projection.applied_runnable_keys, data.runnable_key)
-      )
-      |> refresh_status()
+    if required_present?(data, [:run_id, :runnable_key]) do
+      runnable_key = Map.fetch!(data, :runnable_key)
+
+      if Map.has_key?(projection.planned_runnables, runnable_key) do
+        projection
+        |> Map.put(
+          :applied_runnable_keys,
+          MapSet.put(projection.applied_runnable_keys, runnable_key)
+        )
+        |> refresh_status()
+      else
+        add_anomaly(projection, entry, :unknown_runnable_intent)
+      end
     else
-      add_anomaly(projection, entry, :unknown_runnable_intent)
+      add_anomaly(projection, entry, :malformed_entry)
     end
   end
 
-  defp apply_entry(%Entry{type: :run_terminal, data: data}, %__MODULE__{} = projection) do
-    %__MODULE__{
-      projection
-      | run_id: projection.run_id || data.run_id,
-        status: data.status,
-        terminal_status: data.status
-    }
+  defp apply_entry(%Entry{type: :run_terminal, data: data} = entry, %__MODULE__{} = projection) do
+    if required_present?(data, [:run_id, :status]) do
+      status = Map.fetch!(data, :status)
+
+      %__MODULE__{
+        projection
+        | run_id: projection.run_id || Map.fetch!(data, :run_id),
+          status: status,
+          terminal_status: status
+      }
+    else
+      add_anomaly(projection, entry, :malformed_entry)
+    end
   end
 
   defp apply_entry(%Entry{}, %__MODULE__{} = projection), do: projection
@@ -152,16 +176,27 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
   defp normalize_runnable(runnable) when is_map(runnable), do: Map.new(runnable)
 
   defp add_anomaly(%__MODULE__{} = projection, %Entry{} = entry, reason) do
+    data = data_map(entry)
+
     anomaly =
       %{
         reason: reason,
         entry_type: entry.type
       }
-      |> maybe_put_run_id(Map.get(entry.data, :run_id))
-      |> maybe_put_runnable_key(Map.get(entry.data, :runnable_key))
+      |> maybe_put_run_id(Map.get(data, :run_id))
+      |> maybe_put_runnable_key(Map.get(data, :runnable_key))
 
     %__MODULE__{projection | anomalies: [anomaly | projection.anomalies]}
   end
+
+  defp required_present?(data, fields) when is_map(data) do
+    Enum.all?(fields, &(Map.has_key?(data, &1) and not is_nil(Map.fetch!(data, &1))))
+  end
+
+  defp required_present?(_data, _fields), do: false
+
+  defp data_map(%Entry{data: data}) when is_map(data), do: data
+  defp data_map(%Entry{}), do: %{}
 
   defp maybe_put_run_id(anomaly, nil), do: anomaly
   defp maybe_put_run_id(anomaly, run_id), do: Map.put(anomaly, :run_id, run_id)
