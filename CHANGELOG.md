@@ -6,6 +6,13 @@ The format is based on Keep a Changelog and the project follows Semantic
 Versioning, including prerelease tags while the runtime remains in early
 development.
 
+## Unreleased
+
+### Added
+- Durable dispatch-agent claims through `DispatchAgent.claim_next/4`, including
+  optimistic dispatch-thread fencing, post-claim attempt projection returns, and
+  expired lease redelivery support for the Jido-native runtime path.
+
 ## [0.1.0-alpha.7] - 2026-05-15
 
 ### Added
