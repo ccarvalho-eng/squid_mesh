@@ -103,7 +103,12 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
     assert {:ok,
             %{
               agent: claimed_agent,
-              attempt: %{runnable_key: @runnable_key},
+              attempt: %{
+                runnable_key: @runnable_key,
+                claim_id: "claim_2",
+                owner_id: "worker_2",
+                lease_until: ~U[2026-05-15 00:01:10Z]
+              },
               claim_id: "claim_2",
               claim_token: "token_2",
               lease_until: ~U[2026-05-15 00:01:10Z]
@@ -142,7 +147,7 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
     assert {:ok,
             %{
               agent: redelivered_agent,
-              attempt: %{claim_id: "claim_1"},
+              attempt: %{claim_id: "claim_2", owner_id: "worker_2"},
               claim_id: "claim_2",
               claim_token: "token_2",
               lease_until: ~U[2026-05-15 00:03:00Z]
@@ -176,6 +181,37 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
              )
 
     assert {:ok, [^scheduled_entry]} = Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
+  test "returns conflict for duplicate delivery from a stale competing claimer" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, first_agent} = DispatchAgent.rebuild(@storage, "default")
+    assert {:ok, stale_agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: claimed_agent, attempt: %{claim_id: "claim_2"}}} =
+             DispatchAgent.claim_next(@storage, first_agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert claimed_agent.state.thread_rev == 2
+
+    assert {:error, :conflict} =
+             DispatchAgent.claim_next(@storage, stale_agent, "worker_3",
+               now: @visible_at,
+               claim_id: "claim_3",
+               claim_token: "token_3"
+             )
+
+    assert {:ok, [^scheduled_entry, claimed_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+
+    assert claimed_entry.type == :attempt_claimed
+    assert claimed_entry.data.claim_id == "claim_2"
   end
 
   test "does not claim when the run became terminal after dispatch rebuild" do

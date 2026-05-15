@@ -91,6 +91,18 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     Projection.completed_results(projection)
   end
 
+  @doc """
+  Claims the next visible or expired attempt for a dispatch queue agent.
+
+  The claim is persisted as an `:attempt_claimed` journal entry with the
+  agent's current dispatch-thread revision as `:expected_rev`. Concurrent
+  claimers therefore race at the journal boundary and receive `{:error,
+  :conflict}` when their projection is stale.
+
+  The returned claim contains the raw `claim_token` for the worker process, but
+  the durable journal stores only its hash. If the append succeeds, the returned
+  `:attempt` reflects the post-claim projection state.
+  """
   @spec claim_next(storage_config(), Agent.t(), String.t(), keyword()) ::
           {:ok, claim()} | {:ok, :none} | {:error, term()}
   def claim_next(
@@ -216,25 +228,34 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     }
 
     with {:ok, claim_entry} <- DispatchProtocol.new_entry(:attempt_claimed, attrs),
-         {:ok, thread} <- Journal.append_entries(storage, [claim_entry], expected_rev: thread_rev),
-         :active <- run_status(storage, attempt.run_id),
-         {:ok, claimed_agent} <-
-           Agent.set(agent, %{
-             projection: Projection.replay(projection, [claim_entry]),
-             thread_rev: thread.rev
-           }) do
+         {:ok, thread} <- Journal.append_entries(storage, [claim_entry], expected_rev: thread_rev) do
+      claimed_agent = apply_claim(agent, projection, claim_entry, thread.rev)
+      claimed_attempt = claimed_attempt!(claimed_agent, attempt.runnable_key)
+
       {:ok,
        %{
          agent: claimed_agent,
-         attempt: attempt,
+         attempt: claimed_attempt,
          claim_id: claim_id,
          claim_token: claim_token,
          lease_until: lease_until
        }}
-    else
-      :terminal -> {:ok, :none}
-      {:error, _reason} = error -> error
     end
+  end
+
+  defp apply_claim(%Agent{} = agent, %Projection{} = projection, claim_entry, thread_rev) do
+    %Agent{
+      agent
+      | state: %{
+          agent.state
+          | projection: Projection.replay(projection, [claim_entry]),
+            thread_rev: thread_rev
+        }
+    }
+  end
+
+  defp claimed_attempt!(%Agent{state: %{projection: %Projection{} = projection}}, runnable_key) do
+    Map.fetch!(projection.attempts, runnable_key)
   end
 
   defp run_status(storage, run_id) do
