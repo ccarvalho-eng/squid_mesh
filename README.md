@@ -25,9 +25,18 @@
   </p>
 </div>
 
-Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications. It persists run, step, attempt, and audit state in Postgres and delegates runnable work to a host-provided executor. Workflows can model retries, waits, HITL approval gates, dependency joins, failure routes, replay, and inspection without running a separate workflow service.
+Squid Mesh is an embedded durable workflow runtime for Elixir applications. It
+is for teams that want business workflows to live inside an existing Phoenix or
+OTP app, share that app's repo and deployment model, and still have durable run
+history, retries, approvals, replay, cancellation, and operator inspection.
 
-## Capabilities
+It sits between a job backend and a standalone workflow service: more
+structured and inspectable than a job queue, but still embedded in the host app
+instead of running as a separate platform. It is not a generic replacement for
+Runic, Reactor, Sage, or FlowStone; those projects solve adjacent problems at
+different abstraction layers.
+
+## What It Does
 
 - workflow DSL with manual and cron triggers
 - Postgres-backed run, step, attempt, and audit history
@@ -36,14 +45,20 @@ Squid Mesh provides a workflow DSL and runtime for Phoenix and OTP applications.
 - explicit step input selection and output mapping
 - same-process host repo transactions for small local step groups
 - runtime inspection through declared step state, audit events, and `SquidMesh.explain_run/2`
-- native `SquidMesh.Step` modules, built-in steps like `:log`, `:wait`, `:pause`, and `:approval`, plus raw `Jido.Action` interop
+- native `SquidMesh.Step` modules, built-in steps like `:log`, `:wait`,
+  `:pause`, and `:approval`, plus raw `Jido.Action` interop
 
-## Fit
+## When To Use It
 
-- workflow state should survive app restarts, deploys, retries, and executor redelivery
-- a Phoenix context needs durable approval, recovery, notification, or long-running flow state
+Use Squid Mesh when the main abstraction is a durable workflow run that
+operators need to inspect, resume, retry, replay, or cancel. For the full
+runtime direction and comparison with adjacent projects, see the
+[Positioning guide](docs/positioning.md).
+
+- workflow state belongs inside an existing Phoenix or OTP application
+- runs must survive app restarts, deploys, retries, and executor redelivery
+- approvals, manual review, replay, cancellation, and recovery policy are part of the business process
 - step history and manual decisions need to be inspectable after execution
-- workflow state belongs in the host app's Postgres database, not a separate service
 
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for evaluation, local development, and integration work, but it is not yet documented as production-ready.
