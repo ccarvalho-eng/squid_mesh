@@ -19,6 +19,9 @@ development.
   including optimistic run-thread fencing, idempotent duplicate application, and
   rejection of non-completed, wrong-run, terminal-run, and unplanned dispatch
   results before writing.
+- Restart recovery for completed dispatch results through
+  `WorkflowAgent.apply_pending_results/4`, allowing rebuilt workflow and
+  dispatch agents to durably apply results after a lost live wakeup.
 
 ## [0.1.0-alpha.7] - 2026-05-15
 

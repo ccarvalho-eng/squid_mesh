@@ -129,6 +129,12 @@ attempt, validates that the runnable belongs to the rebuilt workflow projection,
 and appends `:runnable_applied` with an optimistic run-thread fence. Duplicate
 application of an already-applied runnable is idempotent.
 
+`SquidMesh.Runtime.WorkflowAgent.apply_pending_results/4` is the restart
+recovery boundary for lost live wakeups: rebuilt workflow and dispatch agents
+derive completed-but-unapplied attempts from their durable projections and append
+the missing run-thread applications in order, using the latest run-thread fence
+after each append.
+
 ## Terminal Runs
 
 A `run_terminal` entry fences remaining dispatch work for the run. Rebuilt
