@@ -22,6 +22,11 @@ development.
 - Restart recovery for completed dispatch results through
   `WorkflowAgent.apply_pending_results/4`, allowing rebuilt workflow and
   dispatch agents to durably apply results after a lost live wakeup.
+- Restart recovery for planned runnables through
+  `WorkflowAgent.schedule_pending_dispatches/4` and
+  `DispatchAgent.schedule_attempts/5`, allowing rebuilt agents to append missing
+  dispatch intents after a crash between workflow planning and dispatch
+  scheduling.
 
 ## [0.1.0-alpha.7] - 2026-05-15
 

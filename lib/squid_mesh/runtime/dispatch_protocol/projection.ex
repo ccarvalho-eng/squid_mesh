@@ -66,6 +66,13 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
     |> Enum.filter(&(&1.status == :completed))
   end
 
+  @spec attempt_runnable_keys(t()) :: MapSet.t(String.t())
+  def attempt_runnable_keys(%__MODULE__{attempts: attempts}) do
+    attempts
+    |> Map.keys()
+    |> MapSet.new()
+  end
+
   @spec results_ready_to_apply(t()) :: [ActionAttempt.t()]
   def results_ready_to_apply(%__MODULE__{} = projection) do
     projection

@@ -60,6 +60,13 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     |> Enum.sort()
   end
 
+  @spec planned_runnables(t()) :: [map()]
+  def planned_runnables(%__MODULE__{planned_runnables: planned_runnables}) do
+    planned_runnables
+    |> Map.values()
+    |> Enum.sort_by(&runnable_key/1)
+  end
+
   @spec planned_runnable_key?(t(), String.t()) :: boolean()
   def planned_runnable_key?(%__MODULE__{planned_runnables: planned_runnables}, runnable_key)
       when is_binary(runnable_key) do

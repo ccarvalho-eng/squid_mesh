@@ -46,6 +46,103 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
            ] = DispatchAgent.expired_claims(agent, @expired_at)
   end
 
+  test "rebuilds an empty dispatch agent when the queue has no thread yet" do
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert agent.id == "squid_mesh.dispatch.default"
+    assert agent.state.queue == "default"
+    assert agent.state.thread_rev == 0
+    assert DispatchAgent.visible_attempts(agent, @visible_at) == []
+    assert DispatchAgent.expired_claims(agent, @expired_at) == []
+  end
+
+  test "schedules missing runnable attempts with an optimistic dispatch-thread append" do
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: scheduled_agent, runnables: [%{runnable_key: @runnable_key}]}} =
+             DispatchAgent.schedule_attempts(
+               @storage,
+               agent,
+               @run_id,
+               [planned_runnable()],
+               now: @visible_at
+             )
+
+    assert scheduled_agent.state.thread_rev == 1
+
+    assert [%{runnable_key: @runnable_key, status: :available}] =
+             DispatchAgent.visible_attempts(scheduled_agent, @visible_at)
+
+    assert {:ok, [scheduled_entry]} = Journal.load_entries(@storage, {:dispatch, "default"})
+    assert scheduled_entry.type == :attempt_scheduled
+    assert scheduled_entry.data.runnable_key == @runnable_key
+    assert scheduled_entry.data.queue == "default"
+    assert scheduled_entry.data.occurred_at == @visible_at
+  end
+
+  test "treats already scheduled runnable attempts as idempotent" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: ^agent, runnables: []}} =
+             DispatchAgent.schedule_attempts(
+               @storage,
+               agent,
+               @run_id,
+               [planned_runnable()],
+               now: @visible_at
+             )
+
+    assert {:ok, [^scheduled_entry]} = Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
+  test "returns conflict when scheduling from a stale empty dispatch projection" do
+    assert {:ok, first_agent} = DispatchAgent.rebuild(@storage, "default")
+    assert {:ok, stale_agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: scheduled_agent}} =
+             DispatchAgent.schedule_attempts(
+               @storage,
+               first_agent,
+               @run_id,
+               [planned_runnable()],
+               now: @visible_at
+             )
+
+    assert scheduled_agent.state.thread_rev == 1
+
+    assert {:error, :conflict} =
+             DispatchAgent.schedule_attempts(
+               @storage,
+               stale_agent,
+               @run_id,
+               [planned_runnable()],
+               now: @visible_at
+             )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:dispatch, "default"})
+    assert Enum.count(entries, &(&1.type == :attempt_scheduled)) == 1
+  end
+
+  test "rejects planned runnables for a different queue before writing" do
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:error, {:wrong_queue, @runnable_key}} =
+             DispatchAgent.schedule_attempts(
+               @storage,
+               agent,
+               @run_id,
+               [planned_runnable(queue: "priority")],
+               now: @visible_at
+             )
+
+    assert {:error, :not_found} = Journal.load_entries(@storage, {:dispatch, "default"})
+    assert {:error, :not_found} = Journal.load_entries(@storage, {:dispatch, "priority"})
+  end
+
   test "uses a current checkpoint instead of replaying the full dispatch thread" do
     assert {:ok, scheduled_entry} =
              DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
@@ -673,6 +770,12 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
       },
       Map.new(attrs)
     )
+  end
+
+  defp planned_runnable(attrs \\ %{}) do
+    attrs
+    |> scheduled_attrs()
+    |> Map.delete(:occurred_at)
   end
 
   defp claimed_attrs(attrs \\ %{}) do
