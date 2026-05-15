@@ -131,23 +131,58 @@ defmodule SquidMesh.Runtime.Journal do
   end
 
   defp from_jido_entry(%JidoEntry{payload: payload} = jido_entry, thread) when is_map(payload) do
-    case Map.fetch(payload, :data) do
-      {:ok, data} ->
-        {:ok,
-         %Entry{
-           type: jido_entry.kind,
-           thread: thread,
-           data: data,
-           occurred_at: Map.get(payload, :occurred_at, millisecond_to_datetime(jido_entry.at))
-         }}
-
-      :error ->
-        {:error, {:invalid_journal_entry, jido_entry.seq, :missing_data}}
+    with {:ok, data} <- fetch_payload_data(jido_entry),
+         {:ok, occurred_at} <- occurred_at(jido_entry) do
+      {:ok,
+       %Entry{
+         type: jido_entry.kind,
+         thread: thread,
+         data: data,
+         occurred_at: occurred_at
+       }}
     end
   end
 
   defp from_jido_entry(%JidoEntry{} = jido_entry, _thread) do
     {:error, {:invalid_journal_entry, jido_entry.seq, :invalid_payload}}
+  end
+
+  defp fetch_payload_data(%JidoEntry{payload: payload} = jido_entry) do
+    case Map.fetch(payload, :data) do
+      {:ok, data} -> {:ok, data}
+      :error -> {:error, {:invalid_journal_entry, jido_entry.seq, :missing_data}}
+    end
+  end
+
+  defp occurred_at(%JidoEntry{payload: payload} = jido_entry) do
+    case Map.get(payload, :occurred_at) do
+      %DateTime{} = datetime ->
+        {:ok, datetime}
+
+      milliseconds when is_integer(milliseconds) ->
+        datetime_from_millisecond(jido_entry, milliseconds)
+
+      nil ->
+        datetime_from_millisecond(jido_entry, jido_entry.at)
+
+      _invalid ->
+        {:error, {:invalid_journal_entry, jido_entry.seq, :invalid_timestamp}}
+    end
+  end
+
+  defp datetime_from_millisecond(%JidoEntry{} = jido_entry, milliseconds)
+       when is_integer(milliseconds) do
+    case DateTime.from_unix(milliseconds, :millisecond) do
+      {:ok, datetime} ->
+        {:ok, datetime}
+
+      {:error, _reason} ->
+        {:error, {:invalid_journal_entry, jido_entry.seq, :invalid_timestamp}}
+    end
+  end
+
+  defp datetime_from_millisecond(%JidoEntry{} = jido_entry, _invalid) do
+    {:error, {:invalid_journal_entry, jido_entry.seq, :invalid_timestamp}}
   end
 
   defp checkpoint_key(thread_id), do: {@namespace, :checkpoint, thread_id}
@@ -156,9 +191,5 @@ defmodule SquidMesh.Runtime.Journal do
 
   defp datetime_to_millisecond(%DateTime{} = datetime) do
     DateTime.to_unix(datetime, :millisecond)
-  end
-
-  defp millisecond_to_datetime(milliseconds) when is_integer(milliseconds) do
-    DateTime.from_unix!(milliseconds, :millisecond)
   end
 end

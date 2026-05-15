@@ -10,8 +10,14 @@ defmodule SquidMesh.Runtime.JournalTest do
   @run_id "run_123"
   @runnable_key "run_123:charge_card:1"
   @idempotency_key "run_123:charge_card:payment_456"
+  @claim_id "claim_1"
+  @claim_token_hash "token_hash_1"
+  @owner_id "worker_1"
   @started_at ~U[2026-05-14 00:00:00Z]
   @visible_at ~U[2026-05-14 00:00:10Z]
+  @claimed_at ~U[2026-05-14 00:00:20Z]
+  @lease_until ~U[2026-05-14 00:01:00Z]
+  @completed_at ~U[2026-05-14 00:00:30Z]
 
   setup do
     cleanup_storage()
@@ -35,6 +41,34 @@ defmodule SquidMesh.Runtime.JournalTest do
 
     assert [%{runnable_key: @runnable_key, status: :available}] =
              Projection.visible_attempts(projection, @visible_at)
+  end
+
+  test "replays multiple dispatch entries in order and rebuilds final projection state" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, claimed_entry} =
+             DispatchProtocol.new_entry(:attempt_claimed, claimed_attrs())
+
+    assert {:ok, completed_entry} =
+             DispatchProtocol.new_entry(:attempt_completed, completed_attrs())
+
+    entries = [scheduled_entry, claimed_entry, completed_entry]
+
+    assert {:ok, %{rev: 3}} = Journal.append_entries(@storage, entries)
+    assert {:ok, ^entries} = Journal.load_entries(@storage, {:dispatch, "default"})
+
+    assert {:ok, projection} = Journal.rebuild_dispatch_projection(@storage, "default")
+
+    assert Projection.visible_attempts(projection, @visible_at) == []
+
+    assert [
+             %{
+               runnable_key: @runnable_key,
+               status: :completed,
+               result: %{"status" => "captured"}
+             }
+           ] = Projection.completed_results(projection)
   end
 
   @tag :tmp_dir
@@ -113,6 +147,24 @@ defmodule SquidMesh.Runtime.JournalTest do
              Journal.load_entries(@storage, {:dispatch, "default"})
   end
 
+  test "returns structured errors for invalid persisted timestamps" do
+    assert {:ok, _thread} =
+             Jido.Storage.ETS.append_thread(
+               Journal.thread_id({:dispatch, "default"}),
+               [
+                 %{
+                   kind: :attempt_scheduled,
+                   at: "not-a-unix-millisecond",
+                   payload: %{data: scheduled_attrs()}
+                 }
+               ],
+               table: :squid_mesh_journal_test
+             )
+
+    assert {:error, {:invalid_journal_entry, 0, :invalid_timestamp}} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
   test "rejects appending entries that belong to different durable threads" do
     assert {:ok, run_entry} =
              DispatchProtocol.new_entry(:run_started, %{
@@ -140,6 +192,37 @@ defmodule SquidMesh.Runtime.JournalTest do
         input: %{"payment_id" => "pay_123"},
         visible_at: @visible_at,
         occurred_at: @started_at
+      },
+      Map.new(attrs)
+    )
+  end
+
+  defp claimed_attrs(attrs \\ %{}) do
+    Map.merge(
+      %{
+        run_id: @run_id,
+        runnable_key: @runnable_key,
+        claim_id: @claim_id,
+        claim_token_hash: @claim_token_hash,
+        owner_id: @owner_id,
+        queue: "default",
+        lease_until: @lease_until,
+        occurred_at: @claimed_at
+      },
+      Map.new(attrs)
+    )
+  end
+
+  defp completed_attrs(attrs \\ %{}) do
+    Map.merge(
+      %{
+        run_id: @run_id,
+        runnable_key: @runnable_key,
+        claim_id: @claim_id,
+        claim_token_hash: @claim_token_hash,
+        queue: "default",
+        result: %{"status" => "captured"},
+        occurred_at: @completed_at
       },
       Map.new(attrs)
     )
