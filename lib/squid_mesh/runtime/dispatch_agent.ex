@@ -30,6 +30,11 @@ defmodule SquidMesh.Runtime.DispatchAgent do
           required(:claim_token) => String.t(),
           required(:lease_until) => DateTime.t()
         }
+  @type lifecycle_update :: %{
+          required(:agent) => Agent.t(),
+          required(:attempt) => ActionAttempt.t(),
+          optional(:lease_until) => DateTime.t()
+        }
   @type storage_config :: Journal.storage_config()
 
   @spec rebuild(storage_config(), queue() | atom()) :: {:ok, Agent.t()} | {:error, term()}
@@ -145,6 +150,164 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     end
   end
 
+  @doc """
+  Extends the lease for a currently claimed attempt.
+
+  The heartbeat is rejected before writing when the claim token is stale, the
+  claim has expired, or the dispatch-agent projection is not currently claimed.
+  """
+  @spec heartbeat(storage_config(), Agent.t(), String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, lifecycle_update()} | {:error, term()}
+  def heartbeat(storage, agent, runnable_key, claim_id, claim_token, opts \\ [])
+
+  def heartbeat(
+        storage,
+        %Agent{
+          agent_module: __MODULE__,
+          state: %{queue: queue, projection: %Projection{} = projection, thread_rev: thread_rev}
+        } = agent,
+        runnable_key,
+        claim_id,
+        claim_token,
+        opts
+      )
+      when is_binary(queue) and is_binary(runnable_key) and is_binary(claim_id) and
+             is_binary(claim_token) and is_integer(thread_rev) and thread_rev >= 0 and
+             is_list(opts) do
+    with {:ok, heartbeat_options} <- heartbeat_options(opts),
+         {:ok, attempt} <-
+           current_claim(projection, runnable_key, claim_id, claim_token, heartbeat_options.now),
+         :ok <- active_run(storage, attempt.run_id),
+         lease_until = DateTime.add(heartbeat_options.now, heartbeat_options.lease_for, :second),
+         {:ok, heartbeat_entry} <-
+           DispatchProtocol.new_entry(:attempt_heartbeat, %{
+             run_id: attempt.run_id,
+             runnable_key: attempt.runnable_key,
+             claim_id: claim_id,
+             claim_token_hash: claim_token_hash(claim_token),
+             queue: queue,
+             lease_until: lease_until,
+             occurred_at: heartbeat_options.now
+           }),
+         {:ok, heartbeat_agent} <-
+           persist_dispatch_entry(storage, agent, projection, thread_rev, heartbeat_entry) do
+      {:ok,
+       %{
+         agent: heartbeat_agent,
+         attempt: claimed_attempt!(heartbeat_agent, runnable_key),
+         lease_until: lease_until
+       }}
+    end
+  end
+
+  @doc """
+  Records a durable successful result for a currently claimed attempt.
+  """
+  @spec complete(
+          storage_config(),
+          Agent.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          map(),
+          keyword()
+        ) ::
+          {:ok, lifecycle_update()} | {:error, term()}
+  def complete(storage, agent, runnable_key, claim_id, claim_token, result, opts \\ [])
+
+  def complete(
+        storage,
+        %Agent{
+          agent_module: __MODULE__,
+          state: %{queue: queue, projection: %Projection{} = projection, thread_rev: thread_rev}
+        } = agent,
+        runnable_key,
+        claim_id,
+        claim_token,
+        result,
+        opts
+      )
+      when is_binary(queue) and is_binary(runnable_key) and is_binary(claim_id) and
+             is_binary(claim_token) and is_map(result) and is_integer(thread_rev) and
+             thread_rev >= 0 and is_list(opts) do
+    with {:ok, now} <- lifecycle_now(opts),
+         {:ok, attempt} <- current_claim(projection, runnable_key, claim_id, claim_token, now),
+         :ok <- active_run(storage, attempt.run_id),
+         {:ok, completed_entry} <-
+           DispatchProtocol.new_entry(:attempt_completed, %{
+             run_id: attempt.run_id,
+             runnable_key: attempt.runnable_key,
+             claim_id: claim_id,
+             claim_token_hash: claim_token_hash(claim_token),
+             queue: queue,
+             result: result,
+             occurred_at: now
+           }),
+         {:ok, completed_agent} <-
+           persist_dispatch_entry(storage, agent, projection, thread_rev, completed_entry) do
+      {:ok, %{agent: completed_agent, attempt: claimed_attempt!(completed_agent, runnable_key)}}
+    end
+  end
+
+  @doc """
+  Records a durable failure for a currently claimed attempt.
+
+  `:retry_runnable_key` and `:retry_visible_at` may be provided together to make
+  a retry attempt visible through the dispatch projection after the given time.
+  """
+  @spec fail(
+          storage_config(),
+          Agent.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          map(),
+          keyword()
+        ) ::
+          {:ok, lifecycle_update()} | {:error, term()}
+  def fail(storage, agent, runnable_key, claim_id, claim_token, error, opts \\ [])
+
+  def fail(
+        storage,
+        %Agent{
+          agent_module: __MODULE__,
+          state: %{queue: queue, projection: %Projection{} = projection, thread_rev: thread_rev}
+        } = agent,
+        runnable_key,
+        claim_id,
+        claim_token,
+        error,
+        opts
+      )
+      when is_binary(queue) and is_binary(runnable_key) and is_binary(claim_id) and
+             is_binary(claim_token) and is_map(error) and is_integer(thread_rev) and
+             thread_rev >= 0 and is_list(opts) do
+    with {:ok, now} <- lifecycle_now(opts),
+         {:ok, retry_attrs} <- retry_attrs(opts),
+         {:ok, attempt} <- current_claim(projection, runnable_key, claim_id, claim_token, now),
+         :ok <- active_run(storage, attempt.run_id),
+         {:ok, failed_entry} <-
+           DispatchProtocol.new_entry(
+             :attempt_failed,
+             Map.merge(
+               %{
+                 run_id: attempt.run_id,
+                 runnable_key: attempt.runnable_key,
+                 claim_id: claim_id,
+                 claim_token_hash: claim_token_hash(claim_token),
+                 queue: queue,
+                 error: error,
+                 occurred_at: now
+               },
+               retry_attrs
+             )
+           ),
+         {:ok, failed_agent} <-
+           persist_dispatch_entry(storage, agent, projection, thread_rev, failed_entry) do
+      {:ok, %{agent: failed_agent, attempt: claimed_attempt!(failed_agent, runnable_key)}}
+    end
+  end
+
   defp current_projection(storage, %{thread: thread, rev: rev, entries: entries}) do
     with {:ok, projection} <- projection_from_checkpoint(storage, thread, rev, entries),
          {:ok, run_terminal_entries} <- load_run_terminal_entries(storage, entries) do
@@ -228,8 +391,8 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     }
 
     with {:ok, claim_entry} <- DispatchProtocol.new_entry(:attempt_claimed, attrs),
-         {:ok, thread} <- Journal.append_entries(storage, [claim_entry], expected_rev: thread_rev) do
-      claimed_agent = apply_claim(agent, projection, claim_entry, thread.rev)
+         {:ok, claimed_agent} <-
+           persist_dispatch_entry(storage, agent, projection, thread_rev, claim_entry) do
       claimed_attempt = claimed_attempt!(claimed_agent, attempt.runnable_key)
 
       {:ok,
@@ -243,12 +406,24 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     end
   end
 
-  defp apply_claim(%Agent{} = agent, %Projection{} = projection, claim_entry, thread_rev) do
+  defp persist_dispatch_entry(
+         storage,
+         %Agent{} = agent,
+         %Projection{} = projection,
+         thread_rev,
+         entry
+       ) do
+    with {:ok, thread} <- Journal.append_entries(storage, [entry], expected_rev: thread_rev) do
+      {:ok, apply_dispatch_entry(agent, projection, entry, thread.rev)}
+    end
+  end
+
+  defp apply_dispatch_entry(%Agent{} = agent, %Projection{} = projection, entry, thread_rev) do
     %Agent{
       agent
       | state: %{
           agent.state
-          | projection: Projection.replay(projection, [claim_entry]),
+          | projection: Projection.replay(projection, [entry]),
             thread_rev: thread_rev
         }
     }
@@ -272,6 +447,14 @@ defmodule SquidMesh.Runtime.DispatchAgent do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp active_run(storage, run_id) do
+    case run_status(storage, run_id) do
+      :active -> :ok
+      :terminal -> {:error, :terminal_run}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -299,6 +482,78 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     end
   end
 
+  defp heartbeat_options(opts) do
+    with {:ok, now} <- lifecycle_now(opts) do
+      lease_for = Keyword.get(opts, :lease_for, @default_lease_seconds)
+
+      if is_integer(lease_for) and lease_for > 0 do
+        {:ok, %{now: now, lease_for: lease_for}}
+      else
+        {:error, {:invalid_option, :lease_for}}
+      end
+    end
+  end
+
+  defp lifecycle_now(opts) do
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+
+    if match?(%DateTime{}, now) do
+      {:ok, now}
+    else
+      {:error, {:invalid_option, :now}}
+    end
+  end
+
+  defp retry_attrs(opts) do
+    case {Keyword.fetch(opts, :retry_runnable_key), Keyword.fetch(opts, :retry_visible_at)} do
+      {:error, :error} ->
+        {:ok, %{}}
+
+      {{:ok, retry_runnable_key}, {:ok, %DateTime{} = retry_visible_at}}
+      when is_binary(retry_runnable_key) ->
+        {:ok, %{retry_runnable_key: retry_runnable_key, retry_visible_at: retry_visible_at}}
+
+      _invalid ->
+        {:error, {:invalid_option, :retry}}
+    end
+  end
+
+  defp current_claim(
+         %Projection{} = projection,
+         runnable_key,
+         claim_id,
+         claim_token,
+         %DateTime{} = now
+       ) do
+    case Map.fetch(projection.attempts, runnable_key) do
+      {:ok, %ActionAttempt{status: :claimed} = attempt} ->
+        validate_current_claim(attempt, claim_id, claim_token, now)
+
+      {:ok, %ActionAttempt{}} ->
+        {:error, :stale_claim}
+
+      :error ->
+        {:error, :unknown_runnable_intent}
+    end
+  end
+
+  defp validate_current_claim(%ActionAttempt{} = attempt, claim_id, claim_token, now) do
+    cond do
+      not matching_claim_token?(attempt, claim_id, claim_token) ->
+        {:error, :stale_claim}
+
+      expired_claim?(attempt, now) ->
+        {:error, :expired_claim}
+
+      true ->
+        {:ok, attempt}
+    end
+  end
+
+  defp matching_claim_token?(%ActionAttempt{} = attempt, claim_id, claim_token) do
+    attempt.claim_id == claim_id and attempt.claim_token_hash == claim_token_hash(claim_token)
+  end
+
   defp next_claimable_attempt(%Projection{} = projection, %DateTime{} = at) do
     projection
     |> claimable_attempts(at)
@@ -318,6 +573,16 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   defp claim_token_hash(token) do
     :crypto.hash(:sha256, token)
     |> Base.encode16(case: :lower)
+  end
+
+  defp expired_claim?(%ActionAttempt{lease_until: %DateTime{} = lease_until}, %DateTime{} = at) do
+    not after?(lease_until, at)
+  end
+
+  defp expired_claim?(%ActionAttempt{}, _at), do: false
+
+  defp after?(%DateTime{} = left, %DateTime{} = right) do
+    DateTime.compare(left, right) == :gt
   end
 
   defp random_token(byte_count) do

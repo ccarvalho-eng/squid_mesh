@@ -98,13 +98,17 @@ expired; active claim takeover is an anomaly. Claims are valid only after the
 attempt's `visible_at`, and heartbeat, completion, and failure facts are valid
 only before the current lease expires.
 
-`SquidMesh.Runtime.DispatchAgent.claim_next/4` is the current durable claim
-boundary for the Jido-native runtime work. It selects the next visible or
-expired attempt from a rebuilt dispatch-agent projection and appends an
-`attempt_claimed` entry with Jido's optimistic `:expected_rev` fence. On success,
-the returned claim includes the raw token for the worker and the post-claim
-attempt projection; concurrent stale claimers receive `{:error, :conflict}` from
-the journal append.
+`SquidMesh.Runtime.DispatchAgent.claim_next/4`,
+`SquidMesh.Runtime.DispatchAgent.heartbeat/6`,
+`SquidMesh.Runtime.DispatchAgent.complete/7`, and
+`SquidMesh.Runtime.DispatchAgent.fail/7` are the current durable claim lifecycle
+boundaries for the Jido-native runtime work. Claiming selects the next visible
+or expired attempt from a rebuilt dispatch-agent projection and appends an
+`attempt_claimed` entry with Jido's optimistic `:expected_rev` fence. Heartbeat,
+completion, and failure appends validate the current claim fence before writing,
+then append the matching lifecycle entry with the same optimistic thread fence.
+On success, each API returns the post-append dispatch-agent projection;
+concurrent stale callers receive `{:error, :conflict}` from the journal append.
 
 IntentLedger is the intended future integration point for heartbeat execution
 and lease management once its durable Ecto/Postgres path is stable. Until then,
