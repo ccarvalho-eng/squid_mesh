@@ -83,6 +83,37 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert WorkflowAgent.planned_runnable_keys(agent) == [@runnable_key]
   end
 
+  test "persists a checkpoint from the rebuilt workflow agent state" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [run_started, runnables_planned])
+    assert {:ok, agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert :ok = WorkflowAgent.put_checkpoint(@storage, agent, updated_at: @completed_at)
+
+    assert {:ok,
+            %{
+              thread: {:run, @run_id},
+              thread_rev: 2,
+              projection: %Projection{} = checkpoint_projection,
+              updated_at: @completed_at
+            }} = Journal.fetch_checkpoint(@storage, {:run, @run_id})
+
+    assert Projection.planned_runnable_keys(checkpoint_projection) == [@runnable_key]
+  end
+
   test "replays entries newer than a stale workflow checkpoint" do
     checkpoint_runnable_key = "run_123:refund_card:1"
 

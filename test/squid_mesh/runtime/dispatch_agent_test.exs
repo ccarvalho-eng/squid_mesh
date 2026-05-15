@@ -69,6 +69,30 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
     assert agent.state.thread_rev == thread.rev
   end
 
+  test "persists a checkpoint from the rebuilt dispatch agent state" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, claimed_entry} =
+             DispatchProtocol.new_entry(:attempt_claimed, claimed_attrs())
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [scheduled_entry, claimed_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert :ok = DispatchAgent.put_checkpoint(@storage, agent, updated_at: @expired_at)
+
+    assert {:ok,
+            %{
+              thread: {:dispatch, "default"},
+              thread_rev: 2,
+              projection: %Projection{} = checkpoint_projection,
+              updated_at: @expired_at
+            }} = Journal.fetch_checkpoint(@storage, {:dispatch, "default"})
+
+    assert [%{runnable_key: @runnable_key}] =
+             Projection.expired_claims(checkpoint_projection, @expired_at)
+  end
+
   test "replays entries newer than a stale dispatch checkpoint" do
     assert {:ok, scheduled_entry} =
              DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())

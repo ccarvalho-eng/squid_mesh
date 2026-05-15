@@ -41,6 +41,19 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
   @spec agent_id(run_id()) :: String.t()
   def agent_id(run_id), do: "squid_mesh.workflow.#{run_id}"
 
+  @spec put_checkpoint(storage_config(), Agent.t(), keyword()) :: :ok | {:error, term()}
+  def put_checkpoint(
+        storage,
+        %Agent{
+          agent_module: __MODULE__,
+          state: %{run_id: run_id, projection: projection, thread_rev: thread_rev}
+        },
+        opts \\ []
+      )
+      when is_binary(run_id) and is_integer(thread_rev) and thread_rev >= 0 and is_list(opts) do
+    Journal.put_checkpoint(storage, {:run, run_id}, projection, thread_rev, opts)
+  end
+
   @spec status(Agent.t()) :: atom()
   def status(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
     Projection.status(projection)
