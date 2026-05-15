@@ -266,6 +266,323 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
              Journal.load_entries(@storage, {:dispatch, "default"})
   end
 
+  test "heartbeats the current claim and extends its durable lease" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok,
+            %{
+              agent: claimed_agent,
+              claim_id: claim_id,
+              claim_token: claim_token
+            }} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2",
+               lease_for: 60
+             )
+
+    assert {:ok,
+            %{
+              agent: heartbeat_agent,
+              attempt: %{runnable_key: @runnable_key, lease_until: ~U[2026-05-15 00:02:20Z]},
+              lease_until: ~U[2026-05-15 00:02:20Z]
+            }} =
+             DispatchAgent.heartbeat(
+               @storage,
+               claimed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               now: @claimed_at,
+               lease_for: 120
+             )
+
+    assert heartbeat_agent.state.thread_rev == 3
+
+    assert {:ok, [^scheduled_entry, _claim_entry, heartbeat_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+
+    assert heartbeat_entry.type == :attempt_heartbeat
+    assert heartbeat_entry.data.claim_id == claim_id
+    refute heartbeat_entry.data.claim_token_hash == claim_token
+  end
+
+  test "completes the current claim with a durable result" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: claimed_agent, claim_id: claim_id, claim_token: claim_token}} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    result = %{"status" => "captured"}
+
+    assert {:ok,
+            %{
+              agent: completed_agent,
+              attempt: %{runnable_key: @runnable_key, status: :completed, result: ^result}
+            }} =
+             DispatchAgent.complete(
+               @storage,
+               claimed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               result,
+               now: @claimed_at
+             )
+
+    assert completed_agent.state.thread_rev == 3
+
+    assert [%{runnable_key: @runnable_key, result: ^result}] =
+             DispatchAgent.completed_results(completed_agent)
+
+    assert {:ok, [_scheduled_entry, _claim_entry, completed_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+
+    assert completed_entry.type == :attempt_completed
+    assert completed_entry.data.result == result
+    refute completed_entry.data.claim_token_hash == claim_token
+  end
+
+  test "treats duplicate completion for the same claim and result as idempotent" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: claimed_agent, claim_id: claim_id, claim_token: claim_token}} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    result = %{"status" => "captured"}
+
+    assert {:ok, %{agent: completed_agent, attempt: completed_attempt}} =
+             DispatchAgent.complete(
+               @storage,
+               claimed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               result,
+               now: @claimed_at
+             )
+
+    assert {:ok, %{agent: ^completed_agent, attempt: ^completed_attempt}} =
+             DispatchAgent.complete(
+               @storage,
+               completed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               result,
+               now: @claimed_at
+             )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:dispatch, "default"})
+    assert Enum.count(entries, &(&1.type == :attempt_completed)) == 1
+  end
+
+  test "fails the current claim and schedules a retry attempt" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: claimed_agent, claim_id: claim_id, claim_token: claim_token}} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    retry_key = "run_123:charge_card:2"
+    retry_visible_at = ~U[2026-05-15 00:03:00Z]
+    error = %{"code" => "gateway_timeout"}
+
+    assert {:ok,
+            %{
+              agent: failed_agent,
+              attempt: %{runnable_key: @runnable_key, status: :failed, error: ^error}
+            }} =
+             DispatchAgent.fail(
+               @storage,
+               claimed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               error,
+               now: @claimed_at,
+               retry_runnable_key: retry_key,
+               retry_visible_at: retry_visible_at
+             )
+
+    assert [%{runnable_key: ^retry_key, attempt_number: 2, status: :retry_scheduled}] =
+             DispatchAgent.visible_attempts(failed_agent, retry_visible_at)
+
+    assert {:ok, [_scheduled_entry, _claim_entry, failed_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+
+    assert failed_entry.type == :attempt_failed
+    assert failed_entry.data.error == error
+    assert failed_entry.data.retry_runnable_key == retry_key
+    assert failed_entry.data.retry_visible_at == retry_visible_at
+  end
+
+  test "rejects lifecycle appends with a stale claim token before writing" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: claimed_agent, claim_id: claim_id}} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert {:error, :stale_claim} =
+             DispatchAgent.complete(
+               @storage,
+               claimed_agent,
+               @runnable_key,
+               claim_id,
+               "stale_token",
+               %{"status" => "captured"},
+               now: @claimed_at
+             )
+
+    assert {:ok, [_scheduled_entry, _claim_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
+  test "rejects lifecycle appends after the claim lease expired before writing" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: claimed_agent, claim_id: claim_id, claim_token: claim_token}} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               lease_for: 30,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert {:error, :expired_claim} =
+             DispatchAgent.complete(
+               @storage,
+               claimed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               %{"status" => "captured"},
+               now: @expired_at
+             )
+
+    assert {:ok, [_scheduled_entry, _claim_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
+  test "rejects lifecycle appends when the run became terminal before writing" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, run_terminal} =
+             DispatchProtocol.new_entry(:run_terminal, %{
+               run_id: @run_id,
+               status: :cancelled,
+               occurred_at: @claimed_at
+             })
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: claimed_agent, claim_id: claim_id, claim_token: claim_token}} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [run_terminal])
+
+    assert {:error, :terminal_run} =
+             DispatchAgent.complete(
+               @storage,
+               claimed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               %{"status" => "captured"},
+               now: @claimed_at
+             )
+
+    assert {:ok, [_scheduled_entry, _claim_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
+  test "returns conflict when lifecycle append uses a stale dispatch projection" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: claimed_agent, claim_id: claim_id, claim_token: claim_token}} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert {:ok, stale_agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: _heartbeat_agent}} =
+             DispatchAgent.heartbeat(
+               @storage,
+               claimed_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               now: @claimed_at
+             )
+
+    assert {:error, :conflict} =
+             DispatchAgent.complete(
+               @storage,
+               stale_agent,
+               @runnable_key,
+               claim_id,
+               claim_token,
+               %{"status" => "captured"},
+               now: @claimed_at
+             )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:dispatch, "default"})
+    refute Enum.any?(entries, &(&1.type == :attempt_completed))
+  end
+
   test "replays entries newer than a stale dispatch checkpoint" do
     assert {:ok, scheduled_entry} =
              DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
