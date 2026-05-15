@@ -50,15 +50,19 @@ different abstraction layers.
 
 ## When To Use It
 
-Use Squid Mesh when the main abstraction is a durable workflow run that
-operators need to inspect, resume, retry, replay, or cancel. For the full
-runtime direction and comparison with adjacent projects, see the
-[Positioning guide](docs/positioning.md).
+Use Squid Mesh when a Phoenix or OTP app needs a durable workflow run as the
+main abstraction, not just a background job. It fits flows where:
 
-- workflow state belongs inside an existing Phoenix or OTP application
-- runs must survive app restarts, deploys, retries, and executor redelivery
-- approvals, manual review, replay, cancellation, and recovery policy are part of the business process
-- step history and manual decisions need to be inspectable after execution
+- state should stay inside the host app and survive restarts, deploys, retries,
+  and executor redelivery
+- operators need to inspect why work is waiting, retrying, paused, failed,
+  cancelled, or complete
+- approvals, manual review, replay, cancellation, and recovery policy belong to
+  the business process
+- step history and manual decisions need to remain available after execution
+
+For the full runtime direction and comparison with adjacent projects, see the
+[Positioning guide](docs/positioning.md).
 
 > [!WARNING]
 > Squid Mesh is still in early development. The runtime is suitable for evaluation, local development, and integration work, but it is not yet documented as production-ready.
