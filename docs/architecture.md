@@ -36,6 +36,12 @@ inside a host application's supervision tree and infrastructure.
   with IntentLedger-backed dispatch adapters and refers only to durable
   dispatch fencing metadata, not host-backend worker lifecycle management
 
+`SquidMesh.Runtime.Journal`
+
+- persists dispatch protocol entries and projection checkpoints through
+  `Jido.Storage`, preserving Jido thread revision pointers for rebuildable
+  runtime projections
+
 `SquidMesh.Executor`
 
 - host-implemented behaviour for enqueueing step, compensation, and cron work
@@ -79,6 +85,7 @@ Jido owns:
 
 - step behavior execution
 - action contracts inside custom step modules
+- the storage behaviour used by the Jido-native journal and checkpoint boundary
 
 Postgres owns:
 

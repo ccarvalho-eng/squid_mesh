@@ -67,8 +67,8 @@ and agent slices land.
 | Human approval workflows | Supported | Pause and approval flows are durable for transition-based workflows. |
 | Replay and cancellation | Supported | Replay respects irreversible and non-compensatable steps; cancellation converges through persisted run state. |
 | Inspection and explanation | Supported, evolving | Current inspection reads persisted runtime tables. The new core will rebuild views from durable journals and checkpoints in [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163). |
-| Durable dispatch protocol | In progress | The pure protocol and projection define runnable intent, claims, leases, heartbeats, completion, failure, retries, and terminal-run fencing. Storage-backed runtime use is still planned. |
-| Jido.Storage-backed core | Planned | Journal and checkpoint persistence are tracked in [#162](https://github.com/ccarvalho-eng/squid_mesh/issues/162). |
+| Durable dispatch protocol | In progress | The pure protocol, projection, and `Jido.Storage` journal boundary define runnable intent, claims, leases, heartbeats, completion, failure, retries, terminal-run fencing, and checkpoint pointers. Storage-backed runtime use is still planned. |
+| Jido.Storage-backed core | In progress | Protocol entries and projection checkpoints can be persisted through `Jido.Storage`; live runtime adoption remains planned in [#162](https://github.com/ccarvalho-eng/squid_mesh/issues/162). |
 | Jido-native runtime agents | Planned | Workflow and dispatch agents are tracked in [#164](https://github.com/ccarvalho-eng/squid_mesh/issues/164). |
 | Scheduled-start metadata | Planned | Intended schedule windows and duplicate-start protection are tracked in [#146](https://github.com/ccarvalho-eng/squid_mesh/issues/146) and [#145](https://github.com/ccarvalho-eng/squid_mesh/issues/145). |
 | Conditional and deferred continuation | Planned | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/ccarvalho-eng/squid_mesh/issues/140). |

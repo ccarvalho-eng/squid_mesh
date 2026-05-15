@@ -1,9 +1,9 @@
 # Durable Dispatch Protocol
 
 Squid Mesh's new runtime path treats dispatch state as an append-only journal.
-This slice defines the protocol and pure projection first. A later storage slice
-can persist the same entries through Jido thread journals, one Squid Mesh-owned
-journal table, or an IntentLedger-backed adapter.
+The protocol and pure projection are storage-independent, and
+`SquidMesh.Runtime.Journal` persists the same entries through `Jido.Storage`
+thread journals and checkpoints.
 
 ## Threads
 
@@ -13,6 +13,37 @@ journal table, or an IntentLedger-backed adapter.
   visibility, and live wakeup facts.
 - Run index thread: rebuildable lookup entries for finding runs by workflow or
   host-facing keys.
+
+`SquidMesh.Runtime.Journal` maps those logical threads to Jido thread IDs such
+as `squid_mesh:run:<run-id>`, `squid_mesh:dispatch:<queue>`, and
+`squid_mesh:run_index:<workflow>`. Runtime entries keep the Squid Mesh protocol
+type as the Jido entry kind and store the protocol data as the entry payload, so
+projections can be rebuilt from the thread after process restart.
+
+## Jido.Storage Boundary
+
+The journal boundary accepts any configured `Jido.Storage` adapter. It appends
+entries with Jido's optimistic `:expected_rev` option, returns `{:error,
+:conflict}` for stale appends, and stores projection checkpoints with the exact
+Jido thread revision they cover. Checkpoints are rebuild accelerators; the
+append-only thread remains the source of truth.
+
+This first storage-backed slice proves the Squid Mesh protocol can persist and
+restore dispatch projections through `Jido.Storage`. The live runtime still uses
+the current host-executor and Postgres table path until the Jido-native workflow
+and dispatch agents land.
+
+For production adapters, the required storage properties are:
+
+- ordered thread append with stable per-thread sequence numbers
+- optimistic append conflict detection through `:expected_rev`
+- checkpoint overwrite semantics for compact projections
+- durable reload of thread entries and checkpoints after process restart
+
+The Postgres path should use a `jido_ecto` adapter when that adapter provides
+those properties. The Bedrock path should use a `jido_bedrock` adapter where
+Bedrock is available. Squid Mesh should not introduce a second persistence
+contract for those stores; adapters only need to satisfy `Jido.Storage`.
 
 ## Commit Order
 
