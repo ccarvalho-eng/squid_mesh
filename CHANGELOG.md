@@ -6,6 +6,40 @@ The format is based on Keep a Changelog and the project follows Semantic
 Versioning, including prerelease tags while the runtime remains in early
 development.
 
+## [0.1.0-alpha.7] - 2026-05-15
+
+### Added
+- Pluggable executor boundary for step execution, delayed scheduling,
+  redelivery, and cron activation.
+- Native `SquidMesh.Step` modules with raw `Jido.Action` support retained as an
+  explicit interop path.
+- Durable dispatch protocol documentation and runtime projection invariants for
+  dispatch-oriented state.
+- Runic workflow planner boundary for workflow graph and mapping facts.
+- Jido storage journal boundary, durable rebuild fences, and rebuildable
+  runtime agent checkpoints.
+- Positioning guide and expanded README usage guidance for embedded workflow
+  runtime adoption.
+
+### Changed
+- Example workflows now use native Squid Mesh steps instead of raw actions by
+  default.
+- README and host app setup snippets now reference `0.1.0-alpha.7`.
+- Dependency join explanations and workflow-centric examples were tightened for
+  clearer operator and authoring guidance.
+
+### Fixed
+- Planner input/output mappings now align with workflow mappings.
+- Dispatch projection validation now preserves explicit nil fields and hardens
+  projection invariants.
+- Journal replay decoding and agent replay recovery now handle malformed or
+  stale persisted data more defensively.
+
+### Notes
+- This remains an alpha release. Runtime agents, journal-backed projections,
+  and dispatch protocol boundaries are still evolving and should be evaluated
+  with host-app smoke coverage before broader use.
+
 ## [0.1.0-alpha.6] - 2026-05-13
 
 ### Added

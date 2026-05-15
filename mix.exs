@@ -4,7 +4,7 @@ defmodule SquidMesh.MixProject do
   def project do
     [
       app: :squid_mesh,
-      version: "0.1.0-alpha.6",
+      version: "0.1.0-alpha.7",
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -50,6 +50,7 @@ defmodule SquidMesh.MixProject do
         "README.md",
         "docs/architecture.md",
         "docs/durable_dispatch_protocol.md",
+        "docs/positioning.md",
         "docs/compatibility.md",
         "docs/tool_adapters.md",
         "docs/observability.md",

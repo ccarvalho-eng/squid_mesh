@@ -88,7 +88,7 @@ Requirements:
 ```elixir
 defp deps do
   [
-    {:squid_mesh, "~> 0.1.0-alpha.6"}
+    {:squid_mesh, "~> 0.1.0-alpha.7"}
   ]
 end
 ```
@@ -101,7 +101,7 @@ host app defines raw Jido actions directly, add `:jido` explicitly as well:
 defp deps do
   [
     {:jido, "~> 2.0"},
-    {:squid_mesh, "~> 0.1.0-alpha.6"}
+    {:squid_mesh, "~> 0.1.0-alpha.7"}
   ]
 end
 ```
