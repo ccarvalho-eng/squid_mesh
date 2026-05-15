@@ -93,6 +93,143 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
              Projection.expired_claims(checkpoint_projection, @expired_at)
   end
 
+  test "claims the next visible attempt with an optimistic dispatch-thread append" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok,
+            %{
+              agent: claimed_agent,
+              attempt: %{runnable_key: @runnable_key},
+              claim_id: "claim_2",
+              claim_token: "token_2",
+              lease_until: ~U[2026-05-15 00:01:10Z]
+            }} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               lease_for: 60,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert claimed_agent.state.thread_rev == 2
+    assert DispatchAgent.visible_attempts(claimed_agent, @visible_at) == []
+
+    assert {:ok, [^scheduled_entry, claimed_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+
+    assert claimed_entry.type == :attempt_claimed
+    assert claimed_entry.data.claim_id == "claim_2"
+    assert claimed_entry.data.owner_id == "worker_2"
+    assert claimed_entry.data.lease_until == ~U[2026-05-15 00:01:10Z]
+    refute claimed_entry.data.claim_token_hash == "token_2"
+    assert is_binary(claimed_entry.data.claim_token_hash)
+  end
+
+  test "redelivers an expired claim with a fresh claim fence" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, claimed_entry} =
+             DispatchProtocol.new_entry(:attempt_claimed, claimed_attrs())
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [scheduled_entry, claimed_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok,
+            %{
+              agent: redelivered_agent,
+              attempt: %{claim_id: "claim_1"},
+              claim_id: "claim_2",
+              claim_token: "token_2",
+              lease_until: ~U[2026-05-15 00:03:00Z]
+            }} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @expired_at,
+               lease_for: 60,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert redelivered_agent.state.thread_rev == 3
+    assert DispatchAgent.expired_claims(redelivered_agent, @expired_at) == []
+
+    assert [%{claim_id: "claim_2", owner_id: "worker_2"}] =
+             DispatchAgent.expired_claims(redelivered_agent, ~U[2026-05-15 00:04:00Z])
+  end
+
+  test "does not claim when no attempt is visible or expired" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, :none} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @started_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert {:ok, [^scheduled_entry]} = Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
+  test "does not claim when the run became terminal after dispatch rebuild" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, run_terminal} =
+             DispatchProtocol.new_entry(:run_terminal, %{
+               run_id: @run_id,
+               status: :cancelled,
+               occurred_at: @claimed_at
+             })
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [run_terminal])
+
+    assert {:ok, :none} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert {:ok, [^scheduled_entry]} = Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
+  test "returns conflict instead of claiming from a stale dispatch projection" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, wakeup_entry} =
+             DispatchProtocol.new_entry(:live_wakeup_emitted, %{
+               run_id: @run_id,
+               runnable_key: @runnable_key,
+               queue: "default",
+               occurred_at: @claimed_at
+             })
+
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [scheduled_entry])
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [wakeup_entry], expected_rev: 1)
+
+    assert {:error, :conflict} =
+             DispatchAgent.claim_next(@storage, agent, "worker_2",
+               now: @visible_at,
+               claim_id: "claim_2",
+               claim_token: "token_2"
+             )
+
+    assert {:ok, [^scheduled_entry, ^wakeup_entry]} =
+             Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
   test "replays entries newer than a stale dispatch checkpoint" do
     assert {:ok, scheduled_entry} =
              DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
