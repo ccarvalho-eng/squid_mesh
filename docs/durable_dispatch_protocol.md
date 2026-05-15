@@ -93,7 +93,9 @@ runtime boundary:
 Squid Mesh should integrate through a dispatch backend adapter rather than make
 IntentLedger depend on Squid-specific workflow concepts. The adapter can map
 Squid runnables to IntentLedger intents and translate lifecycle signals back
-into the projection.
+into the projection. IntentLedger is expected to be the default durable executor
+path once that adapter is wired, but the Squid Mesh core protocol remains
+backend-neutral so host applications can still provide their own dispatcher.
 
 ## Job Runner Boundary
 

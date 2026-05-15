@@ -29,6 +29,17 @@ inside a host application's supervision tree and infrastructure.
 
 - turns workflow execution intent into calls to the configured host executor
 
+`SquidMesh.Runtime.WorkflowAgent`
+
+- rebuilds per-run workflow coordination state from durable run-thread journal
+  entries and checkpoints
+
+`SquidMesh.Runtime.DispatchAgent`
+
+- rebuilds per-queue dispatch state from durable dispatch-thread journal
+  entries and checkpoints, including visible attempts, running leases, retries,
+  completed results, failures, and expired claims
+
 `SquidMesh.Runtime.DispatchProtocol`
 
 - defines append-only run, dispatch, and run-index journal entries for the
@@ -81,6 +92,14 @@ The host executor owns:
 - delayed scheduling
 - redelivery after worker crashes or restarts
 
+IntentLedger is the preferred future durable executor integration:
+
+- Squid Mesh keeps the workflow and dispatch protocol executor-agnostic.
+- An IntentLedger-backed dispatcher can map Squid runnables to Intents and
+  translate lifecycle signals back into durable workflow result application.
+- Host applications can still provide a custom executor when they need a
+  different delivery backend.
+
 Jido owns:
 
 - step behavior execution
@@ -105,7 +124,9 @@ Postgres owns:
 ## Recovery Boundary
 
 Squid Mesh is intentionally not a replacement for worker coordination in the
-host job backend.
+host job backend. The Jido-native dispatch protocol records claim, lease, and
+result facts for replay and recovery, but concrete worker leasing belongs to
+the selected executor backend.
 
 Current guarantees:
 
@@ -115,9 +136,8 @@ Current guarantees:
 
 Current non-goals:
 
-- custom worker-lifecycle heartbeats or lease managers beyond the host
-  backend's own lifecycle; durable dispatch-protocol claim and lease fencing is
-  separate metadata for replay and stale-owner rejection
+- a second worker-lifecycle heartbeat or lease manager when a durable executor
+  such as IntentLedger already owns that runtime concern
 - automatic reclamation of a step that died mid-side-effect
 - exactly-once external side effects without idempotent step implementations
 

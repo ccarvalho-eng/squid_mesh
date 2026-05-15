@@ -81,6 +81,8 @@ For the full runtime direction and comparison with adjacent projects, see the
 - Squid Mesh owns workflow structure, payload validation, runtime state, and retry policy
 - the host app owns durable execution, queueing, delayed scheduling, and redelivery through a `SquidMesh.Executor` implementation
 - your host app keeps its existing `Repo`, job system, and application boundaries
+- the Jido-native runtime path is moving toward IntentLedger as the preferred
+  durable executor while keeping custom executors possible
 
 ## Quick Start
 
