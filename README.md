@@ -48,6 +48,14 @@ different abstraction layers.
 - native `SquidMesh.Step` modules, built-in steps like `:log`, `:wait`,
   `:pause`, and `:approval`, plus raw `Jido.Action` interop
 
+## Companion Dashboard
+
+[SquidSonar](https://github.com/ccarvalho-eng/squid_sonar) is the optional
+read-only Phoenix LiveView dashboard for Squid Mesh. Mount it inside a Phoenix
+host app to inspect recent workflow runs, filter by status, search runtime
+metadata, and view run detail pages with diagnosis, history counts, last error
+information, and workflow graph visualization.
+
 ## When To Use It
 
 Use Squid Mesh when a Phoenix or OTP app needs a durable workflow run as the
