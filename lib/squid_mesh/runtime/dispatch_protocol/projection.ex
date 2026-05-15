@@ -30,7 +30,12 @@ defmodule SquidMesh.Runtime.DispatchProtocol.Projection do
 
   @spec rebuild([Entry.t()]) :: t()
   def rebuild(entries) when is_list(entries) do
-    Enum.reduce(entries, %__MODULE__{}, &apply_entry/2)
+    replay(%__MODULE__{}, entries)
+  end
+
+  @spec replay(t(), [Entry.t()]) :: t()
+  def replay(%__MODULE__{} = projection, entries) when is_list(entries) do
+    Enum.reduce(entries, projection, &apply_entry/2)
   end
 
   @spec visible_attempts(t(), DateTime.t()) :: [ActionAttempt.t()]

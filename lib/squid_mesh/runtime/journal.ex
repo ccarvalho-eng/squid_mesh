@@ -15,6 +15,12 @@ defmodule SquidMesh.Runtime.Journal do
 
   @type storage_config :: module() | {module(), keyword()}
   @type append_error :: :empty_entries | {:mixed_threads, [Entry.thread()]} | term()
+  @type loaded_thread :: %{
+          thread: Entry.thread(),
+          thread_id: String.t(),
+          rev: non_neg_integer(),
+          entries: [Entry.t()]
+        }
 
   @namespace "squid_mesh"
 
@@ -44,11 +50,26 @@ defmodule SquidMesh.Runtime.Journal do
   @spec load_entries(storage_config(), Entry.thread()) ::
           {:ok, [Entry.t()]} | {:error, term()}
   def load_entries(storage, thread) do
+    with {:ok, %{entries: entries}} <- load_thread(storage, thread) do
+      {:ok, entries}
+    end
+  end
+
+  @spec load_thread(storage_config(), Entry.thread()) :: {:ok, loaded_thread()} | {:error, term()}
+  def load_thread(storage, thread) do
     {adapter, opts} = Jido.Storage.normalize_storage(storage)
+    thread_id = thread_id(thread)
 
     with {:ok, %Thread{} = jido_thread} <-
-           Jido.Storage.fetch_thread(adapter, thread_id(thread), opts) do
-      decode_entries(jido_thread.entries, thread)
+           Jido.Storage.fetch_thread(adapter, thread_id, opts),
+         {:ok, entries} <- decode_entries(jido_thread.entries, thread) do
+      {:ok,
+       %{
+         thread: thread,
+         thread_id: thread_id,
+         rev: jido_thread.rev,
+         entries: entries
+       }}
     end
   end
 
