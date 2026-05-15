@@ -27,6 +27,9 @@ development.
   `DispatchAgent.schedule_attempts/5`, allowing rebuilt agents to append missing
   dispatch intents after a crash between workflow planning and dispatch
   scheduling.
+- Restart recovery coordination through `AgentRecovery.recover/4`, which
+  rebuilds workflow and dispatch agents and drains missing dispatch intents
+  before completed dispatch result application.
 
 ## [0.1.0-alpha.7] - 2026-05-15
 
