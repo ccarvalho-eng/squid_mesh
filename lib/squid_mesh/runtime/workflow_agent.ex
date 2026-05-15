@@ -111,10 +111,12 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
         %Agent{agent_module: DispatchAgent} = dispatch_agent
       ) do
     dispatched_keys = DispatchAgent.runnable_keys(dispatch_agent)
+    applied_keys = Projection.applied_runnable_keys(projection)
 
     projection
     |> Projection.planned_runnables()
     |> Enum.reject(&MapSet.member?(dispatched_keys, runnable_key(&1)))
+    |> Enum.reject(&MapSet.member?(applied_keys, runnable_key(&1)))
     |> reject_when_terminal(projection)
   end
 

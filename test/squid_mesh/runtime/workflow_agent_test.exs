@@ -370,6 +370,48 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
              []
   end
 
+  test "does not recover planned runnables that were already applied" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [planned_runnable()],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, runnable_applied} =
+             DispatchProtocol.new_entry(:runnable_applied, %{
+               run_id: @run_id,
+               runnable_key: @runnable_key,
+               result: %{"status" => "captured"},
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, %{rev: 3}} =
+             Journal.append_entries(@storage, [run_started, runnables_planned, runnable_applied])
+
+    assert {:ok, restarted_workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+    assert {:ok, empty_dispatch_agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert WorkflowAgent.pending_dispatches(restarted_workflow_agent, empty_dispatch_agent) == []
+
+    assert {:ok, %{agent: ^empty_dispatch_agent, runnables: []}} =
+             WorkflowAgent.schedule_pending_dispatches(
+               @storage,
+               restarted_workflow_agent,
+               empty_dispatch_agent,
+               now: @visible_at
+             )
+
+    assert {:error, :not_found} = Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
   test "treats applying the same completed dispatch result as idempotent" do
     assert {:ok, run_started} =
              DispatchProtocol.new_entry(:run_started, %{
