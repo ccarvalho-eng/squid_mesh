@@ -37,14 +37,17 @@ The long-term runtime shape is:
 3. Squid Mesh records durable workflow and dispatch facts.
 4. Jido provides the runtime foundation for actions, signals, agents, thread
    journals, checkpoints, storage, and supervised execution.
-5. Host executors remain responsible for concrete delivery mechanics such as
-   queues, scheduled jobs, redelivery, and worker infrastructure.
+5. Executor backends remain responsible for concrete delivery mechanics such as
+   queues, scheduled work, redelivery, and worker infrastructure. IntentLedger is
+   the preferred durable executor direction, while Squid Mesh keeps the core
+   dispatch contract backend-neutral so host applications can provide their own
+   executor when needed.
 
 The current implementation is partway through that transition. Squid Mesh
 already uses Spark and Jido-compatible step execution, and it now has a durable
-dispatch protocol for the Jido-native core. The live runtime still uses the
-current Postgres tables and host-executor path until the storage, projection,
-and agent slices land.
+dispatch protocol plus rebuildable workflow and dispatch agents for the
+Jido-native core. The live runtime still uses the current Postgres tables and
+host-executor path until the journal-backed execution path is wired through.
 
 ## Status Terms
 
@@ -67,9 +70,10 @@ and agent slices land.
 | Human approval workflows | Supported | Pause and approval flows are durable for transition-based workflows. |
 | Replay and cancellation | Supported | Replay respects irreversible and non-compensatable steps; cancellation converges through persisted run state. |
 | Inspection and explanation | Supported, evolving | Current inspection reads persisted runtime tables. The new core will rebuild views from durable journals and checkpoints in [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163). |
-| Durable dispatch protocol | In progress | The pure protocol, projection, and `Jido.Storage` journal boundary define runnable intent, claims, leases, heartbeats, completion, failure, retries, terminal-run fencing, and checkpoint pointers. Storage-backed runtime use is still planned. |
-| Jido.Storage-backed core | In progress | Protocol entries and projection checkpoints can be persisted through `Jido.Storage`; live runtime adoption remains planned in [#162](https://github.com/ccarvalho-eng/squid_mesh/issues/162). |
-| Jido-native runtime agents | Planned | Workflow and dispatch agents are tracked in [#164](https://github.com/ccarvalho-eng/squid_mesh/issues/164). |
+| Durable dispatch protocol | In progress | The pure protocol, projection, and `Jido.Storage` journal boundary define runnable intent, claims, leases, heartbeats, completion, failure, retries, terminal-run fencing, and checkpoint pointers. It is implemented as a foundation, but not yet the full live execution path. |
+| Jido.Storage-backed core | In progress | Protocol entries and projection checkpoints can be persisted through `Jido.Storage`; live runtime adoption remains follow-up work after [#162](https://github.com/ccarvalho-eng/squid_mesh/issues/162). |
+| Jido-native runtime agents | In progress | Workflow and dispatch agents can rebuild from durable journals and checkpoints; [#164](https://github.com/ccarvalho-eng/squid_mesh/issues/164) covers the completed agent foundation. |
+| IntentLedger executor | Planned | IntentLedger is the preferred durable executor direction for leases, retries, queue delivery, and worker recovery while Squid Mesh keeps custom executor support. |
 | Scheduled-start metadata | Planned | Intended schedule windows and duplicate-start protection are tracked in [#146](https://github.com/ccarvalho-eng/squid_mesh/issues/146) and [#145](https://github.com/ccarvalho-eng/squid_mesh/issues/145). |
 | Conditional and deferred continuation | Planned | Durable planner facts and deferred wakeups are tracked in [#140](https://github.com/ccarvalho-eng/squid_mesh/issues/140). |
 | Fan-out and fan-in contract | Planned | Runic-backed join and sibling behavior are tracked in [#142](https://github.com/ccarvalho-eng/squid_mesh/issues/142). |
@@ -94,6 +98,9 @@ Squid Mesh adds the workflow product layer:
 - durable dispatch semantics
 - workflow inspection and explanation projections
 - host-app integration around an existing Ecto repo and executor
+- a backend-neutral dispatch contract that can use IntentLedger as the default
+  durable executor path without making every workflow definition depend on
+  IntentLedger-specific concepts
 
 Use Jido directly when the main abstraction is an autonomous or supervised
 agent. Use Squid Mesh when the main abstraction is a durable workflow run that
@@ -142,13 +149,15 @@ and inspection backed by the existing Postgres tables.
 
 Treat the durable dispatch protocol as an architectural foundation. It defines
 the vocabulary for runnable intent, claim fencing, leases, heartbeats, retries,
-and terminal-run behavior, but it is not yet the live execution path for every
-workflow run.
+and terminal-run behavior. The workflow and dispatch agents can rebuild that
+state from durable journals, but the live runtime has not fully switched to that
+path yet.
 
 Track the linked issues for the larger runtime transition:
 
-- [#164](https://github.com/ccarvalho-eng/squid_mesh/issues/164) covers the
-  Jido-native workflow and dispatch agents.
+- [#170](https://github.com/ccarvalho-eng/squid_mesh/issues/170) covers the
+  lease, heartbeat, and fencing guarantees expected from the durable executor
+  integration.
 - [#163](https://github.com/ccarvalho-eng/squid_mesh/issues/163) covers
   journal-backed inspection and explanation projections.
 - [#145](https://github.com/ccarvalho-eng/squid_mesh/issues/145) and
