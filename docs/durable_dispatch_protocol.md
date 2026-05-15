@@ -123,7 +123,11 @@ Duplicate completion entries with the same claim and result are idempotent.
 Conflicting or stale completions are ignored and reported as anomalies. Retry
 scheduling is a durable fact with its own `visible_at`, so retry visibility
 survives restart. A runnable result can be applied to the run thread only after
-the matching completion is durable.
+the matching completion is durable. `SquidMesh.Runtime.WorkflowAgent.apply_result/4`
+is the current run-thread apply boundary: it accepts a completed dispatch
+attempt, validates that the runnable belongs to the rebuilt workflow projection,
+and appends `:runnable_applied` with an optimistic run-thread fence. Duplicate
+application of an already-applied runnable is idempotent.
 
 ## Terminal Runs
 

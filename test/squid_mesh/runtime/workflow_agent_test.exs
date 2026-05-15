@@ -206,6 +206,215 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert WorkflowAgent.pending_results(applied_workflow_agent, dispatch_agent) == []
   end
 
+  test "applies a completed dispatch result through a durable run-thread entry" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, dispatch_scheduled} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, dispatch_claimed} =
+             DispatchProtocol.new_entry(:attempt_claimed, claimed_attrs())
+
+    assert {:ok, dispatch_completed} =
+             DispatchProtocol.new_entry(:attempt_completed, completed_attrs())
+
+    assert {:ok, _run_thread} = Journal.append_entries(@storage, [run_started, runnables_planned])
+
+    assert {:ok, _dispatch_thread} =
+             Journal.append_entries(@storage, [
+               dispatch_scheduled,
+               dispatch_claimed,
+               dispatch_completed
+             ])
+
+    assert {:ok, workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+    assert {:ok, dispatch_agent} = DispatchAgent.rebuild(@storage, "default")
+    assert [completed_attempt] = WorkflowAgent.pending_results(workflow_agent, dispatch_agent)
+
+    assert {:ok, %{agent: applied_agent, attempt: ^completed_attempt}} =
+             WorkflowAgent.apply_result(@storage, workflow_agent, completed_attempt,
+               now: @completed_at
+             )
+
+    assert applied_agent.state.thread_rev == 3
+    assert WorkflowAgent.applied_runnable_keys(applied_agent) == MapSet.new([@runnable_key])
+    assert WorkflowAgent.pending_results(applied_agent, dispatch_agent) == []
+
+    assert {:ok, [_run_started, _runnables_planned, applied_entry]} =
+             Journal.load_entries(@storage, {:run, @run_id})
+
+    assert applied_entry.type == :runnable_applied
+    assert applied_entry.data.runnable_key == @runnable_key
+    assert applied_entry.data.result == %{"status" => "captured"}
+  end
+
+  test "treats applying the same completed dispatch result as idempotent" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, applied} =
+             DispatchProtocol.new_entry(:runnable_applied, %{
+               run_id: @run_id,
+               runnable_key: @runnable_key,
+               result: %{"status" => "captured"},
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, _thread} =
+             Journal.append_entries(@storage, [run_started, runnables_planned, applied])
+
+    assert {:ok, workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    completed_attempt = completed_attempt()
+
+    assert {:ok, %{agent: ^workflow_agent, attempt: ^completed_attempt}} =
+             WorkflowAgent.apply_result(@storage, workflow_agent, completed_attempt,
+               now: @completed_at
+             )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:run, @run_id})
+    assert Enum.count(entries, &(&1.type == :runnable_applied)) == 1
+  end
+
+  test "returns conflict when applying a result from a stale workflow projection" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, other_runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: "run_123:refund_card:1", step: "refund_card"}],
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, _run_thread} = Journal.append_entries(@storage, [run_started, runnables_planned])
+    assert {:ok, stale_workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert {:ok, _thread} =
+             Journal.append_entries(@storage, [other_runnables_planned], expected_rev: 2)
+
+    completed_attempt = completed_attempt()
+
+    assert {:error, :conflict} =
+             WorkflowAgent.apply_result(@storage, stale_workflow_agent, completed_attempt,
+               now: @completed_at
+             )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:run, @run_id})
+    refute Enum.any?(entries, &(&1.type == :runnable_applied))
+  end
+
+  test "rejects non-pending dispatch results before writing" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, _run_thread} = Journal.append_entries(@storage, [run_started, runnables_planned])
+    assert {:ok, workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    wrong_run_attempt = completed_attempt(run_id: "run_456")
+    unplanned_attempt = completed_attempt(runnable_key: "run_123:stale_step:1")
+    claimed_attempt = %{completed_attempt() | status: :claimed}
+
+    assert {:error, :wrong_run} =
+             WorkflowAgent.apply_result(@storage, workflow_agent, wrong_run_attempt,
+               now: @completed_at
+             )
+
+    assert {:error, :unknown_runnable_intent} =
+             WorkflowAgent.apply_result(@storage, workflow_agent, unplanned_attempt,
+               now: @completed_at
+             )
+
+    assert {:error, :result_not_completed} =
+             WorkflowAgent.apply_result(@storage, workflow_agent, claimed_attempt,
+               now: @completed_at
+             )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:run, @run_id})
+    refute Enum.any?(entries, &(&1.type == :runnable_applied))
+  end
+
+  test "rejects dispatch result application after the workflow run became terminal" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, run_terminal} =
+             DispatchProtocol.new_entry(:run_terminal, %{
+               run_id: @run_id,
+               status: :cancelled,
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, _run_thread} =
+             Journal.append_entries(@storage, [run_started, runnables_planned, run_terminal])
+
+    assert {:ok, workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert {:error, :terminal_run} =
+             WorkflowAgent.apply_result(@storage, workflow_agent, completed_attempt(),
+               now: @completed_at
+             )
+
+    assert {:ok, entries} = Journal.load_entries(@storage, {:run, @run_id})
+    refute Enum.any?(entries, &(&1.type == :runnable_applied))
+  end
+
   test "ignores completed dispatch results for unplanned runnable keys in the same run" do
     stale_runnable_key = "run_123:stale_step:1"
 
@@ -370,6 +579,30 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
         occurred_at: @completed_at
       },
       Map.new(attrs)
+    )
+  end
+
+  defp completed_attempt(attrs \\ %{}) do
+    struct!(
+      SquidMesh.Runtime.DispatchProtocol.ActionAttempt,
+      Map.merge(
+        %{
+          run_id: @run_id,
+          runnable_key: @runnable_key,
+          idempotency_key: @idempotency_key,
+          attempt_number: 1,
+          step: "charge_card",
+          input: %{"payment_id" => "pay_123"},
+          visible_at: @visible_at,
+          status: :completed,
+          claim_id: "claim_1",
+          claim_token_hash: "token_hash_1",
+          owner_id: "worker_1",
+          lease_until: @lease_until,
+          result: %{"status" => "captured"}
+        },
+        Map.new(attrs)
+      )
     )
   end
 
