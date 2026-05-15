@@ -25,6 +25,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
           required(:agent) => Agent.t(),
           required(:attempt) => ActionAttempt.t()
         }
+  @type apply_many_update :: %{
+          required(:agent) => Agent.t(),
+          required(:attempts) => [ActionAttempt.t()]
+        }
   @type storage_config :: Journal.storage_config()
 
   @spec rebuild(storage_config(), run_id()) :: {:ok, Agent.t()} | {:error, term()}
@@ -90,6 +94,46 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
     |> Enum.filter(&Projection.planned_runnable_key?(projection, &1.runnable_key))
     |> Enum.reject(&MapSet.member?(applied_keys, &1.runnable_key))
     |> reject_when_terminal(projection)
+  end
+
+  @doc """
+  Applies every completed dispatch result that is still pending for the workflow run.
+
+  This is the restart recovery boundary for lost live wakeups: both agents can be
+  rebuilt from durable journals, pending completed attempts can be derived again,
+  and each missing workflow application is appended to the run thread with the
+  current workflow-agent revision as the append fence.
+  """
+  @spec apply_pending_results(storage_config(), Agent.t(), Agent.t(), keyword()) ::
+          {:ok, apply_many_update()} | {:error, term()}
+  def apply_pending_results(storage, workflow_agent, dispatch_agent, opts \\ [])
+
+  def apply_pending_results(
+        storage,
+        %Agent{agent_module: __MODULE__} = workflow_agent,
+        %Agent{agent_module: DispatchAgent} = dispatch_agent,
+        opts
+      )
+      when is_list(opts) do
+    workflow_agent
+    |> pending_results(dispatch_agent)
+    |> Enum.reduce_while({:ok, workflow_agent, []}, fn %ActionAttempt{} = attempt,
+                                                       {:ok, current_agent, applied_attempts} ->
+      case apply_result(storage, current_agent, attempt, opts) do
+        {:ok, %{agent: next_agent, attempt: applied_attempt}} ->
+          {:cont, {:ok, next_agent, [applied_attempt | applied_attempts]}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, updated_agent, applied_attempts} ->
+        {:ok, %{agent: updated_agent, attempts: Enum.reverse(applied_attempts)}}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   @doc """

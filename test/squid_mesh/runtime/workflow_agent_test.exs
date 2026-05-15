@@ -260,6 +260,63 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert applied_entry.data.result == %{"status" => "captured"}
   end
 
+  test "recovers completed dispatch results after a restart loses the live wakeup" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, dispatch_scheduled} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, dispatch_claimed} =
+             DispatchProtocol.new_entry(:attempt_claimed, claimed_attrs())
+
+    assert {:ok, dispatch_completed} =
+             DispatchProtocol.new_entry(:attempt_completed, completed_attrs())
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [run_started, runnables_planned])
+
+    assert {:ok, %{rev: 3}} =
+             Journal.append_entries(@storage, [
+               dispatch_scheduled,
+               dispatch_claimed,
+               dispatch_completed
+             ])
+
+    assert {:ok, restarted_workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+    assert {:ok, restarted_dispatch_agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert {:ok, %{agent: recovered_agent, attempts: [%{runnable_key: @runnable_key}]}} =
+             WorkflowAgent.apply_pending_results(
+               @storage,
+               restarted_workflow_agent,
+               restarted_dispatch_agent,
+               now: @completed_at
+             )
+
+    assert recovered_agent.state.thread_rev == 3
+    assert WorkflowAgent.applied_runnable_keys(recovered_agent) == MapSet.new([@runnable_key])
+
+    assert {:ok, [_run_started, _runnables_planned, applied_entry]} =
+             Journal.load_entries(@storage, {:run, @run_id})
+
+    assert applied_entry.type == :runnable_applied
+    assert applied_entry.data.result == %{"status" => "captured"}
+
+    assert {:ok, rebuilt_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+    assert WorkflowAgent.pending_results(rebuilt_agent, restarted_dispatch_agent) == []
+  end
+
   test "treats applying the same completed dispatch result as idempotent" do
     assert {:ok, run_started} =
              DispatchProtocol.new_entry(:run_started, %{
