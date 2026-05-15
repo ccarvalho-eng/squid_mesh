@@ -69,6 +69,64 @@ defmodule SquidMesh.Runtime.DispatchAgentTest do
     assert agent.state.thread_rev == thread.rev
   end
 
+  test "replays entries newer than a stale dispatch checkpoint" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, claimed_entry} =
+             DispatchProtocol.new_entry(:attempt_claimed, claimed_attrs())
+
+    assert {:ok, run_terminal} =
+             DispatchProtocol.new_entry(:run_terminal, %{
+               run_id: @run_id,
+               status: :cancelled,
+               occurred_at: @expired_at
+             })
+
+    assert {:ok, thread} = Journal.append_entries(@storage, [scheduled_entry])
+
+    checkpoint_projection = Projection.rebuild([scheduled_entry, run_terminal])
+
+    assert :ok =
+             Journal.put_checkpoint(
+               @storage,
+               {:dispatch, "default"},
+               checkpoint_projection,
+               thread.rev,
+               updated_at: @visible_at
+             )
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [claimed_entry], expected_rev: 1)
+
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert agent.state.thread_rev == 2
+    assert DispatchAgent.expired_claims(agent, @expired_at) == []
+  end
+
+  test "fences dispatch work for runs with terminal run-thread entries" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, claimed_entry} =
+             DispatchProtocol.new_entry(:attempt_claimed, claimed_attrs())
+
+    assert {:ok, run_terminal} =
+             DispatchProtocol.new_entry(:run_terminal, %{
+               run_id: @run_id,
+               status: :cancelled,
+               occurred_at: @expired_at
+             })
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [scheduled_entry, claimed_entry])
+    assert {:ok, %{rev: 1}} = Journal.append_entries(@storage, [run_terminal])
+
+    assert {:ok, agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert DispatchAgent.visible_attempts(agent, @expired_at) == []
+    assert DispatchAgent.expired_claims(agent, @expired_at) == []
+  end
+
   defp scheduled_attrs(attrs \\ %{}) do
     Map.merge(
       %{

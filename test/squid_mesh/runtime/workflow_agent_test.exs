@@ -82,6 +82,46 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert WorkflowAgent.planned_runnable_keys(agent) == [@runnable_key]
   end
 
+  test "replays entries newer than a stale workflow checkpoint" do
+    checkpoint_runnable_key = "run_123:refund_card:1"
+
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, applied} =
+             DispatchProtocol.new_entry(:runnable_applied, %{
+               run_id: @run_id,
+               runnable_key: checkpoint_runnable_key,
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, thread} = Journal.append_entries(@storage, [run_started])
+
+    checkpoint_projection = %Projection{
+      run_id: @run_id,
+      workflow: @workflow,
+      status: :running,
+      planned_runnables: %{checkpoint_runnable_key => %{runnable_key: checkpoint_runnable_key}}
+    }
+
+    assert :ok =
+             Journal.put_checkpoint(@storage, {:run, @run_id}, checkpoint_projection, thread.rev,
+               updated_at: @visible_at
+             )
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [applied], expected_rev: 1)
+
+    assert {:ok, agent} = WorkflowAgent.rebuild(@storage, @run_id)
+
+    assert agent.state.thread_rev == 2
+    assert WorkflowAgent.status(agent) == :idle
+    assert WorkflowAgent.applied_runnable_keys(agent) == MapSet.new([checkpoint_runnable_key])
+  end
+
   test "keeps completed dispatch results pending until the workflow applies them" do
     assert {:ok, run_started} =
              DispatchProtocol.new_entry(:run_started, %{
@@ -132,6 +172,52 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert {:ok, applied_workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
 
     assert WorkflowAgent.pending_results(applied_workflow_agent, dispatch_agent) == []
+  end
+
+  test "ignores completed dispatch results for unplanned runnable keys in the same run" do
+    stale_runnable_key = "run_123:stale_step:1"
+
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [%{runnable_key: @runnable_key, step: "charge_card"}],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, stale_scheduled} =
+             DispatchProtocol.new_entry(
+               :attempt_scheduled,
+               scheduled_attrs(runnable_key: stale_runnable_key)
+             )
+
+    assert {:ok, stale_claimed} =
+             DispatchProtocol.new_entry(
+               :attempt_claimed,
+               claimed_attrs(runnable_key: stale_runnable_key)
+             )
+
+    assert {:ok, stale_completed} =
+             DispatchProtocol.new_entry(
+               :attempt_completed,
+               completed_attrs(runnable_key: stale_runnable_key)
+             )
+
+    assert {:ok, _run_thread} = Journal.append_entries(@storage, [run_started, runnables_planned])
+
+    assert {:ok, _dispatch_thread} =
+             Journal.append_entries(@storage, [stale_scheduled, stale_claimed, stale_completed])
+
+    assert {:ok, workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+    assert {:ok, dispatch_agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert WorkflowAgent.pending_results(workflow_agent, dispatch_agent) == []
   end
 
   test "ignores completed dispatch results from other runs on the same queue" do

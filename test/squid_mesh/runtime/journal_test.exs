@@ -71,6 +71,26 @@ defmodule SquidMesh.Runtime.JournalTest do
            ] = Projection.completed_results(projection)
   end
 
+  test "loads thread metadata with decoded entries" do
+    assert {:ok, scheduled_entry} =
+             DispatchProtocol.new_entry(:attempt_scheduled, scheduled_attrs())
+
+    assert {:ok, claimed_entry} =
+             DispatchProtocol.new_entry(:attempt_claimed, claimed_attrs())
+
+    entries = [scheduled_entry, claimed_entry]
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, entries)
+
+    assert {:ok,
+            %{
+              thread: {:dispatch, "default"},
+              thread_id: "squid_mesh:dispatch:default",
+              rev: 2,
+              entries: ^entries
+            }} = Journal.load_thread(@storage, {:dispatch, "default"})
+  end
+
   @tag :tmp_dir
   test "restores entries through file-backed Jido storage", %{tmp_dir: tmp_dir} do
     storage = {Jido.Storage.File, path: tmp_dir}
@@ -132,6 +152,7 @@ defmodule SquidMesh.Runtime.JournalTest do
 
   test "returns structured not found errors for absent threads and checkpoints" do
     assert {:error, :not_found} = Journal.load_entries(@storage, {:dispatch, "missing"})
+    assert {:error, :not_found} = Journal.load_thread(@storage, {:dispatch, "missing"})
     assert {:error, :not_found} = Journal.fetch_checkpoint(@storage, {:dispatch, "missing"})
   end
 
@@ -144,7 +165,7 @@ defmodule SquidMesh.Runtime.JournalTest do
              )
 
     assert {:error, {:invalid_journal_entry, 0, :missing_data}} =
-             Journal.load_entries(@storage, {:dispatch, "default"})
+             Journal.load_thread(@storage, {:dispatch, "default"})
   end
 
   test "returns structured errors for invalid persisted timestamps" do

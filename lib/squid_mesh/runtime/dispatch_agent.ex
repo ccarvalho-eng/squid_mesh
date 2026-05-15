@@ -25,9 +25,8 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   def rebuild(storage, queue) do
     queue = normalize_queue(queue)
 
-    with {:ok, loaded_thread} <- Journal.load_thread(storage, {:dispatch, queue}) do
-      projection = current_projection(storage, loaded_thread)
-
+    with {:ok, loaded_thread} <- Journal.load_thread(storage, {:dispatch, queue}),
+         {:ok, projection} <- current_projection(storage, loaded_thread) do
       {:ok,
        new(
          id: agent_id(queue),
@@ -69,13 +68,52 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   end
 
   defp current_projection(storage, %{thread: thread, rev: rev, entries: entries}) do
-    case Journal.fetch_checkpoint(storage, thread) do
-      {:ok, %Checkpoint{thread_rev: ^rev, projection: %Projection{} = projection}} ->
-        projection
-
-      _missing_or_stale ->
-        Projection.rebuild(entries)
+    with {:ok, projection} <- projection_from_checkpoint(storage, thread, rev, entries),
+         {:ok, run_terminal_entries} <- load_run_terminal_entries(storage, entries) do
+      {:ok, Projection.replay(projection, run_terminal_entries)}
     end
+  end
+
+  defp projection_from_checkpoint(storage, thread, rev, entries) do
+    case Journal.fetch_checkpoint(storage, thread) do
+      {:ok, %Checkpoint{thread_rev: checkpoint_rev, projection: %Projection{} = projection}}
+      when is_integer(checkpoint_rev) and checkpoint_rev >= 0 and checkpoint_rev <= rev ->
+        {:ok, Projection.replay(projection, Enum.drop(entries, checkpoint_rev))}
+
+      {:error, :not_found} ->
+        {:ok, Projection.rebuild(entries)}
+
+      {:error, _reason} = error ->
+        error
+
+      _future_or_invalid_checkpoint ->
+        {:ok, Projection.rebuild(entries)}
+    end
+  end
+
+  defp load_run_terminal_entries(storage, entries) do
+    entries
+    |> run_ids()
+    |> Enum.reduce_while({:ok, []}, fn run_id, {:ok, terminal_entries} ->
+      case Journal.load_thread(storage, {:run, run_id}) do
+        {:ok, %{entries: run_entries}} ->
+          {:cont,
+           {:ok, terminal_entries ++ Enum.filter(run_entries, &(&1.type == :run_terminal))}}
+
+        {:error, :not_found} ->
+          {:cont, {:ok, terminal_entries}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp run_ids(entries) do
+    entries
+    |> Enum.map(&Map.get(&1.data, :run_id))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
   end
 
   defp normalize_queue(nil), do: "default"

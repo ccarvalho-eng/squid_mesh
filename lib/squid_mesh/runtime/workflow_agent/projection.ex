@@ -36,7 +36,12 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
 
   @spec rebuild([Entry.t()]) :: t()
   def rebuild(entries) when is_list(entries) do
-    Enum.reduce(entries, %__MODULE__{}, &apply_entry/2)
+    replay(%__MODULE__{}, entries)
+  end
+
+  @spec replay(t(), [Entry.t()]) :: t()
+  def replay(%__MODULE__{} = projection, entries) when is_list(entries) do
+    Enum.reduce(entries, projection, &apply_entry/2)
   end
 
   @spec status(t()) :: atom()
@@ -51,6 +56,12 @@ defmodule SquidMesh.Runtime.WorkflowAgent.Projection do
     planned_runnables
     |> Map.keys()
     |> Enum.sort()
+  end
+
+  @spec planned_runnable_key?(t(), String.t()) :: boolean()
+  def planned_runnable_key?(%__MODULE__{planned_runnables: planned_runnables}, runnable_key)
+      when is_binary(runnable_key) do
+    Map.has_key?(planned_runnables, runnable_key)
   end
 
   @spec applied_runnable_keys(t()) :: MapSet.t(String.t())
