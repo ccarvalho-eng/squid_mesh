@@ -317,6 +317,101 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
     assert WorkflowAgent.pending_results(rebuilt_agent, restarted_dispatch_agent) == []
   end
 
+  test "recovers planned runnables after a restart loses the dispatch append" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [planned_runnable()],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, %{rev: 2}} = Journal.append_entries(@storage, [run_started, runnables_planned])
+
+    assert {:ok, restarted_workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+    assert {:ok, empty_dispatch_agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert [%{runnable_key: @runnable_key}] =
+             WorkflowAgent.pending_dispatches(restarted_workflow_agent, empty_dispatch_agent)
+
+    assert {:ok,
+            %{
+              agent: recovered_dispatch_agent,
+              runnables: [%{runnable_key: @runnable_key}]
+            }} =
+             WorkflowAgent.schedule_pending_dispatches(
+               @storage,
+               restarted_workflow_agent,
+               empty_dispatch_agent,
+               now: @visible_at
+             )
+
+    assert recovered_dispatch_agent.state.thread_rev == 1
+
+    assert [%{runnable_key: @runnable_key, status: :available}] =
+             DispatchAgent.visible_attempts(recovered_dispatch_agent, @visible_at)
+
+    assert {:ok, [scheduled_entry]} = Journal.load_entries(@storage, {:dispatch, "default"})
+
+    assert scheduled_entry.type == :attempt_scheduled
+    assert scheduled_entry.data.runnable_key == @runnable_key
+    assert scheduled_entry.data.idempotency_key == @idempotency_key
+    assert scheduled_entry.data.input == %{"payment_id" => "pay_123"}
+
+    assert {:ok, rebuilt_dispatch_agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert WorkflowAgent.pending_dispatches(restarted_workflow_agent, rebuilt_dispatch_agent) ==
+             []
+  end
+
+  test "does not recover planned runnables that were already applied" do
+    assert {:ok, run_started} =
+             DispatchProtocol.new_entry(:run_started, %{
+               run_id: @run_id,
+               workflow: @workflow,
+               occurred_at: @started_at
+             })
+
+    assert {:ok, runnables_planned} =
+             DispatchProtocol.new_entry(:runnables_planned, %{
+               run_id: @run_id,
+               runnables: [planned_runnable()],
+               occurred_at: @visible_at
+             })
+
+    assert {:ok, runnable_applied} =
+             DispatchProtocol.new_entry(:runnable_applied, %{
+               run_id: @run_id,
+               runnable_key: @runnable_key,
+               result: %{"status" => "captured"},
+               occurred_at: @completed_at
+             })
+
+    assert {:ok, %{rev: 3}} =
+             Journal.append_entries(@storage, [run_started, runnables_planned, runnable_applied])
+
+    assert {:ok, restarted_workflow_agent} = WorkflowAgent.rebuild(@storage, @run_id)
+    assert {:ok, empty_dispatch_agent} = DispatchAgent.rebuild(@storage, "default")
+
+    assert WorkflowAgent.pending_dispatches(restarted_workflow_agent, empty_dispatch_agent) == []
+
+    assert {:ok, %{agent: ^empty_dispatch_agent, runnables: []}} =
+             WorkflowAgent.schedule_pending_dispatches(
+               @storage,
+               restarted_workflow_agent,
+               empty_dispatch_agent,
+               now: @visible_at
+             )
+
+    assert {:error, :not_found} = Journal.load_entries(@storage, {:dispatch, "default"})
+  end
+
   test "treats applying the same completed dispatch result as idempotent" do
     assert {:ok, run_started} =
              DispatchProtocol.new_entry(:run_started, %{
@@ -650,6 +745,12 @@ defmodule SquidMesh.Runtime.WorkflowAgentTest do
       },
       Map.new(attrs)
     )
+  end
+
+  defp planned_runnable(attrs \\ %{}) do
+    attrs
+    |> scheduled_attrs()
+    |> Map.delete(:occurred_at)
   end
 
   defp claimed_attrs(attrs \\ %{}) do

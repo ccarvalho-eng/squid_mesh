@@ -29,6 +29,10 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
           required(:agent) => Agent.t(),
           required(:attempts) => [ActionAttempt.t()]
         }
+  @type dispatch_schedule_update :: %{
+          required(:agent) => Agent.t(),
+          required(:runnables) => [map()]
+        }
   @type storage_config :: Journal.storage_config()
 
   @spec rebuild(storage_config(), run_id()) :: {:ok, Agent.t()} | {:error, term()}
@@ -74,6 +78,11 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
     Projection.planned_runnable_keys(projection)
   end
 
+  @spec planned_runnables(Agent.t()) :: [map()]
+  def planned_runnables(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
+    Projection.planned_runnables(projection)
+  end
+
   @spec applied_runnable_keys(Agent.t()) :: MapSet.t(String.t())
   def applied_runnable_keys(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
     Projection.applied_runnable_keys(projection)
@@ -94,6 +103,50 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
     |> Enum.filter(&Projection.planned_runnable_key?(projection, &1.runnable_key))
     |> Enum.reject(&MapSet.member?(applied_keys, &1.runnable_key))
     |> reject_when_terminal(projection)
+  end
+
+  @spec pending_dispatches(Agent.t(), Agent.t()) :: [map()]
+  def pending_dispatches(
+        %Agent{agent_module: __MODULE__, state: %{projection: projection}},
+        %Agent{agent_module: DispatchAgent} = dispatch_agent
+      ) do
+    dispatched_keys = DispatchAgent.runnable_keys(dispatch_agent)
+    applied_keys = Projection.applied_runnable_keys(projection)
+
+    projection
+    |> Projection.planned_runnables()
+    |> Enum.reject(&MapSet.member?(dispatched_keys, runnable_key(&1)))
+    |> Enum.reject(&MapSet.member?(applied_keys, runnable_key(&1)))
+    |> reject_when_terminal(projection)
+  end
+
+  @doc """
+  Schedules every planned runnable that is missing from the dispatch journal.
+
+  This is the restart recovery boundary for the crash window between durable
+  workflow planning and durable dispatch scheduling. The workflow agent derives
+  missing planned runnables from the run-thread projection, and the dispatch
+  agent appends their `:attempt_scheduled` entries with its current dispatch
+  thread revision as the append fence.
+  """
+  @spec schedule_pending_dispatches(storage_config(), Agent.t(), Agent.t(), keyword()) ::
+          {:ok, dispatch_schedule_update()} | {:error, term()}
+  def schedule_pending_dispatches(storage, workflow_agent, dispatch_agent, opts \\ [])
+
+  def schedule_pending_dispatches(
+        storage,
+        %Agent{agent_module: __MODULE__, state: %{run_id: run_id}} = workflow_agent,
+        %Agent{agent_module: DispatchAgent} = dispatch_agent,
+        opts
+      )
+      when is_binary(run_id) and is_list(opts) do
+    DispatchAgent.schedule_attempts(
+      storage,
+      dispatch_agent,
+      run_id,
+      pending_dispatches(workflow_agent, dispatch_agent),
+      opts
+    )
   end
 
   @doc """
@@ -183,6 +236,12 @@ defmodule SquidMesh.Runtime.WorkflowAgent do
   defp reject_when_terminal(results, %Projection{} = projection) do
     if Projection.terminal?(projection), do: [], else: results
   end
+
+  defp runnable_key(runnable) when is_map(runnable) do
+    Map.get(runnable, :runnable_key) || Map.get(runnable, "runnable_key")
+  end
+
+  defp runnable_key(_runnable), do: nil
 
   defp persist_workflow_entry(
          storage,

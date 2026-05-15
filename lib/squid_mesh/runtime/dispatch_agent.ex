@@ -35,13 +35,17 @@ defmodule SquidMesh.Runtime.DispatchAgent do
           required(:attempt) => ActionAttempt.t(),
           optional(:lease_until) => DateTime.t()
         }
+  @type schedule_update :: %{
+          required(:agent) => Agent.t(),
+          required(:runnables) => [map()]
+        }
   @type storage_config :: Journal.storage_config()
 
   @spec rebuild(storage_config(), queue() | atom()) :: {:ok, Agent.t()} | {:error, term()}
   def rebuild(storage, queue) do
     queue = normalize_queue(queue)
 
-    with {:ok, loaded_thread} <- Journal.load_thread(storage, {:dispatch, queue}),
+    with {:ok, loaded_thread} <- load_dispatch_thread(storage, queue),
          {:ok, projection} <- current_projection(storage, loaded_thread) do
       {:ok,
        new(
@@ -94,6 +98,50 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   @spec completed_results(Agent.t()) :: [SquidMesh.Runtime.DispatchProtocol.ActionAttempt.t()]
   def completed_results(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
     Projection.completed_results(projection)
+  end
+
+  @spec runnable_keys(Agent.t()) :: MapSet.t(String.t())
+  def runnable_keys(%Agent{agent_module: __MODULE__, state: %{projection: projection}}) do
+    Projection.attempt_runnable_keys(projection)
+  end
+
+  @doc """
+  Appends durable scheduled attempts for planned runnables that are not already
+  present in the dispatch-agent projection.
+
+  The append uses the dispatch thread's current revision as the optimistic fence.
+  Duplicate callers with stale dispatch projections therefore fail at the journal
+  boundary, while callers that already see the scheduled attempts return
+  idempotently without writing.
+  """
+  @spec schedule_attempts(storage_config(), Agent.t(), String.t(), [map()], keyword()) ::
+          {:ok, schedule_update()} | {:error, term()}
+  def schedule_attempts(storage, agent, run_id, runnables, opts \\ [])
+
+  def schedule_attempts(
+        storage,
+        %Agent{
+          agent_module: __MODULE__,
+          state: %{queue: queue, projection: %Projection{} = projection, thread_rev: thread_rev}
+        } = agent,
+        run_id,
+        runnables,
+        opts
+      )
+      when is_binary(queue) and is_binary(run_id) and is_list(runnables) and
+             is_integer(thread_rev) and thread_rev >= 0 and is_list(opts) do
+    with {:ok, now} <- lifecycle_now(opts),
+         {:ok, entries, scheduled_runnables} <-
+           schedule_entries(projection, queue, run_id, runnables, now) do
+      persist_dispatch_entries(
+        storage,
+        agent,
+        projection,
+        thread_rev,
+        entries,
+        scheduled_runnables
+      )
+    end
   end
 
   @doc """
@@ -317,6 +365,25 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     end
   end
 
+  defp load_dispatch_thread(storage, queue) do
+    case Journal.load_thread(storage, {:dispatch, queue}) do
+      {:ok, loaded_thread} ->
+        {:ok, loaded_thread}
+
+      {:error, :not_found} ->
+        {:ok,
+         %{
+           thread: {:dispatch, queue},
+           thread_id: Journal.thread_id({:dispatch, queue}),
+           rev: 0,
+           entries: []
+         }}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   defp current_projection(storage, %{thread: thread, rev: rev, entries: entries}) do
     with {:ok, projection} <- projection_from_checkpoint(storage, thread, rev, entries),
          {:ok, run_terminal_entries} <- load_run_terminal_entries(storage, entries) do
@@ -371,6 +438,85 @@ defmodule SquidMesh.Runtime.DispatchAgent do
     |> Enum.map(&Map.get(&1.data, :run_id))
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
+  end
+
+  defp schedule_entries(%Projection{} = projection, queue, run_id, runnables, %DateTime{} = now) do
+    known_keys = Projection.attempt_runnable_keys(projection)
+
+    runnables
+    |> Enum.reject(fn runnable -> MapSet.member?(known_keys, runnable_key(runnable)) end)
+    |> Enum.reduce_while({:ok, [], []}, fn runnable, {:ok, entries, scheduled_runnables} ->
+      case schedule_entry(queue, run_id, runnable, now) do
+        {:ok, entry} -> {:cont, {:ok, [entry | entries], [runnable | scheduled_runnables]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, entries, scheduled_runnables} ->
+        {:ok, Enum.reverse(entries), Enum.reverse(scheduled_runnables)}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp schedule_entry(queue, run_id, runnable, %DateTime{} = now) when is_map(runnable) do
+    runnable_run_id = runnable_value(runnable, :run_id) || run_id
+    runnable_key = runnable_key(runnable)
+    runnable_queue = runnable_value(runnable, :queue) || queue
+
+    cond do
+      runnable_run_id != run_id ->
+        {:error, {:wrong_run, runnable_key}}
+
+      normalize_queue(runnable_queue) != queue ->
+        {:error, {:wrong_queue, runnable_key}}
+
+      true ->
+        DispatchProtocol.new_entry(:attempt_scheduled, %{
+          run_id: run_id,
+          runnable_key: runnable_key,
+          idempotency_key: runnable_value(runnable, :idempotency_key),
+          attempt_number: runnable_value(runnable, :attempt_number),
+          queue: queue,
+          step: runnable_value(runnable, :step),
+          input: runnable_value(runnable, :input),
+          visible_at: runnable_value(runnable, :visible_at),
+          occurred_at: now
+        })
+    end
+  end
+
+  defp schedule_entry(_queue, _run_id, runnable, %DateTime{}) do
+    {:error, {:invalid_runnable, runnable}}
+  end
+
+  defp persist_dispatch_entries(
+         _storage,
+         %Agent{} = agent,
+         %Projection{},
+         _thread_rev,
+         [],
+         []
+       ) do
+    {:ok, %{agent: agent, runnables: []}}
+  end
+
+  defp persist_dispatch_entries(
+         storage,
+         %Agent{} = agent,
+         %Projection{} = projection,
+         thread_rev,
+         entries,
+         scheduled_runnables
+       ) do
+    with {:ok, thread} <- Journal.append_entries(storage, entries, expected_rev: thread_rev) do
+      {:ok,
+       %{
+         agent: apply_dispatch_entries(agent, projection, entries, thread.rev),
+         runnables: scheduled_runnables
+       }}
+    end
   end
 
   defp persist_claim(
@@ -428,14 +574,28 @@ defmodule SquidMesh.Runtime.DispatchAgent do
   end
 
   defp apply_dispatch_entry(%Agent{} = agent, %Projection{} = projection, entry, thread_rev) do
+    apply_dispatch_entries(agent, projection, [entry], thread_rev)
+  end
+
+  defp apply_dispatch_entries(%Agent{} = agent, %Projection{} = projection, entries, thread_rev) do
     %Agent{
       agent
       | state: %{
           agent.state
-          | projection: Projection.replay(projection, [entry]),
+          | projection: Projection.replay(projection, entries),
             thread_rev: thread_rev
         }
     }
+  end
+
+  defp runnable_key(runnable) when is_map(runnable) do
+    runnable_value(runnable, :runnable_key)
+  end
+
+  defp runnable_key(_runnable), do: nil
+
+  defp runnable_value(runnable, key) when is_map(runnable) and is_atom(key) do
+    Map.get(runnable, key) || Map.get(runnable, Atom.to_string(key))
   end
 
   defp claimed_attempt!(%Agent{state: %{projection: %Projection{} = projection}}, runnable_key) do

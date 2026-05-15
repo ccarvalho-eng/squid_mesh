@@ -54,6 +54,14 @@ projection can still rediscover the visible attempt after restart. Duplicate
 runnable intent entries are idempotent when their scheduled fields match;
 conflicting entries for the same `runnable_key` are anomalies.
 
+If a crash happens after the workflow run thread records planned runnables but
+before the dispatch thread records matching `attempt_scheduled` entries, rebuilt
+agents can recover through
+`SquidMesh.Runtime.WorkflowAgent.schedule_pending_dispatches/4`. The workflow
+agent derives planned-but-unscheduled runnables from the run projection, and the
+dispatch agent appends the missing dispatch intents with its current dispatch
+thread revision as the optimistic fence.
+
 For dependency-based workflows, Runic-ready runnables map to durable runnable
 intent. Independent root steps may produce sibling runnable intents for the same
 run, and a join step produces intent only after every dependency result has
