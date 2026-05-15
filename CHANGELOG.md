@@ -15,6 +15,10 @@ development.
   claim-token validation, post-append attempt projection returns, retry
   scheduling, and expired lease redelivery support for the Jido-native runtime
   path.
+- Durable workflow-agent result application through `WorkflowAgent.apply_result/4`,
+  including optimistic run-thread fencing, idempotent duplicate application, and
+  rejection of non-completed, wrong-run, terminal-run, and unplanned dispatch
+  results before writing.
 
 ## [0.1.0-alpha.7] - 2026-05-15
 
