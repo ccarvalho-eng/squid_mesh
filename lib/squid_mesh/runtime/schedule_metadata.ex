@@ -69,7 +69,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
              timezone: Map.fetch!(config, :timezone),
              received_at: received_at()
            }
-           |> maybe_put(:signal_id, signal_id)
+           |> maybe_put_signal_id(signal_id)
            |> maybe_put(:intended_window, intended_window)
        }}
     end
@@ -78,13 +78,20 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   defp signal_id(workflow_name, trigger_name, intended_window, payload) do
     case payload_value(payload, "signal_id") do
       nil ->
-        {:ok, derived_signal_id(workflow_name, trigger_name, intended_window)}
+        {:ok, maybe_derive_signal_id(workflow_name, trigger_name, intended_window)}
 
       signal_id when is_binary(signal_id) and signal_id != "" ->
         {:ok, signal_id}
 
       invalid_signal_id ->
         {:error, {:invalid_schedule_signal_id, invalid_signal_id}}
+    end
+  end
+
+  defp maybe_derive_signal_id(workflow_name, trigger_name, intended_window) do
+    case derived_signal_id(workflow_name, trigger_name, intended_window) do
+      nil -> :none
+      signal_id -> signal_id
     end
   end
 
@@ -152,4 +159,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp maybe_put_signal_id(map, :none), do: map
+  defp maybe_put_signal_id(map, signal_id), do: Map.put(map, :signal_id, signal_id)
 end

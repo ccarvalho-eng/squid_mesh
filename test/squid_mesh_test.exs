@@ -693,6 +693,23 @@ defmodule SquidMeshTest do
                ~r/^sha256:[A-Za-z0-9_-]{43}$/
     end
 
+    test "omits derived signal ids when schedule windows are incomplete" do
+      payload =
+        SquidMesh.Executor.Payload.cron(
+          ScheduledContextWorkflow,
+          :scheduled_capture,
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z"
+          }
+        )
+
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+
+      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+
+      refute Map.has_key?(persisted_run.context["schedule"], "signal_id")
+    end
+
     test "scopes derived signal ids by workflow" do
       intended_window = %{
         start_at: "2026-05-15T09:00:00Z",

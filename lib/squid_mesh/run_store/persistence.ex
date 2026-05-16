@@ -124,10 +124,7 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   defp replay_context(context) do
-    Map.new(@reserved_run_context_keys, fn key ->
-      {key, replay_context_value(context, key)}
-    end)
-    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+    pick_reserved_context(context)
   end
 
   defp replay_context_value(context, key) do
@@ -138,8 +135,12 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   defp initial_context(opts) do
-    context = Keyword.get(opts, :initial_context, %{})
+    opts
+    |> Keyword.get(:initial_context, %{})
+    |> pick_reserved_context()
+  end
 
+  defp pick_reserved_context(context) do
     Map.new(@reserved_run_context_keys, fn key ->
       {key, replay_context_value(context, key)}
     end)

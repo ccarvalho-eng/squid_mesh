@@ -138,6 +138,7 @@ defmodule SquidMesh do
   @spec start_run_with_initial_context(module(), atom(), map(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
+          | {:error, {:invalid_option, atom()}}
           | {:error, RunStore.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run_with_initial_context(workflow, trigger_name, payload, initial_context, overrides)
