@@ -1,8 +1,32 @@
 defmodule MinimalHostApp.WorkflowRunsTest do
   use MinimalHostApp.DataCase
 
+  alias MinimalHostApp.CronPlugin
   alias MinimalHostApp.Smoke
+  alias MinimalHostApp.Workers.SquidMeshWorker
   alias MinimalHostApp.WorkflowRuns
+  alias Oban.Job
+
+  defmodule InvalidRecurringIdempotentCronWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :daily_digest do
+        cron "0 9 * * *", timezone: "Etc/UTC", idempotency: :reuse_existing
+
+        payload do
+          field :channel, :string, default: "ops"
+          field :digest_date, :string, default: {:today, :iso8601}
+        end
+      end
+
+      step :announce_digest, :log, message: "posting daily digest"
+      step :record_digest_delivery, MinimalHostApp.Steps.RecordDigestDelivery
+
+      transition :announce_digest, on: :ok, to: :record_digest_delivery
+      transition :record_digest_delivery, on: :ok, to: :complete
+    end
+  end
 
   test "starts the example payment recovery workflow through the host boundary" do
     bypass = Bypass.open()
@@ -257,6 +281,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
   end
 
   test "runs the daily digest workflow through its cron trigger" do
+    signal_id = unique_reboot_signal_id()
+
     existing_run_ids =
       case WorkflowRuns.list_daily_digest_runs() do
         {:ok, runs} -> MapSet.new(runs, & &1.id)
@@ -267,7 +293,8 @@ defmodule MinimalHostApp.WorkflowRunsTest do
       args: %{
         "kind" => "cron",
         "workflow" => "Elixir.MinimalHostApp.Workflows.DailyDigest",
-        "trigger" => "daily_digest"
+        "trigger" => "daily_digest",
+        "signal_id" => signal_id
       }
     }
 
@@ -288,6 +315,39 @@ defmodule MinimalHostApp.WorkflowRunsTest do
     assert run.trigger == :daily_digest
     assert is_binary(run.payload.digest_date)
     assert run.payload.channel == "ops"
+    assert run.context.schedule.idempotency == "reuse_existing"
+    assert run.context.schedule.idempotency_key == signal_id
+  end
+
+  test "skips duplicate daily digest cron activation in the host example" do
+    payload = %{
+      "kind" => "cron",
+      "workflow" => "Elixir.MinimalHostApp.Workflows.DailyDigest",
+      "trigger" => "daily_digest",
+      "signal_id" =>
+        "minimal-host-app:reboot:Elixir.MinimalHostApp.Workflows.DailyDigest:daily_digest"
+    }
+
+    assert :ok = SquidMeshWorker.perform(%Job{args: payload})
+    assert :ok = SquidMeshWorker.perform(%Job{args: payload})
+    assert :ok = MinimalHostApp.RuntimeHarness.wait_for_execution()
+
+    assert {:ok, runs} = WorkflowRuns.list_daily_digest_runs()
+
+    runs_with_signal =
+      Enum.filter(runs, fn run ->
+        get_in(run.context, [:schedule, :idempotency_key]) ==
+          "minimal-host-app:reboot:Elixir.MinimalHostApp.Workflows.DailyDigest:daily_digest"
+      end)
+
+    assert [_run] = runs_with_signal
+  end
+
+  test "rejects idempotent recurring cron workflows without dynamic schedule identity" do
+    assert {:error, reason} =
+             CronPlugin.validate(workflows: [InvalidRecurringIdempotentCronWorkflow])
+
+    assert reason =~ "must provide dynamic schedule identity"
   end
 
   test "rejects a manual approval workflow through the host boundary" do
@@ -364,6 +424,10 @@ defmodule MinimalHostApp.WorkflowRunsTest do
 
   defp endpoint_url(port, path) do
     "http://127.0.0.1:#{port}#{path}"
+  end
+
+  defp unique_reboot_signal_id do
+    "minimal-host-app:test:daily_digest:#{System.unique_integer([:positive])}"
   end
 
   defp local_ledger_entries(run_id) do
