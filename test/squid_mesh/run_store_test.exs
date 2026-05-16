@@ -121,6 +121,33 @@ defmodule SquidMesh.RunStoreTest do
     end
   end
 
+  describe "create_and_dispatch_run/5" do
+    test "keeps only reserved run-level facts from initial context" do
+      schedule = %{
+        trigger_name: "scheduled_digest",
+        cron_expression: "0 9 * * *",
+        timezone: "UTC",
+        signal_id: "signal_123",
+        received_at: "2026-05-15T10:15:00Z",
+        intended_window: %{
+          start_at: "2026-05-15T09:00:00Z",
+          end_at: "2026-05-15T10:00:00Z"
+        }
+      }
+
+      assert {:ok, run} =
+               RunStore.create_and_dispatch_run(
+                 Repo,
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123"},
+                 fn _run -> {:ok, :noop} end,
+                 context: %{attempt: 1, schedule: schedule}
+               )
+
+      assert run.context == %{schedule: schedule}
+    end
+  end
+
   describe "transition_run/4" do
     test "persists a valid transition" do
       assert {:ok, run} =

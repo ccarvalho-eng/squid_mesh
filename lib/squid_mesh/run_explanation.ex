@@ -555,7 +555,12 @@ defmodule SquidMesh.RunExplanation do
     }
   end
 
-  defp schedule_context(context), do: Map.get(context, :schedule, Map.get(context, "schedule"))
+  defp schedule_context(context) do
+    case Map.fetch(context, :schedule) do
+      {:ok, schedule} -> schedule
+      :error -> Map.get(context, "schedule")
+    end
+  end
 
   defp evidence_with_workflow_definition(%Run{} = run, nil) do
     run

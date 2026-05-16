@@ -43,7 +43,8 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   scheduler omits `signal_id`, Squid Mesh derives one from the trigger and
   intended window when both window bounds are present. The runtime adds
   `received_at` at activation delivery time, so operators can compare scheduler
-  intent against actual processing.
+  intent against actual processing. Any `received_at` value in the payload is
+  ignored because this timestamp belongs to the runner boundary.
   """
   @spec cron_context(WorkflowDefinition.trigger(), map()) :: %{schedule: t()}
   def cron_context(%{name: trigger_name, type: :cron, config: config}, payload)
@@ -72,14 +73,21 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   end
 
   defp derived_signal_id(trigger_name, %{start_at: start_at, end_at: end_at})
-       when is_binary(start_at) and is_binary(end_at) do
-    signal_parts = {trigger_name, start_at, end_at}
-    digest = :crypto.hash(:sha256, :erlang.term_to_binary(signal_parts))
+       when is_binary(trigger_name) and is_binary(start_at) and is_binary(end_at) do
+    signal_parts = stable_signal_parts([trigger_name, start_at, end_at])
+    digest = :crypto.hash(:sha256, signal_parts)
 
     "sha256:" <> Base.url_encode64(digest, padding: false)
   end
 
   defp derived_signal_id(_trigger_name, _intended_window), do: nil
+
+  defp stable_signal_parts(parts) do
+    parts
+    |> Enum.map(fn part -> [Integer.to_string(byte_size(part)), ":", part] end)
+    |> Enum.intersperse("|")
+    |> IO.iodata_to_binary()
+  end
 
   defp intended_window(payload) do
     case payload_value(payload, "intended_window") do

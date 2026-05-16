@@ -610,10 +610,9 @@ defmodule SquidMeshTest do
       assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
 
       assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
-      derived_signal_id = derived_schedule_signal_id("scheduled_capture", payload)
 
       assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
-      refute persisted_run.context["schedule"]["signal_id"] == derived_signal_id
+      refute String.starts_with?(persisted_run.context["schedule"]["signal_id"], "sha256:")
       assert persisted_run.context["schedule"]["trigger_name"] == "scheduled_capture"
       assert persisted_run.context["schedule"]["cron_expression"] == "@hourly"
       assert persisted_run.context["schedule"]["timezone"] == "Etc/UTC"
@@ -644,7 +643,7 @@ defmodule SquidMeshTest do
       assert completed_run.context.schedule_seen == completed_run.context.schedule
     end
 
-    test "derives deterministic signal ids from intended schedule windows" do
+    test "derives stable signal ids from intended schedule windows" do
       payload =
         SquidMesh.Executor.Payload.cron(
           ScheduledContextWorkflow,
@@ -656,12 +655,41 @@ defmodule SquidMeshTest do
         )
 
       assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+
+      assert [%PersistedRun{}, %PersistedRun{}] = persisted_runs = Repo.all(PersistedRun)
+
+      signal_ids =
+        Enum.map(persisted_runs, fn persisted_run ->
+          persisted_run.context["schedule"]["signal_id"]
+        end)
+
+      assert Enum.uniq(signal_ids) == [hd(signal_ids)]
+
+      assert hd(signal_ids) =~
+               ~r/^sha256:[A-Za-z0-9_-]{43}$/
+    end
+
+    test "preserves atom-keyed scheduler metadata from delivered cron payloads" do
+      payload =
+        ScheduledContextWorkflow
+        |> SquidMesh.Executor.Payload.cron(:scheduled_capture)
+        |> Map.put(:signal_id, "signal_123")
+        |> Map.put(:intended_window, %{
+          start_at: "2026-05-15T09:00:00Z",
+          end_at: "2026-05-15T10:00:00Z"
+        })
+
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
 
       assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
-      expected_signal_id = derived_schedule_signal_id("scheduled_capture", payload)
 
-      assert persisted_run.context["schedule"]["signal_id"] ==
-               expected_signal_id
+      assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
+
+      assert persisted_run.context["schedule"]["intended_window"] == %{
+               "start_at" => "2026-05-15T09:00:00Z",
+               "end_at" => "2026-05-15T10:00:00Z"
+             }
     end
   end
 
@@ -967,17 +995,6 @@ defmodule SquidMeshTest do
                {:approved, :wait_for_review, "ops_123", "approved"}
              ]
     end
-  end
-
-  defp derived_schedule_signal_id(trigger_name, %{"intended_window" => intended_window}) do
-    signal_parts = {
-      trigger_name,
-      intended_window.start_at,
-      intended_window.end_at
-    }
-
-    digest = :crypto.hash(:sha256, :erlang.term_to_binary(signal_parts))
-    "sha256:" <> Base.url_encode64(digest, padding: false)
   end
 
   describe "list_runs/2" do

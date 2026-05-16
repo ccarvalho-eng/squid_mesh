@@ -151,11 +151,8 @@ defmodule SquidMesh.Runtime.Runner do
       {:error, reason} ->
         {:error, reason}
 
-      invalid_trigger when is_binary(invalid_trigger) or is_nil(invalid_trigger) ->
+      invalid_trigger ->
         {:error, {:invalid_trigger, invalid_trigger}}
-
-      unexpected ->
-        {:error, {:invalid_cron_activation, unexpected}}
     end
   end
 
@@ -164,8 +161,23 @@ defmodule SquidMesh.Runtime.Runner do
   end
 
   defp cron_metadata(args) do
-    Map.take(args, ["signal_id", "intended_window"])
+    %{}
+    |> maybe_put_metadata("signal_id", metadata_value(args, "signal_id", :signal_id))
+    |> maybe_put_metadata(
+      "intended_window",
+      metadata_value(args, "intended_window", :intended_window)
+    )
   end
+
+  defp metadata_value(args, preferred_key, fallback_key) do
+    case Map.fetch(args, preferred_key) do
+      {:ok, value} -> value
+      :error -> Map.get(args, fallback_key)
+    end
+  end
+
+  defp maybe_put_metadata(metadata, _key, nil), do: metadata
+  defp maybe_put_metadata(metadata, key, value), do: Map.put(metadata, key, value)
 
   defp start_cron_run(workflow, trigger, schedule_context, overrides) do
     config_overrides = Keyword.delete(overrides, :context)
