@@ -125,8 +125,15 @@ defmodule SquidMesh.RunStore.Persistence do
 
   defp replay_context(context) do
     Map.new(@replay_safe_context_keys, fn key ->
-      {key, Map.get(context, Atom.to_string(key), Map.get(context, key))}
+      {key, replay_context_value(context, key)}
     end)
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp replay_context_value(context, key) do
+    case Map.fetch(context, Atom.to_string(key)) do
+      {:ok, value} -> value
+      :error -> Map.get(context, key)
+    end
   end
 end

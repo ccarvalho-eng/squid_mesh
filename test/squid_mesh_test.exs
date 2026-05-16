@@ -595,7 +595,7 @@ defmodule SquidMeshTest do
       refute Map.has_key?(persisted_run.input, "chat_id")
     end
 
-    test "persists scheduled start metadata before workflow step execution" do
+    test "persists explicit scheduled signal id before workflow step execution" do
       payload =
         SquidMesh.Executor.Payload.cron(
           ScheduledContextWorkflow,
@@ -610,8 +610,10 @@ defmodule SquidMeshTest do
       assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
 
       assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+      derived_signal_id = derived_schedule_signal_id("scheduled_capture", payload)
 
       assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
+      refute persisted_run.context["schedule"]["signal_id"] == derived_signal_id
       assert persisted_run.context["schedule"]["trigger_name"] == "scheduled_capture"
       assert persisted_run.context["schedule"]["cron_expression"] == "@hourly"
       assert persisted_run.context["schedule"]["timezone"] == "Etc/UTC"
@@ -656,9 +658,10 @@ defmodule SquidMeshTest do
       assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
 
       assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+      expected_signal_id = derived_schedule_signal_id("scheduled_capture", payload)
 
       assert persisted_run.context["schedule"]["signal_id"] ==
-               "scheduled_capture:2026-05-15T09:00:00Z:2026-05-15T10:00:00Z"
+               expected_signal_id
     end
   end
 
@@ -964,6 +967,17 @@ defmodule SquidMeshTest do
                {:approved, :wait_for_review, "ops_123", "approved"}
              ]
     end
+  end
+
+  defp derived_schedule_signal_id(trigger_name, %{"intended_window" => intended_window}) do
+    signal_parts = {
+      trigger_name,
+      intended_window.start_at,
+      intended_window.end_at
+    }
+
+    digest = :crypto.hash(:sha256, :erlang.term_to_binary(signal_parts))
+    "sha256:" <> Base.url_encode64(digest, padding: false)
   end
 
   describe "list_runs/2" do

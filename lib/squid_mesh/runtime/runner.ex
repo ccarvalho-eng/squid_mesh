@@ -41,7 +41,7 @@ defmodule SquidMesh.Runtime.Runner do
 
   def perform(%{"kind" => "cron", "workflow" => workflow, "trigger" => trigger} = args, overrides)
       when is_binary(workflow) and is_binary(trigger) do
-    start_cron_trigger(workflow, trigger, args, overrides)
+    start_cron_trigger(workflow, trigger, cron_metadata(args), overrides)
   end
 
   def perform(args, _overrides) do
@@ -125,10 +125,11 @@ defmodule SquidMesh.Runtime.Runner do
   @doc """
   Starts a workflow run from a serialized cron trigger and scheduler payload.
 
-  `signal_payload` is the delivered cron executor payload. When it contains
-  `"signal_id"` and `"intended_window"`, the runtime stores those values under
-  `run.context.schedule` before dispatching the first step. That makes delayed
-  delivery and restart recovery observable to workflow steps and operators.
+  `signal_payload` is the scheduler metadata subset from a cron executor
+  payload. When it contains `"signal_id"` and `"intended_window"`, the runtime
+  stores those values under `run.context.schedule` before dispatching the first
+  step, making delayed delivery and restart recovery observable to workflow
+  steps and operators.
   """
   @spec start_cron_trigger(String.t(), String.t(), map(), keyword()) :: :ok | {:error, term()}
   def start_cron_trigger(workflow_name, trigger_name, signal_payload, overrides)
@@ -162,6 +163,10 @@ defmodule SquidMesh.Runtime.Runner do
     %SquidMesh.Run{id: run_id, workflow: nil, trigger: nil, status: nil, current_step: step}
   end
 
+  defp cron_metadata(args) do
+    Map.take(args, ["signal_id", "intended_window"])
+  end
+
   defp start_cron_run(workflow, trigger, schedule_context, overrides) do
     config_overrides = Keyword.delete(overrides, :context)
 
@@ -178,20 +183,7 @@ defmodule SquidMesh.Runtime.Runner do
       Observability.emit_run_created(run)
       {:ok, run}
     else
-      {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
-        {:error, reason}
-
-      {:error, reason} = error when reason in [:not_found] ->
-        error
-
-      {:error, %_{} = reason} ->
-        {:error, {:dispatch_failed, reason}}
-
-      {:error, reason} when is_tuple(reason) ->
-        {:error, reason}
-
-      {:error, reason} ->
-        {:error, {:dispatch_failed, reason}}
+      {:error, _reason} = error -> error
     end
   end
 end

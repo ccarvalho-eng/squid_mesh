@@ -73,7 +73,10 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
 
   defp derived_signal_id(trigger_name, %{start_at: start_at, end_at: end_at})
        when is_binary(start_at) and is_binary(end_at) do
-    "#{trigger_name}:#{start_at}:#{end_at}"
+    signal_parts = {trigger_name, start_at, end_at}
+    digest = :crypto.hash(:sha256, :erlang.term_to_binary(signal_parts))
+
+    "sha256:" <> Base.url_encode64(digest, padding: false)
   end
 
   defp derived_signal_id(_trigger_name, _intended_window), do: nil
@@ -99,7 +102,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   end
 
   defp window_value(window, key) when is_atom(key) do
-    Map.get(window, key, Map.get(window, Atom.to_string(key)))
+    value_with_fallback(window, Atom.to_string(key), key)
   end
 
   defp received_at do
@@ -109,10 +112,17 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   end
 
   defp payload_value(payload, "signal_id"),
-    do: Map.get(payload, "signal_id", Map.get(payload, :signal_id))
+    do: value_with_fallback(payload, "signal_id", :signal_id)
 
   defp payload_value(payload, "intended_window") do
-    Map.get(payload, "intended_window", Map.get(payload, :intended_window))
+    value_with_fallback(payload, "intended_window", :intended_window)
+  end
+
+  defp value_with_fallback(map, preferred_key, fallback_key) do
+    case Map.fetch(map, preferred_key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, fallback_key)
+    end
   end
 
   defp maybe_put(map, _key, nil), do: map
