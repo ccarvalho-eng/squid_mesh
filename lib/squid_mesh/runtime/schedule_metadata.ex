@@ -1,5 +1,27 @@
 defmodule SquidMesh.Runtime.ScheduleMetadata do
-  @moduledoc false
+  @moduledoc """
+  Normalizes scheduler metadata for cron-triggered workflow starts.
+
+  Cron activation is intentionally host-owned: a host app decides when a
+  declared cron trigger fires and queues a `SquidMesh.Executor.Payload.cron/3`
+  payload. This module translates that delivery payload plus the compiled
+  workflow trigger definition into the durable context stored on the new run.
+
+  The persisted shape is reserved under `run.context.schedule` and is meant to
+  answer two different questions:
+
+  - what logical schedule window was intended by the scheduler
+  - when Squid Mesh actually received and started processing the signal
+
+  Keeping both timestamps matters because delayed delivery is normal in durable
+  executors. Workflow steps should not infer their schedule window from current
+  wall-clock time; they should read the intended window from the run context.
+
+  The metadata is stored in run context rather than workflow payload so it does
+  not participate in the workflow's business input contract. It also means the
+  metadata survives reload, inspection, explanation, and replay without adding a
+  database column for one trigger kind.
+  """
 
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
@@ -12,6 +34,15 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
           optional(:intended_window) => map()
         }
 
+  @doc """
+  Builds the durable run context for one cron activation.
+
+  The trigger definition contributes stable declarative data such as the trigger
+  name, cron expression, and timezone. The executor payload contributes
+  scheduler-delivery data such as `signal_id` and `intended_window`. The runtime
+  adds `received_at` at activation delivery time, so operators can compare
+  scheduler intent against actual processing.
+  """
   @spec cron_context(WorkflowDefinition.trigger(), map()) :: %{schedule: t()}
   def cron_context(%{name: trigger_name, type: :cron, config: config}, payload)
       when is_map(config) and is_map(payload) do

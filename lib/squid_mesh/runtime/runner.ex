@@ -12,6 +12,17 @@ defmodule SquidMesh.Runtime.Runner do
   alias SquidMesh.Runtime.StepExecutor
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
+  @doc """
+  Executes one queued executor payload.
+
+  Host job backends should store payloads produced by
+  `SquidMesh.Executor.Payload` and pass the payload back here when the job is
+  delivered. The runner accepts step, compensation, and cron activation payloads.
+
+  Cron payloads create a new run. Any scheduler metadata carried by
+  `SquidMesh.Executor.Payload.cron/3` is persisted into the run context before
+  the first workflow step is dispatched.
+  """
   @spec perform(map(), keyword()) :: :ok | {:error, term()}
   def perform(args, overrides \\ [])
 
@@ -34,6 +45,13 @@ defmodule SquidMesh.Runtime.Runner do
     {:error, {:invalid_executor_payload, args}}
   end
 
+  @doc """
+  Executes a queued step payload by run id and step name.
+
+  The step name may be the serialized string stored in a job payload. The step
+  executor reloads the durable run, validates that the step is still runnable,
+  and applies the normal retry, transition, and dispatch rules.
+  """
   @spec execute_step(Ecto.UUID.t(), atom() | String.t(), keyword()) :: :ok | {:error, term()}
   def execute_step(run_id, step, overrides \\ []) when is_binary(run_id) do
     Observability.with_run_metadata(run_stub(run_id, step), fn ->
@@ -57,6 +75,13 @@ defmodule SquidMesh.Runtime.Runner do
     end)
   end
 
+  @doc """
+  Executes queued compensation for a failed run.
+
+  Compensation uses persisted run and step history to determine which reversible
+  steps need compensation work. Delivery errors are returned as structured
+  `{:error, reason}` tuples so job backends can apply their own retry policy.
+  """
   @spec execute_compensation(Ecto.UUID.t(), keyword()) :: :ok | {:error, term()}
   def execute_compensation(run_id, overrides \\ []) when is_binary(run_id) do
     Observability.with_run_metadata(run_stub(run_id, nil), fn ->
@@ -80,12 +105,27 @@ defmodule SquidMesh.Runtime.Runner do
     end)
   end
 
+  @doc """
+  Starts a workflow run from a serialized cron trigger.
+
+  This arity is useful for host schedulers that only know the workflow and
+  trigger names. It records generated schedule metadata, including a generated
+  signal id and the actual receive timestamp.
+  """
   @spec start_cron_trigger(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
   def start_cron_trigger(workflow_name, trigger_name, overrides \\ [])
       when is_binary(workflow_name) and is_binary(trigger_name) do
     start_cron_trigger(workflow_name, trigger_name, %{}, overrides)
   end
 
+  @doc """
+  Starts a workflow run from a serialized cron trigger and scheduler payload.
+
+  `signal_payload` is the delivered cron executor payload. When it contains
+  `"signal_id"` and `"intended_window"`, the runtime stores those values under
+  `run.context.schedule` before dispatching the first step. That makes delayed
+  delivery and restart recovery observable to workflow steps and operators.
+  """
   @spec start_cron_trigger(String.t(), String.t(), map(), keyword()) :: :ok | {:error, term()}
   def start_cron_trigger(workflow_name, trigger_name, signal_payload, overrides)
       when is_binary(workflow_name) and is_binary(trigger_name) and is_map(signal_payload) and

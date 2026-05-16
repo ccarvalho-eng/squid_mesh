@@ -123,7 +123,7 @@ defmodule MyApp.SquidMeshExecutor do
 
   def enqueue_cron(_config, workflow, trigger, opts) do
     workflow
-    |> Payload.cron(trigger)
+    |> Payload.cron(trigger, Keyword.take(opts, [:signal_id, :intended_window]))
     |> enqueue(opts)
   end
 
@@ -153,6 +153,8 @@ The executor callbacks receive:
 - `step` - the next step name, for step jobs
 - `workflow` and `trigger` - the cron workflow activation target
 - `opts[:schedule_in]` - seconds to delay a retry or wait continuation
+- `opts[:signal_id]` - optional stable scheduler signal id for a cron activation
+- `opts[:intended_window]` - optional logical schedule window for a cron activation
 
 Return `{:ok, metadata}` after enqueueing. Metadata is included in dispatch
 telemetry, so useful values are `:job_id`, `:queue`, `:worker`, and
@@ -172,7 +174,25 @@ end
 `MyApp.JobQueue` is intentionally a placeholder. In a real host app, replace it
 with the app's durable job backend and make sure delayed jobs honor
 `:schedule_in`. Cron activation is also host-owned; the host scheduler should
-call `enqueue_cron/4` or enqueue `SquidMesh.Executor.Payload.cron/2`.
+call `enqueue_cron/4` or enqueue `SquidMesh.Executor.Payload.cron/3`.
+
+When a scheduler can provide deterministic schedule metadata, pass it with the
+cron payload instead of adding it to workflow input:
+
+```elixir
+Payload.cron(MyApp.Workflows.DailyStandup, :daily_standup,
+  signal_id: "daily-standup:2026-05-15T09:00:00Z",
+  intended_window: %{
+    start_at: "2026-05-15T09:00:00Z",
+    end_at: "2026-05-15T10:00:00Z"
+  }
+)
+```
+
+Squid Mesh persists this under `run.context.schedule` before workflow
+processing. Steps can read it from `context.state.schedule`, and inspection or
+explanation surfaces can show the intended window separately from actual worker
+receive time.
 
 That is the whole execution contract. Workflow modules, context modules, and
 controllers should not need to know which job backend the executor uses.
