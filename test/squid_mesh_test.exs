@@ -417,6 +417,20 @@ defmodule SquidMeshTest do
       assert %DateTime{} = run.updated_at
     end
 
+    test "does not accept caller-supplied run context through public start options" do
+      payload = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:ok, %Run{} = run} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 payload,
+                 repo: Repo,
+                 context: %{schedule: %{signal_id: "fake"}}
+               )
+
+      assert run.context == %{}
+    end
+
     test "rejects modules that do not define the workflow contract" do
       assert {:error, {:invalid_workflow, String}} =
                SquidMesh.start_run(String, %{}, repo: Repo)
@@ -626,6 +640,25 @@ defmodule SquidMeshTest do
 
       assert {:ok, completed_run} = SquidMesh.inspect_run(persisted_run.id, repo: Repo)
       assert completed_run.context.schedule_seen == completed_run.context.schedule
+    end
+
+    test "derives deterministic signal ids from intended schedule windows" do
+      payload =
+        SquidMesh.Executor.Payload.cron(
+          ScheduledContextWorkflow,
+          :scheduled_capture,
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z",
+            end_at: "2026-05-15T10:00:00Z"
+          }
+        )
+
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+
+      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+
+      assert persisted_run.context["schedule"]["signal_id"] ==
+               "scheduled_capture:2026-05-15T09:00:00Z:2026-05-15T10:00:00Z"
     end
   end
 

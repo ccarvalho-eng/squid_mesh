@@ -551,9 +551,11 @@ defmodule SquidMesh.RunExplanation do
           inserted_at: run.inserted_at,
           updated_at: run.updated_at
         }
-        |> maybe_put(:schedule, Map.get(run.context || %{}, :schedule))
+        |> maybe_put(:schedule, schedule_context(run.context || %{}))
     }
   end
+
+  defp schedule_context(context), do: Map.get(context, :schedule, Map.get(context, "schedule"))
 
   defp evidence_with_workflow_definition(%Run{} = run, nil) do
     run

@@ -12,6 +12,10 @@ defmodule SquidMesh.RunStore.Persistence do
   alias SquidMesh.RunStore.Serialization
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
+  # Replays intentionally drop step-derived context. Only reserved run-level
+  # facts that describe how the run was started are copied into the new run.
+  @replay_safe_context_keys [:schedule]
+
   @type transition_attrs :: %{
           optional(:context) => map(),
           optional(:current_step) => String.t() | atom() | nil,
@@ -120,9 +124,9 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   defp replay_context(context) do
-    case Map.get(context, "schedule", Map.get(context, :schedule)) do
-      nil -> %{}
-      schedule -> %{schedule: schedule}
-    end
+    Map.new(@replay_safe_context_keys, fn key ->
+      {key, Map.get(context, Atom.to_string(key), Map.get(context, key))}
+    end)
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
   end
 end

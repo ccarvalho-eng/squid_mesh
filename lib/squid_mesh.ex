@@ -47,9 +47,7 @@ defmodule SquidMesh do
           | {:error, RunStore.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
-    {run_opts, config_overrides} = Keyword.split(overrides, [:context])
-
-    with {:ok, config} <- Config.load(config_overrides),
+    with {:ok, config} <- Config.load(overrides),
          {:ok, run} <-
            RunStore.create_and_dispatch_run(
              config.repo,
@@ -57,8 +55,7 @@ defmodule SquidMesh do
              payload,
              fn run ->
                Dispatcher.dispatch_run(config, run)
-             end,
-             run_opts
+             end
            ) do
       SquidMesh.Observability.emit_run_created(run)
       {:ok, run}
@@ -104,17 +101,14 @@ defmodule SquidMesh do
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, trigger_name, payload, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
-    {run_opts, config_overrides} = Keyword.split(overrides, [:context])
-
-    with {:ok, config} <- Config.load(config_overrides),
+    with {:ok, config} <- Config.load(overrides),
          {:ok, run} <-
            RunStore.create_and_dispatch_run(
              config.repo,
              workflow,
              trigger_name,
              payload,
-             fn run -> Dispatcher.dispatch_run(config, run) end,
-             run_opts
+             fn run -> Dispatcher.dispatch_run(config, run) end
            ) do
       SquidMesh.Observability.emit_run_created(run)
       {:ok, run}

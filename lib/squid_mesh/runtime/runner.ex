@@ -7,7 +7,10 @@ defmodule SquidMesh.Runtime.Runner do
 
   require Logger
 
+  alias SquidMesh.Config
   alias SquidMesh.Observability
+  alias SquidMesh.RunStore
+  alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.ScheduleMetadata
   alias SquidMesh.Runtime.StepExecutor
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
@@ -109,8 +112,9 @@ defmodule SquidMesh.Runtime.Runner do
   Starts a workflow run from a serialized cron trigger.
 
   This arity is useful for host schedulers that only know the workflow and
-  trigger names. It records generated schedule metadata, including a generated
-  signal id and the actual receive timestamp.
+  trigger names. It records schedule metadata, including the actual receive
+  timestamp. A signal id is recorded only when the scheduler supplies one or an
+  intended window is available for deterministic derivation.
   """
   @spec start_cron_trigger(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
   def start_cron_trigger(workflow_name, trigger_name, overrides \\ [])
@@ -135,19 +139,22 @@ defmodule SquidMesh.Runtime.Runner do
            WorkflowDefinition.deserialize_trigger(definition, trigger_name),
          {:ok, trigger_definition} <- WorkflowDefinition.trigger(definition, trigger),
          {:ok, _run} <-
-           SquidMesh.start_run(
+           start_cron_run(
              workflow,
              trigger,
-             %{},
-             scheduled_start_overrides(trigger_definition, signal_payload, overrides)
+             ScheduleMetadata.cron_context(trigger_definition, signal_payload),
+             overrides
            ) do
       :ok
     else
       {:error, reason} ->
         {:error, reason}
 
-      invalid_trigger ->
+      invalid_trigger when is_binary(invalid_trigger) or is_nil(invalid_trigger) ->
         {:error, {:invalid_trigger, invalid_trigger}}
+
+      unexpected ->
+        {:error, {:invalid_cron_activation, unexpected}}
     end
   end
 
@@ -155,17 +162,36 @@ defmodule SquidMesh.Runtime.Runner do
     %SquidMesh.Run{id: run_id, workflow: nil, trigger: nil, status: nil, current_step: step}
   end
 
-  defp scheduled_start_overrides(trigger_definition, signal_payload, overrides) do
-    schedule_context = ScheduleMetadata.cron_context(trigger_definition, signal_payload)
-    existing_context = existing_context(overrides)
+  defp start_cron_run(workflow, trigger, schedule_context, overrides) do
+    config_overrides = Keyword.delete(overrides, :context)
 
-    Keyword.put(overrides, :context, Map.merge(existing_context, schedule_context))
-  end
+    with {:ok, config} <- Config.load(config_overrides),
+         {:ok, run} <-
+           RunStore.create_and_dispatch_run(
+             config.repo,
+             workflow,
+             trigger,
+             %{},
+             fn run -> Dispatcher.dispatch_run(config, run) end,
+             context: schedule_context
+           ) do
+      Observability.emit_run_created(run)
+      {:ok, run}
+    else
+      {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
+        {:error, reason}
 
-  defp existing_context(overrides) do
-    case Keyword.get(overrides, :context, %{}) do
-      %{} = context -> context
-      _other -> %{}
+      {:error, reason} = error when reason in [:not_found] ->
+        error
+
+      {:error, %_{} = reason} ->
+        {:error, {:dispatch_failed, reason}}
+
+      {:error, reason} when is_tuple(reason) ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, {:dispatch_failed, reason}}
     end
   end
 end

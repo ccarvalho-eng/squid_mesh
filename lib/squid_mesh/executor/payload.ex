@@ -65,8 +65,9 @@ defmodule SquidMesh.Executor.Payload do
   Supported options:
 
   - `:signal_id` - a stable scheduler signal id for this activation. When it is
-    omitted, Squid Mesh generates a UUID so every scheduled run still has an
-    inspectable signal identity.
+    omitted, Squid Mesh derives a deterministic id from the trigger and intended
+    window if both window bounds are present; otherwise the signal id is omitted
+    so the missing scheduler identity is explicit.
   - `:intended_window` - a map describing the logical schedule window the
     scheduler meant to run, usually `%{start_at: iso8601, end_at: iso8601}`.
 
