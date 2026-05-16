@@ -374,6 +374,35 @@ defmodule SquidMesh.RunStoreTest do
       assert persisted_source_run == failed_run
     end
 
+    test "preserves scheduled start metadata while dropping step-derived context" do
+      schedule = %{
+        trigger_name: "scheduled_digest",
+        cron_expression: "0 9 * * *",
+        timezone: "UTC",
+        signal_id: "signal_123",
+        received_at: "2026-05-15T10:15:00Z",
+        intended_window: %{
+          start_at: "2026-05-15T09:00:00Z",
+          end_at: "2026-05-15T10:00:00Z"
+        }
+      }
+
+      assert {:ok, source_run} =
+               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, failed_run} =
+               RunStore.transition_run(Repo, source_run.id, :failed, %{
+                 current_step: :load_invoice,
+                 context: %{attempt: 1, schedule: schedule},
+                 last_error: %{message: "timeout"}
+               })
+
+      assert {:ok, replay_run} = RunStore.replay_run(Repo, failed_run.id)
+
+      assert replay_run.context == %{schedule: schedule}
+      refute Map.has_key?(replay_run.context, :attempt)
+    end
+
     test "returns not found when the source run does not exist" do
       assert {:error, :not_found} = RunStore.replay_run(Repo, Ecto.UUID.generate())
     end

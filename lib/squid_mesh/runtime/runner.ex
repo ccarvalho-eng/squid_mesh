@@ -8,6 +8,7 @@ defmodule SquidMesh.Runtime.Runner do
   require Logger
 
   alias SquidMesh.Observability
+  alias SquidMesh.Runtime.ScheduleMetadata
   alias SquidMesh.Runtime.StepExecutor
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
@@ -24,9 +25,9 @@ defmodule SquidMesh.Runtime.Runner do
     execute_compensation(run_id, overrides)
   end
 
-  def perform(%{"kind" => "cron", "workflow" => workflow, "trigger" => trigger}, overrides)
+  def perform(%{"kind" => "cron", "workflow" => workflow, "trigger" => trigger} = args, overrides)
       when is_binary(workflow) and is_binary(trigger) do
-    start_cron_trigger(workflow, trigger, overrides)
+    start_cron_trigger(workflow, trigger, args, overrides)
   end
 
   def perform(args, _overrides) do
@@ -82,10 +83,24 @@ defmodule SquidMesh.Runtime.Runner do
   @spec start_cron_trigger(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
   def start_cron_trigger(workflow_name, trigger_name, overrides \\ [])
       when is_binary(workflow_name) and is_binary(trigger_name) do
+    start_cron_trigger(workflow_name, trigger_name, %{}, overrides)
+  end
+
+  @spec start_cron_trigger(String.t(), String.t(), map(), keyword()) :: :ok | {:error, term()}
+  def start_cron_trigger(workflow_name, trigger_name, signal_payload, overrides)
+      when is_binary(workflow_name) and is_binary(trigger_name) and is_map(signal_payload) and
+             is_list(overrides) do
     with {:ok, workflow, definition} <- WorkflowDefinition.load_serialized(workflow_name),
          trigger when is_atom(trigger) <-
            WorkflowDefinition.deserialize_trigger(definition, trigger_name),
-         {:ok, _run} <- SquidMesh.start_run(workflow, trigger, %{}, overrides) do
+         {:ok, trigger_definition} <- WorkflowDefinition.trigger(definition, trigger),
+         {:ok, _run} <-
+           SquidMesh.start_run(
+             workflow,
+             trigger,
+             %{},
+             scheduled_start_overrides(trigger_definition, signal_payload, overrides)
+           ) do
       :ok
     else
       {:error, reason} ->
@@ -98,5 +113,19 @@ defmodule SquidMesh.Runtime.Runner do
 
   defp run_stub(run_id, step) do
     %SquidMesh.Run{id: run_id, workflow: nil, trigger: nil, status: nil, current_step: step}
+  end
+
+  defp scheduled_start_overrides(trigger_definition, signal_payload, overrides) do
+    schedule_context = ScheduleMetadata.cron_context(trigger_definition, signal_payload)
+    existing_context = existing_context(overrides)
+
+    Keyword.put(overrides, :context, Map.merge(existing_context, schedule_context))
+  end
+
+  defp existing_context(overrides) do
+    case Keyword.get(overrides, :context, %{}) do
+      %{} = context -> context
+      _other -> %{}
+    end
   end
 end

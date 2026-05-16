@@ -18,14 +18,14 @@ defmodule SquidMesh.RunStore.Persistence do
           optional(:last_error) => map() | nil
         }
 
-  @spec build_run_attrs(module(), atom(), WorkflowDefinition.t(), map()) :: map()
-  def build_run_attrs(workflow, trigger, definition, resolved_payload) do
+  @spec build_run_attrs(module(), atom(), WorkflowDefinition.t(), map(), keyword()) :: map()
+  def build_run_attrs(workflow, trigger, definition, resolved_payload, opts \\ []) do
     %{
       workflow: WorkflowDefinition.serialize_workflow(workflow),
       trigger: WorkflowDefinition.serialize_trigger(trigger),
       status: "pending",
       input: resolved_payload,
-      context: %{},
+      context: Keyword.get(opts, :context, %{}),
       current_step: initial_current_step(definition)
     }
   end
@@ -37,7 +37,7 @@ defmodule SquidMesh.RunStore.Persistence do
       trigger: source_run.trigger,
       status: "pending",
       input: source_run.input || %{},
-      context: %{},
+      context: replay_context(source_run.context || %{}),
       current_step: initial_current_step(definition),
       replayed_from_run_id: source_run.id
     }
@@ -116,6 +116,13 @@ defmodule SquidMesh.RunStore.Persistence do
       nil
     else
       WorkflowDefinition.serialize_step(WorkflowDefinition.initial_step(definition))
+    end
+  end
+
+  defp replay_context(context) do
+    case Map.get(context, "schedule", Map.get(context, :schedule)) do
+      nil -> %{}
+      schedule -> %{schedule: schedule}
     end
   end
 end

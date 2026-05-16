@@ -541,15 +541,17 @@ defmodule SquidMesh.RunExplanation do
 
   defp base_evidence(%Run{} = run) do
     %{
-      run: %{
-        id: run.id,
-        status: run.status,
-        workflow: run.workflow,
-        current_step: run.current_step,
-        last_error: run.last_error,
-        inserted_at: run.inserted_at,
-        updated_at: run.updated_at
-      }
+      run:
+        %{
+          id: run.id,
+          status: run.status,
+          workflow: run.workflow,
+          current_step: run.current_step,
+          last_error: run.last_error,
+          inserted_at: run.inserted_at,
+          updated_at: run.updated_at
+        }
+        |> maybe_put(:schedule, Map.get(run.context || %{}, :schedule))
     }
   end
 

@@ -241,6 +241,30 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule ScheduledContextWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :scheduled_capture do
+        cron "@hourly", timezone: "Etc/UTC"
+      end
+
+      step :capture_schedule, ScheduledContextWorkflow.CaptureSchedule
+      transition :capture_schedule, on: :ok, to: :complete
+    end
+  end
+
+  defmodule ScheduledContextWorkflow.CaptureSchedule do
+    use SquidMesh.Step,
+      name: :capture_schedule,
+      output_schema: [schedule_seen: [type: :map, required: true]]
+
+    @impl true
+    def run(_input, context) do
+      {:ok, %{schedule_seen: Map.fetch!(context.state, :schedule)}}
+    end
+  end
+
   defmodule PauseWorkflow do
     use SquidMesh.Workflow
 
@@ -555,6 +579,53 @@ defmodule SquidMeshTest do
       assert persisted_run.trigger == "scheduled_digest"
       assert is_binary(persisted_run.input["window_start_at"])
       refute Map.has_key?(persisted_run.input, "chat_id")
+    end
+
+    test "persists scheduled start metadata before workflow step execution" do
+      payload =
+        SquidMesh.Executor.Payload.cron(
+          ScheduledContextWorkflow,
+          :scheduled_capture,
+          signal_id: "signal_123",
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z",
+            end_at: "2026-05-15T10:00:00Z"
+          }
+        )
+
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+
+      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+
+      assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
+      assert persisted_run.context["schedule"]["trigger_name"] == "scheduled_capture"
+      assert persisted_run.context["schedule"]["cron_expression"] == "@hourly"
+      assert persisted_run.context["schedule"]["timezone"] == "Etc/UTC"
+
+      assert persisted_run.context["schedule"]["intended_window"] == %{
+               "start_at" => "2026-05-15T09:00:00Z",
+               "end_at" => "2026-05-15T10:00:00Z"
+             }
+
+      received_at = persisted_run.context["schedule"]["received_at"]
+      assert is_binary(received_at)
+      refute received_at == "2026-05-15T09:00:00Z"
+      assert {:ok, _received_at, 0} = DateTime.from_iso8601(received_at)
+
+      assert {:ok, inspected_run} = SquidMesh.inspect_run(persisted_run.id, repo: Repo)
+
+      assert inspected_run.context.schedule.intended_window.start_at ==
+               "2026-05-15T09:00:00Z"
+
+      assert {:ok, explanation} = SquidMesh.explain_run(persisted_run.id, repo: Repo)
+
+      assert explanation.evidence.run.schedule.signal_id == "signal_123"
+      assert explanation.evidence.run.schedule.trigger_name == "scheduled_capture"
+
+      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
+
+      assert {:ok, completed_run} = SquidMesh.inspect_run(persisted_run.id, repo: Repo)
+      assert completed_run.context.schedule_seen == completed_run.context.schedule
     end
   end
 
