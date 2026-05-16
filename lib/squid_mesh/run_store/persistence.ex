@@ -14,8 +14,7 @@ defmodule SquidMesh.RunStore.Persistence do
 
   # Replays intentionally drop step-derived context. Only reserved run-level
   # facts that describe how the run was started are copied into the new run.
-  @replay_safe_context_keys [:schedule]
-  @initial_context_keys [:schedule]
+  @reserved_run_context_keys [:schedule]
 
   @type transition_attrs :: %{
           optional(:context) => map(),
@@ -125,7 +124,7 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   defp replay_context(context) do
-    Map.new(@replay_safe_context_keys, fn key ->
+    Map.new(@reserved_run_context_keys, fn key ->
       {key, replay_context_value(context, key)}
     end)
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
@@ -139,9 +138,9 @@ defmodule SquidMesh.RunStore.Persistence do
   end
 
   defp initial_context(opts) do
-    context = Keyword.get(opts, :context, %{})
+    context = Keyword.get(opts, :initial_context, %{})
 
-    Map.new(@initial_context_keys, fn key ->
+    Map.new(@reserved_run_context_keys, fn key ->
       {key, replay_context_value(context, key)}
     end)
     |> Map.reject(fn {_key, value} -> is_nil(value) end)

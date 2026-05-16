@@ -141,7 +141,7 @@ defmodule SquidMesh.RunStoreTest do
                  InvoiceReminderWorkflow,
                  %{account_id: "acct_123"},
                  fn _run -> {:ok, :noop} end,
-                 context: %{attempt: 1, schedule: schedule}
+                 initial_context: %{attempt: 1, schedule: schedule}
                )
 
       assert run.context == %{schedule: schedule}

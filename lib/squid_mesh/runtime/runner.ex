@@ -7,10 +7,7 @@ defmodule SquidMesh.Runtime.Runner do
 
   require Logger
 
-  alias SquidMesh.Config
   alias SquidMesh.Observability
-  alias SquidMesh.RunStore
-  alias SquidMesh.Runtime.Dispatcher
   alias SquidMesh.Runtime.ScheduleMetadata
   alias SquidMesh.Runtime.StepExecutor
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
@@ -41,7 +38,7 @@ defmodule SquidMesh.Runtime.Runner do
 
   def perform(%{"kind" => "cron", "workflow" => workflow, "trigger" => trigger} = args, overrides)
       when is_binary(workflow) and is_binary(trigger) do
-    start_cron_trigger(workflow, trigger, cron_metadata(args), overrides)
+    start_cron_trigger(workflow, trigger, args, overrides)
   end
 
   def perform(args, _overrides) do
@@ -139,11 +136,13 @@ defmodule SquidMesh.Runtime.Runner do
          trigger when is_atom(trigger) <-
            WorkflowDefinition.deserialize_trigger(definition, trigger_name),
          {:ok, trigger_definition} <- WorkflowDefinition.trigger(definition, trigger),
+         {:ok, schedule_context} <-
+           ScheduleMetadata.cron_context(workflow, trigger_definition, signal_payload),
          {:ok, _run} <-
            start_cron_run(
              workflow,
              trigger,
-             ScheduleMetadata.cron_context(trigger_definition, signal_payload),
+             schedule_context,
              overrides
            ) do
       :ok
@@ -160,42 +159,13 @@ defmodule SquidMesh.Runtime.Runner do
     %SquidMesh.Run{id: run_id, workflow: nil, trigger: nil, status: nil, current_step: step}
   end
 
-  defp cron_metadata(args) do
-    %{}
-    |> maybe_put_metadata("signal_id", metadata_value(args, "signal_id", :signal_id))
-    |> maybe_put_metadata(
-      "intended_window",
-      metadata_value(args, "intended_window", :intended_window)
-    )
-  end
-
-  defp metadata_value(args, preferred_key, fallback_key) do
-    case Map.fetch(args, preferred_key) do
-      {:ok, value} -> value
-      :error -> Map.get(args, fallback_key)
-    end
-  end
-
-  defp maybe_put_metadata(metadata, _key, nil), do: metadata
-  defp maybe_put_metadata(metadata, key, value), do: Map.put(metadata, key, value)
-
   defp start_cron_run(workflow, trigger, schedule_context, overrides) do
-    config_overrides = Keyword.delete(overrides, :context)
-
-    with {:ok, config} <- Config.load(config_overrides),
-         {:ok, run} <-
-           RunStore.create_and_dispatch_run(
-             config.repo,
-             workflow,
-             trigger,
-             %{},
-             fn run -> Dispatcher.dispatch_run(config, run) end,
-             context: schedule_context
-           ) do
-      Observability.emit_run_created(run)
-      {:ok, run}
-    else
-      {:error, _reason} = error -> error
-    end
+    SquidMesh.start_run_with_initial_context(
+      workflow,
+      trigger,
+      %{},
+      schedule_context,
+      overrides
+    )
   end
 end

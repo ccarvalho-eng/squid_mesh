@@ -26,6 +26,7 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
   @type t :: %{
+          required(:workflow) => String.t(),
           required(:trigger_name) => String.t(),
           required(:cron_expression) => String.t(),
           required(:timezone) => String.t(),
@@ -37,50 +38,66 @@ defmodule SquidMesh.Runtime.ScheduleMetadata do
   @doc """
   Builds the durable run context for one cron activation.
 
-  The trigger definition contributes stable declarative data such as the trigger
-  name, cron expression, and timezone. The executor payload contributes
-  scheduler-delivery data such as `signal_id` and `intended_window`. If the
-  scheduler omits `signal_id`, Squid Mesh derives one from the trigger and
-  intended window when both window bounds are present. The runtime adds
+  The workflow and trigger definition contribute stable declarative data such
+  as the workflow name, trigger name, cron expression, and timezone. The
+  executor payload contributes scheduler-delivery data such as `signal_id` and
+  `intended_window`. If the scheduler omits `signal_id`, Squid Mesh derives one
+  from the workflow, trigger, and intended window when both window bounds are
+  present. The runtime adds
   `received_at` at activation delivery time, so operators can compare scheduler
   intent against actual processing. Any `received_at` value in the payload is
   ignored because this timestamp belongs to the runner boundary.
   """
-  @spec cron_context(WorkflowDefinition.trigger(), map()) :: %{schedule: t()}
-  def cron_context(%{name: trigger_name, type: :cron, config: config}, payload)
-      when is_map(config) and is_map(payload) do
+  @spec cron_context(module(), WorkflowDefinition.trigger(), map()) ::
+          {:ok, %{schedule: t()}} | {:error, {:invalid_schedule_signal_id, term()}}
+  def cron_context(workflow, %{name: trigger_name, type: :cron, config: config}, payload)
+      when is_atom(workflow) and is_map(config) and is_map(payload) do
+    workflow_name = WorkflowDefinition.serialize_workflow(workflow)
     trigger_name = WorkflowDefinition.serialize_trigger(trigger_name)
     intended_window = intended_window(payload)
 
-    %{
-      schedule:
-        %{
-          trigger_name: trigger_name,
-          cron_expression: Map.fetch!(config, :expression),
-          timezone: Map.fetch!(config, :timezone),
-          received_at: received_at()
-        }
-        |> maybe_put(:signal_id, signal_id(trigger_name, intended_window, payload))
-        |> maybe_put(:intended_window, intended_window)
-    }
-  end
-
-  defp signal_id(trigger_name, intended_window, payload) do
-    case payload_value(payload, "signal_id") do
-      signal_id when is_binary(signal_id) and signal_id != "" -> signal_id
-      _other -> derived_signal_id(trigger_name, intended_window)
+    with {:ok, signal_id} <- signal_id(workflow_name, trigger_name, intended_window, payload) do
+      {:ok,
+       %{
+         schedule:
+           %{
+             workflow: workflow_name,
+             trigger_name: trigger_name,
+             # Cron workflow validation guarantees expression and timezone for
+             # every compiled cron trigger before the runtime can load it.
+             cron_expression: Map.fetch!(config, :expression),
+             timezone: Map.fetch!(config, :timezone),
+             received_at: received_at()
+           }
+           |> maybe_put(:signal_id, signal_id)
+           |> maybe_put(:intended_window, intended_window)
+       }}
     end
   end
 
-  defp derived_signal_id(trigger_name, %{start_at: start_at, end_at: end_at})
-       when is_binary(trigger_name) and is_binary(start_at) and is_binary(end_at) do
-    signal_parts = stable_signal_parts([trigger_name, start_at, end_at])
+  defp signal_id(workflow_name, trigger_name, intended_window, payload) do
+    case payload_value(payload, "signal_id") do
+      nil ->
+        {:ok, derived_signal_id(workflow_name, trigger_name, intended_window)}
+
+      signal_id when is_binary(signal_id) and signal_id != "" ->
+        {:ok, signal_id}
+
+      invalid_signal_id ->
+        {:error, {:invalid_schedule_signal_id, invalid_signal_id}}
+    end
+  end
+
+  defp derived_signal_id(workflow_name, trigger_name, %{start_at: start_at, end_at: end_at})
+       when is_binary(workflow_name) and is_binary(trigger_name) and is_binary(start_at) and
+              is_binary(end_at) do
+    signal_parts = stable_signal_parts([workflow_name, trigger_name, start_at, end_at])
     digest = :crypto.hash(:sha256, signal_parts)
 
     "sha256:" <> Base.url_encode64(digest, padding: false)
   end
 
-  defp derived_signal_id(_trigger_name, _intended_window), do: nil
+  defp derived_signal_id(_workflow_name, _trigger_name, _intended_window), do: nil
 
   defp stable_signal_parts(parts) do
     parts

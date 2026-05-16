@@ -44,10 +44,12 @@ defmodule SquidMesh do
   @spec start_run(module(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
+          | {:error, {:invalid_option, atom()}}
           | {:error, RunStore.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, payload, overrides) when is_map(payload) and is_list(overrides) do
-    with {:ok, config} <- Config.load(overrides),
+    with :ok <- reject_public_start_options(overrides),
+         {:ok, config} <- Config.load(overrides),
          {:ok, run} <-
            RunStore.create_and_dispatch_run(
              config.repo,
@@ -97,11 +99,13 @@ defmodule SquidMesh do
   @spec start_run(module(), atom(), map(), keyword()) ::
           {:ok, Run.t()}
           | {:error, {:missing_config, [atom()]}}
+          | {:error, {:invalid_option, atom()}}
           | {:error, RunStore.create_error()}
           | {:error, {:dispatch_failed, term()}}
   def start_run(workflow, trigger_name, payload, overrides)
       when is_atom(trigger_name) and is_map(payload) and is_list(overrides) do
-    with {:ok, config} <- Config.load(overrides),
+    with :ok <- reject_public_start_options(overrides),
+         {:ok, config} <- Config.load(overrides),
          {:ok, run} <-
            RunStore.create_and_dispatch_run(
              config.repo,
@@ -127,6 +131,59 @@ defmodule SquidMesh do
 
       {:error, reason} ->
         {:error, {:dispatch_failed, reason}}
+    end
+  end
+
+  @doc false
+  @spec start_run_with_initial_context(module(), atom(), map(), map(), keyword()) ::
+          {:ok, Run.t()}
+          | {:error, {:missing_config, [atom()]}}
+          | {:error, RunStore.create_error()}
+          | {:error, {:dispatch_failed, term()}}
+  def start_run_with_initial_context(workflow, trigger_name, payload, initial_context, overrides)
+      when is_atom(trigger_name) and is_map(payload) and is_map(initial_context) and
+             is_list(overrides) do
+    with :ok <- reject_public_start_options(overrides),
+         {:ok, config} <- Config.load(overrides),
+         {:ok, run} <-
+           RunStore.create_and_dispatch_run(
+             config.repo,
+             workflow,
+             trigger_name,
+             payload,
+             fn run -> Dispatcher.dispatch_run(config, run) end,
+             initial_context: initial_context
+           ) do
+      SquidMesh.Observability.emit_run_created(run)
+      {:ok, run}
+    else
+      {:error, reason} when is_tuple(reason) and elem(reason, 0) == :invalid_run ->
+        {:error, reason}
+
+      {:error, reason} = error when reason in [:not_found] ->
+        error
+
+      {:error, %_{} = reason} ->
+        {:error, {:dispatch_failed, reason}}
+
+      {:error, reason} when is_tuple(reason) ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, {:dispatch_failed, reason}}
+    end
+  end
+
+  defp reject_public_start_options(overrides) do
+    cond do
+      Keyword.has_key?(overrides, :context) ->
+        {:error, {:invalid_option, :context}}
+
+      Keyword.has_key?(overrides, :initial_context) ->
+        {:error, {:invalid_option, :initial_context}}
+
+      true ->
+        :ok
     end
   end
 

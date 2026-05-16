@@ -41,7 +41,7 @@ defmodule SquidMesh.RunStore do
   @type transition_error ::
           get_error() | StateMachine.transition_error() | {:invalid_run, Ecto.Changeset.t()}
   @type replay_error :: get_error() | create_error() | {:unsafe_replay, map()}
-  @type create_option :: {:context, map()}
+  @type create_option :: {:initial_context, map()}
   @type replay_option :: {:allow_irreversible, boolean()}
   @type update_error :: get_error() | {:invalid_run, Ecto.Changeset.t()}
   @type get_option :: {:include_history, boolean()}
@@ -122,9 +122,25 @@ defmodule SquidMesh.RunStore do
           {:ok, Run.t()} | {:error, create_error() | term()}
   @spec create_and_dispatch_run(module(), module(), map(), dispatch_fun(), [create_option()]) ::
           {:ok, Run.t()} | {:error, create_error() | term()}
+  @spec create_and_dispatch_run(module(), module(), atom(), map(), dispatch_fun()) ::
+          {:ok, Run.t()} | {:error, create_error() | term()}
+  @spec create_and_dispatch_run(
+          module(),
+          module(),
+          atom(),
+          map(),
+          dispatch_fun(),
+          [create_option()]
+        ) ::
+          {:ok, Run.t()} | {:error, create_error() | term()}
   def create_and_dispatch_run(repo, workflow, payload, dispatch_fun)
       when is_map(payload) and is_function(dispatch_fun, 1) do
     create_and_dispatch_run(repo, workflow, payload, dispatch_fun, [])
+  end
+
+  def create_and_dispatch_run(repo, workflow, trigger_name, payload, dispatch_fun)
+      when is_atom(trigger_name) and is_map(payload) and is_function(dispatch_fun, 1) do
+    create_and_dispatch_run(repo, workflow, trigger_name, payload, dispatch_fun, [])
   end
 
   def create_and_dispatch_run(repo, workflow, payload, dispatch_fun, opts)
@@ -141,23 +157,6 @@ defmodule SquidMesh.RunStore do
       attrs = Persistence.build_run_attrs(workflow, trigger, definition, resolved_payload, opts)
       Persistence.insert_run_with_dispatch(repo, attrs, dispatch_fun)
     end
-  end
-
-  @doc false
-  @spec create_and_dispatch_run(module(), module(), atom(), map(), dispatch_fun()) ::
-          {:ok, Run.t()} | {:error, create_error() | term()}
-  @spec create_and_dispatch_run(
-          module(),
-          module(),
-          atom(),
-          map(),
-          dispatch_fun(),
-          [create_option()]
-        ) ::
-          {:ok, Run.t()} | {:error, create_error() | term()}
-  def create_and_dispatch_run(repo, workflow, trigger_name, payload, dispatch_fun)
-      when is_atom(trigger_name) and is_map(payload) and is_function(dispatch_fun, 1) do
-    create_and_dispatch_run(repo, workflow, trigger_name, payload, dispatch_fun, [])
   end
 
   def create_and_dispatch_run(repo, workflow, trigger_name, payload, dispatch_fun, opts)
