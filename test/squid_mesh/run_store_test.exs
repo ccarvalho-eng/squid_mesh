@@ -121,6 +121,33 @@ defmodule SquidMesh.RunStoreTest do
     end
   end
 
+  describe "create_and_dispatch_run/5" do
+    test "keeps only reserved run-level facts from initial context" do
+      schedule = %{
+        trigger_name: "scheduled_digest",
+        cron_expression: "0 9 * * *",
+        timezone: "UTC",
+        signal_id: "signal_123",
+        received_at: "2026-05-15T10:15:00Z",
+        intended_window: %{
+          start_at: "2026-05-15T09:00:00Z",
+          end_at: "2026-05-15T10:00:00Z"
+        }
+      }
+
+      assert {:ok, run} =
+               RunStore.create_and_dispatch_run(
+                 Repo,
+                 InvoiceReminderWorkflow,
+                 %{account_id: "acct_123"},
+                 fn _run -> {:ok, :noop} end,
+                 initial_context: %{attempt: 1, schedule: schedule}
+               )
+
+      assert run.context == %{schedule: schedule}
+    end
+  end
+
   describe "transition_run/4" do
     test "persists a valid transition" do
       assert {:ok, run} =
@@ -372,6 +399,35 @@ defmodule SquidMesh.RunStoreTest do
 
       assert replay_run.replayed_from_run_id == failed_run.id
       assert persisted_source_run == failed_run
+    end
+
+    test "preserves scheduled start metadata while dropping step-derived context" do
+      schedule = %{
+        trigger_name: "scheduled_digest",
+        cron_expression: "0 9 * * *",
+        timezone: "UTC",
+        signal_id: "signal_123",
+        received_at: "2026-05-15T10:15:00Z",
+        intended_window: %{
+          start_at: "2026-05-15T09:00:00Z",
+          end_at: "2026-05-15T10:00:00Z"
+        }
+      }
+
+      assert {:ok, source_run} =
+               RunStore.create_run(Repo, InvoiceReminderWorkflow, %{account_id: "acct_123"})
+
+      assert {:ok, failed_run} =
+               RunStore.transition_run(Repo, source_run.id, :failed, %{
+                 current_step: :load_invoice,
+                 context: %{attempt: 1, schedule: schedule},
+                 last_error: %{message: "timeout"}
+               })
+
+      assert {:ok, replay_run} = RunStore.replay_run(Repo, failed_run.id)
+
+      assert replay_run.context == %{schedule: schedule}
+      refute Map.has_key?(replay_run.context, :attempt)
     end
 
     test "returns not found when the source run does not exist" do

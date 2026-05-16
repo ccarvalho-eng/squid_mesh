@@ -241,6 +241,43 @@ defmodule SquidMeshTest do
     end
   end
 
+  defmodule ScheduledContextWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :scheduled_capture do
+        cron "@hourly", timezone: "Etc/UTC"
+      end
+
+      step :capture_schedule, ScheduledContextWorkflow.CaptureSchedule
+      transition :capture_schedule, on: :ok, to: :complete
+    end
+  end
+
+  defmodule AnotherScheduledContextWorkflow do
+    use SquidMesh.Workflow
+
+    workflow do
+      trigger :scheduled_capture do
+        cron "@hourly", timezone: "Etc/UTC"
+      end
+
+      step :capture_schedule, ScheduledContextWorkflow.CaptureSchedule
+      transition :capture_schedule, on: :ok, to: :complete
+    end
+  end
+
+  defmodule ScheduledContextWorkflow.CaptureSchedule do
+    use SquidMesh.Step,
+      name: :capture_schedule,
+      output_schema: [schedule_seen: [type: :map, required: true]]
+
+    @impl true
+    def run(_input, context) do
+      {:ok, %{schedule_seen: Map.fetch!(context.state, :schedule)}}
+    end
+  end
+
   defmodule PauseWorkflow do
     use SquidMesh.Workflow
 
@@ -391,6 +428,30 @@ defmodule SquidMeshTest do
       assert is_binary(run.id)
       assert %DateTime{} = run.inserted_at
       assert %DateTime{} = run.updated_at
+    end
+
+    test "rejects caller-supplied run context through public start options" do
+      payload = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:error, {:invalid_option, :context}} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 payload,
+                 repo: Repo,
+                 context: %{schedule: %{signal_id: "fake"}}
+               )
+    end
+
+    test "rejects internal initial context through public start options" do
+      payload = %{account_id: "acct_123", invoice_id: "inv_456"}
+
+      assert {:error, {:invalid_option, :initial_context}} =
+               SquidMesh.start_run(
+                 InvoiceReminderWorkflow,
+                 payload,
+                 repo: Repo,
+                 initial_context: %{schedule: %{signal_id: "fake"}}
+               )
     end
 
     test "rejects modules that do not define the workflow contract" do
@@ -555,6 +616,163 @@ defmodule SquidMeshTest do
       assert persisted_run.trigger == "scheduled_digest"
       assert is_binary(persisted_run.input["window_start_at"])
       refute Map.has_key?(persisted_run.input, "chat_id")
+    end
+
+    test "persists explicit scheduled signal id before workflow step execution" do
+      payload =
+        SquidMesh.Executor.Payload.cron(
+          ScheduledContextWorkflow,
+          :scheduled_capture,
+          signal_id: "signal_123",
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z",
+            end_at: "2026-05-15T10:00:00Z"
+          }
+        )
+
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+
+      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+
+      assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
+      refute String.starts_with?(persisted_run.context["schedule"]["signal_id"], "sha256:")
+      assert persisted_run.context["schedule"]["trigger_name"] == "scheduled_capture"
+      assert persisted_run.context["schedule"]["cron_expression"] == "@hourly"
+      assert persisted_run.context["schedule"]["timezone"] == "Etc/UTC"
+
+      assert persisted_run.context["schedule"]["intended_window"] == %{
+               "start_at" => "2026-05-15T09:00:00Z",
+               "end_at" => "2026-05-15T10:00:00Z"
+             }
+
+      received_at = persisted_run.context["schedule"]["received_at"]
+      assert is_binary(received_at)
+      refute received_at == "2026-05-15T09:00:00Z"
+      assert {:ok, _received_at, 0} = DateTime.from_iso8601(received_at)
+
+      assert {:ok, inspected_run} = SquidMesh.inspect_run(persisted_run.id, repo: Repo)
+
+      assert inspected_run.context.schedule.intended_window.start_at ==
+               "2026-05-15T09:00:00Z"
+
+      assert {:ok, explanation} = SquidMesh.explain_run(persisted_run.id, repo: Repo)
+
+      assert explanation.evidence.run.schedule.signal_id == "signal_123"
+      assert explanation.evidence.run.schedule.trigger_name == "scheduled_capture"
+
+      assert %{success: 1, failure: 0} = SquidMesh.Test.Executor.drain()
+
+      assert {:ok, completed_run} = SquidMesh.inspect_run(persisted_run.id, repo: Repo)
+      assert completed_run.context.schedule_seen == completed_run.context.schedule
+    end
+
+    test "derives stable signal ids from intended schedule windows" do
+      payload =
+        SquidMesh.Executor.Payload.cron(
+          ScheduledContextWorkflow,
+          :scheduled_capture,
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z",
+            end_at: "2026-05-15T10:00:00Z"
+          }
+        )
+
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+
+      assert [%PersistedRun{}, %PersistedRun{}] = persisted_runs = Repo.all(PersistedRun)
+
+      signal_ids =
+        Enum.map(persisted_runs, fn persisted_run ->
+          persisted_run.context["schedule"]["signal_id"]
+        end)
+
+      assert Enum.uniq(signal_ids) == [hd(signal_ids)]
+
+      assert hd(signal_ids) =~
+               ~r/^sha256:[A-Za-z0-9_-]{43}$/
+    end
+
+    test "omits derived signal ids when schedule windows are incomplete" do
+      payload =
+        SquidMesh.Executor.Payload.cron(
+          ScheduledContextWorkflow,
+          :scheduled_capture,
+          intended_window: %{
+            start_at: "2026-05-15T09:00:00Z"
+          }
+        )
+
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+
+      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+
+      refute Map.has_key?(persisted_run.context["schedule"], "signal_id")
+    end
+
+    test "scopes derived signal ids by workflow" do
+      intended_window = %{
+        start_at: "2026-05-15T09:00:00Z",
+        end_at: "2026-05-15T10:00:00Z"
+      }
+
+      payload =
+        SquidMesh.Executor.Payload.cron(
+          ScheduledContextWorkflow,
+          :scheduled_capture,
+          intended_window: intended_window
+        )
+
+      other_payload =
+        SquidMesh.Executor.Payload.cron(
+          AnotherScheduledContextWorkflow,
+          :scheduled_capture,
+          intended_window: intended_window
+        )
+
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+      assert :ok = SquidMesh.Runtime.Runner.perform(other_payload, repo: Repo)
+
+      signal_ids =
+        PersistedRun
+        |> Repo.all()
+        |> Enum.map(fn persisted_run -> persisted_run.context["schedule"]["signal_id"] end)
+
+      assert length(Enum.uniq(signal_ids)) == 2
+    end
+
+    test "rejects malformed scheduler signal ids" do
+      payload =
+        ScheduledContextWorkflow
+        |> SquidMesh.Executor.Payload.cron(:scheduled_capture)
+        |> Map.put("signal_id", 123)
+
+      assert {:error, {:invalid_schedule_signal_id, 123}} =
+               SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+
+      assert [] = Repo.all(PersistedRun)
+    end
+
+    test "preserves atom-keyed scheduler metadata from delivered cron payloads" do
+      payload =
+        ScheduledContextWorkflow
+        |> SquidMesh.Executor.Payload.cron(:scheduled_capture)
+        |> Map.put(:signal_id, "signal_123")
+        |> Map.put(:intended_window, %{
+          start_at: "2026-05-15T09:00:00Z",
+          end_at: "2026-05-15T10:00:00Z"
+        })
+
+      assert :ok = SquidMesh.Runtime.Runner.perform(payload, repo: Repo)
+
+      assert [%PersistedRun{} = persisted_run] = Repo.all(PersistedRun)
+
+      assert persisted_run.context["schedule"]["signal_id"] == "signal_123"
+
+      assert persisted_run.context["schedule"]["intended_window"] == %{
+               "start_at" => "2026-05-15T09:00:00Z",
+               "end_at" => "2026-05-15T10:00:00Z"
+             }
     end
   end
 

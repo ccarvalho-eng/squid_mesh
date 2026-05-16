@@ -12,20 +12,24 @@ defmodule SquidMesh.RunStore.Persistence do
   alias SquidMesh.RunStore.Serialization
   alias SquidMesh.Workflow.Definition, as: WorkflowDefinition
 
+  # Replays intentionally drop step-derived context. Only reserved run-level
+  # facts that describe how the run was started are copied into the new run.
+  @reserved_run_context_keys [:schedule]
+
   @type transition_attrs :: %{
           optional(:context) => map(),
           optional(:current_step) => String.t() | atom() | nil,
           optional(:last_error) => map() | nil
         }
 
-  @spec build_run_attrs(module(), atom(), WorkflowDefinition.t(), map()) :: map()
-  def build_run_attrs(workflow, trigger, definition, resolved_payload) do
+  @spec build_run_attrs(module(), atom(), WorkflowDefinition.t(), map(), keyword()) :: map()
+  def build_run_attrs(workflow, trigger, definition, resolved_payload, opts \\ []) do
     %{
       workflow: WorkflowDefinition.serialize_workflow(workflow),
       trigger: WorkflowDefinition.serialize_trigger(trigger),
       status: "pending",
       input: resolved_payload,
-      context: %{},
+      context: initial_context(opts),
       current_step: initial_current_step(definition)
     }
   end
@@ -37,7 +41,7 @@ defmodule SquidMesh.RunStore.Persistence do
       trigger: source_run.trigger,
       status: "pending",
       input: source_run.input || %{},
-      context: %{},
+      context: replay_context(source_run.context || %{}),
       current_step: initial_current_step(definition),
       replayed_from_run_id: source_run.id
     }
@@ -117,5 +121,29 @@ defmodule SquidMesh.RunStore.Persistence do
     else
       WorkflowDefinition.serialize_step(WorkflowDefinition.initial_step(definition))
     end
+  end
+
+  defp replay_context(context) do
+    pick_reserved_context(context)
+  end
+
+  defp replay_context_value(context, key) do
+    case Map.fetch(context, Atom.to_string(key)) do
+      {:ok, value} -> value
+      :error -> Map.get(context, key)
+    end
+  end
+
+  defp initial_context(opts) do
+    opts
+    |> Keyword.get(:initial_context, %{})
+    |> pick_reserved_context()
+  end
+
+  defp pick_reserved_context(context) do
+    Map.new(@reserved_run_context_keys, fn key ->
+      {key, replay_context_value(context, key)}
+    end)
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
   end
 end

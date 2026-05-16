@@ -22,7 +22,7 @@ defmodule SquidMesh.Executor do
         end
       end
 
-  The queued job should call `SquidMesh.Runtime.Runner.perform/1` with the
+  The queued job should call `SquidMesh.Runtime.Runner.perform/2` with the
   stored payload. The job backend, queue name, retry settings, and scheduler
   stay in the host application.
   """
@@ -32,7 +32,17 @@ defmodule SquidMesh.Executor do
 
   @type metadata :: map()
   @type enqueue_error :: term()
+  @type schedule_window :: %{
+          optional(:start_at) => String.t(),
+          optional(:end_at) => String.t(),
+          optional(String.t()) => String.t()
+        }
   @type enqueue_opts :: [schedule_in: pos_integer()]
+  @type cron_enqueue_opts :: [
+          {:schedule_in, pos_integer()}
+          | {:signal_id, String.t()}
+          | {:intended_window, schedule_window()}
+        ]
 
   @doc """
   Enqueues one workflow step for execution.
@@ -64,10 +74,15 @@ defmodule SquidMesh.Executor do
   Enqueues or schedules a cron trigger activation.
 
   Host schedulers can call this callback when a declared cron trigger fires, or
-  can enqueue `SquidMesh.Executor.Payload.cron/2` directly and deliver it to
-  `SquidMesh.Runtime.Runner.perform/1`.
+  can enqueue `SquidMesh.Executor.Payload.cron/3` directly and deliver it to
+  `SquidMesh.Runtime.Runner.perform/2`.
+
+  When the scheduler knows the logical schedule window, pass `:signal_id` and
+  `:intended_window` through to `SquidMesh.Executor.Payload.cron/3`. Squid Mesh
+  persists those values as run context before workflow processing starts, so
+  delayed workers do not need to infer the intended window from wall-clock time.
   """
-  @callback enqueue_cron(Config.t(), module(), atom(), enqueue_opts()) ::
+  @callback enqueue_cron(Config.t(), module(), atom(), cron_enqueue_opts()) ::
               {:ok, metadata()} | {:error, enqueue_error()}
 
   @required_callbacks [

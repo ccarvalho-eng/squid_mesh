@@ -115,7 +115,11 @@ def handle_cron_tick do
     SquidMesh.config!(),
     MyApp.Workflows.DailyStandup,
     :daily_standup,
-    []
+    signal_id: "daily-standup:2026-05-15T09:00:00Z",
+    intended_window: %{
+      start_at: "2026-05-15T09:00:00Z",
+      end_at: "2026-05-15T10:00:00Z"
+    }
   )
 end
 ```
@@ -125,6 +129,12 @@ Current cron boundary:
 - Squid Mesh declares cron intent in the workflow DSL
 - the host app performs the actual recurring scheduling
 - cron workflow registration is static at boot today
+
+Scheduled workflow steps receive scheduler metadata through the durable run
+context, not through the workflow payload contract. If the host scheduler passes
+`signal_id` and `intended_window`, the first step can read them from
+`context.state.schedule`. This is the value to use for windowed work because it
+represents the logical schedule period even when job delivery is delayed.
 
 ## Payload
 
